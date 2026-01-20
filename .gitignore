@@ -1,0 +1,62 @@
+# ===== Dataset / Data =====
+data/
+dataset/
+datasets/
+images/
+imgs/
+samples/
+inputs/
+outputs/
+results/
+checkpoints/
+weights/
+models/
+
+# File dữ liệu lớn
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+*.h5
+*.pth
+*.pt
+*.ckpt
+*.onnx
+*.npy
+*.npz
+*.pkl
+
+# ===== Logs =====
+logs/
+*.log
+
+# ===== Cache =====
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# ===== Virtual Environment =====
+venv/
+env/
+.venv/
+conda_env/
+
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== IDE =====
+.vscode/
+.idea/
+
+# ===== Jupyter =====
+*.ipynb
+
+# ===== Temporary =====
+tmp/
+temp/
+
+# ===== Environment Variables =====
+.env
