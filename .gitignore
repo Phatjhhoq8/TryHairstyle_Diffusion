@@ -42,7 +42,7 @@ venv/
 env/
 .venv/
 conda_env/
-
+venv_wsl/
 # ===== OS =====
 .DS_Store
 Thumbs.db

@@ -37,7 +37,7 @@
 | Class | `PascalCase` | `UserService`, `ProductController` |
 | Function | `camelCase` | `getUserById()`, `handleClick()` |
 | Constant | `SCREAMING_CASE` | `MAX_RETRY`, `API_URL` |
-| File | `snake_case` hoặc `kebab-case` | `user_service.js`, `user-service.js` |
+| File | `snake_case` (Python) hoặc `kebab-case` (JS) | `user_service.py`, `user-card.jsx` |
 
 ### 4.2. Comment Code
 - Viết comment bằng **tiếng Việt** hoặc **tiếng Anh** cho các đoạn **logic phức tạp**
@@ -54,12 +54,11 @@
 
 | Loại | Công nghệ | Mô tả |
 |------|-----------|-------|
-| **Models/AI** | Python | Xử lý models, machine learning, Diffusion Models |
-| **Backend** | Node.js | REST API, server-side logic |
-| **Database** | MongoDB | NoSQL database |
-| **Mobile** | Flutter | Android application |
-| **Ngôn ngữ** | Python, JavaScript, Dart | |
-| **Frontend** | ReactJS, Tailwindcss | |
+| **Models/AI** | Python | Xử lý models, machine learning, Diffusion Models (SDXL, InsightFace) |
+| **Backend** | **FastAPI (Python)** | REST API, server-side logic, Celery Workers |
+| **Database** | Redis | Message Broker for Task Queue |
+| **Frontend** | ReactJS, TailwindCSS | Giao diện người dùng (Vite) |
+| **Ngôn ngữ** | Python, JavaScript | |
 
 ---
 
@@ -137,16 +136,42 @@ Khi có lỗi, AI phải:
 
 ## 12. Code tham khảo mô hình
 
-|Tên mô hình tham khảo| |Link mô hình tham khảo|
-|---------|-------|
+| Tên mô hình tham khảo | Link mô hình tham khảo |
+|-----------------------|------------------------|
 | **HairFusion** | https://github.com/cychungg/HairFusion |
 | **Stable-hair** | https://github.com/Xiaojiu-z/Stable-Hair |
 
 
 ---
+
 ## 13. Code tham khảo UI
 
-|Tên UI tham khảo| |Link UI tham khảo|
-|---------|-------|
+| Tên UI tham khảo | Link UI tham khảo |
+|------------------|-------------------|
 | **HairFusion** | C:\Users\Admin\Desktop\HairFusion-main |
 
+---
+
+## 14. Quy tắc huấn luyện mô hình
+
+| Quy tắc | Mô tả |
+|---------|-------|
+| **Phải có biểu đồ loss** | Phải có biểu đồ loss sau mỗi lần huấn luyện mô hình |
+
+## 15. Quy trình huấn luyện
+
+Quy trình huấn luyện mô hình có thể tham khảo trong file `QUY_TRINH.md`
+
+## 16. Môi trường phát triển
+
+| Thành phần | Mô tả |
+|------------|-------|
+| **Hệ điều hành** | Linux Ubuntu (chạy qua **WSL** - Windows Subsystem for Linux) |
+| **Container** | Sử dụng **Docker CLI** để đóng gói và quản lý môi trường |
+| **GPU** | NVIDIA RTX 3060 (12GB VRAM) - Cần cài NVIDIA Container Toolkit cho Docker |
+
+### Lý do sử dụng WSL + Docker:
+1. **Tương thích tốt hơn:** Các thư viện ML (PyTorch, CUDA, InsightFace) hoạt động ổn định hơn trên Linux.
+2. **Dễ tái tạo:** Docker container đảm bảo môi trường đồng nhất trên mọi máy.
+3. **Tránh xung đột:** Không lo xung đột thư viện với hệ thống Windows.
+4. **Giống Production:** Môi trường dev giống hệt môi trường deploy sau này.

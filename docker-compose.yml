@@ -1,0 +1,24 @@
+# docker-compose for training environment
+version: '3.8'
+
+services:
+  training:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hairstyle-training
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - .:/app
+      - ./backend/dataset:/app/backend/dataset
+      - ./backend/output:/app/backend/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
+    command: python backend/training/train_ip_adapter.py --use_wandb
