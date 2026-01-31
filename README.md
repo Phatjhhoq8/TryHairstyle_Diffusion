@@ -126,3 +126,82 @@ Tải thủ công các file sau:
 - IP-Adapter FaceID: giữ nguyên khuôn mặt
 - IP-Adapter Plus: copy kiểu tóc
 - ControlNet Depth: giữ hình dạng đầu & góc nhìn
+
+--------------------------------------------------
+
+## 10. Docker Training (Khuyến nghị)
+
+### 10.1 Yêu cầu
+- Docker với NVIDIA Container Toolkit
+- WSL2 (Windows) hoặc Linux
+- GPU NVIDIA với driver >= 525
+
+### 10.2 Build Docker Image
+```bash
+# Trong WSL hoặc Linux
+docker build -t hairstyle-training .
+```
+
+### 10.3 Chạy Training với Docker Compose
+```bash
+# GPU training với docker-compose
+docker compose up training
+```
+
+### 10.4 Chạy Training trực tiếp
+```bash
+docker run --gpus all -v $(pwd):/app \
+  hairstyle-training \
+  python backend/training/train_ip_adapter.py \
+    --num_epochs 100 \
+    --train_batch_size 4 \
+    --save_steps 500
+```
+
+--------------------------------------------------
+
+## 11. Training IP-Adapter cho Hair Style
+
+### 11.1 Chạy với WSL (không cần Docker)
+```bash
+# Kích hoạt môi trường
+cd /mnt/c/Users/Admin/Desktop/TryHairStyle
+source venv_wsl/bin/activate
+
+# Chạy training
+python backend/training/train_ip_adapter.py \
+  --num_epochs 100 \
+  --train_batch_size 4 \
+  --save_steps 500 \
+  --mixed_precision fp16
+```
+
+### 11.2 Các tham số training quan trọng
+| Tham số | Mặc định | Mô tả |
+|---------|----------|-------|
+| `--num_epochs` | 100 | Số epoch training |
+| `--train_batch_size` | 4 | Batch size (giảm nếu OOM) |
+| `--learning_rate` | 1e-4 | Learning rate |
+| `--save_steps` | 500 | Lưu checkpoint mỗi N steps |
+| `--mixed_precision` | fp16 | Mixed precision (fp16/bf16/no) |
+
+### 11.3 Output
+Checkpoints sẽ được lưu tại: `backend/output/ip_adapter_hair/`
+
+```
+checkpoint-500/
+├── ip_adapter.bin     # IP-Adapter weights (~89MB)
+├── model.safetensors  # Full model state
+├── optimizer.bin      # Optimizer state
+└── ...
+```
+
+### 11.4 Sử dụng weights đã train
+```python
+import torch
+
+# Load IP-Adapter weights
+ckpt = torch.load("backend/output/ip_adapter_hair/checkpoint-XXX/ip_adapter.bin")
+image_proj_weights = ckpt["image_proj"]
+adapter_weights = ckpt["ip_adapter"]
+```
