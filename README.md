@@ -9,18 +9,20 @@
 
 ## 2. Tạo và kích hoạt môi trường ảo
 
-python -m venv venv
-source venv/bin/activate
+python -m venv venv_wsl
+source venv_wsl/bin/activate
 
 Nâng cấp pip:
 pip install --upgrade pip
 
 --------------------------------------------------
 
-## 3. Cài đặt PyTorch (CUDA 11.8)
+## 3. Cài đặt PyTorch (Stable 2.5.1 + CUDA 11.8)
+*Quan trọng: Phiên bản này hỗ trợ tốt nhất cho Diffusers 0.36.0 và card NVIDIA.*
 
-pip install torch==2.7.1+cu118 torchvision==0.22.1+cu118 torchaudio==2.7.1+cu118 \
-  --index-url https://download.pytorch.org/whl/cu118
+```bash
+pip install torch==2.5.1+cu118 torchvision==0.20.1+cu118 torchaudio==2.5.1+cu118 --index-url https://download.pytorch.org/whl/cu118
+```
 
 --------------------------------------------------
 
@@ -64,7 +66,26 @@ huggingface-cli login
 
 --------------------------------------------------
 
-## 8. Tải các mô hình cần thiết
+## 8. Tải Model & Thư viện (QUAN TRỌNG)
+
+### Cách 1: Tự động (Khuyên dùng)
+Mình đã chuẩn bị sẵn script để tải toàn bộ model cần thiết.
+
+1. Đảm bảo đã kích hoạt môi trường ảo:
+```bash
+source venv_wsl/bin/activate
+```
+2. Chạy lệnh sau:
+```bash
+python download_models.py
+```
+Script sẽ tự động tải:
+- ControlNet Depth (SDXL)
+- InstantID & IP-Adapter
+- Face Parsing models
+- CLIP Image Encoder
+
+### Cách 2: Tải Thủ công (Nếu script lỗi)
 
 ### 8.1 Stable Diffusion v1.5
 
@@ -125,83 +146,108 @@ Tải thủ công các file sau:
 - BiSeNet: tách mask tóc cho Inpainting
 - IP-Adapter FaceID: giữ nguyên khuôn mặt
 - IP-Adapter Plus: copy kiểu tóc
-- ControlNet Depth: giữ hình dạng đầu & góc nhìn
+--------------------------------------------------
+
+## 10. Troubleshooting (Các lỗi thường gặp)
+
+### 10.1 Lỗi `module 'torch' has no attribute 'xpu'`
+Nguyên nhân: Thư viện `accelerate` bản mới nhất không tương thích tốt trên Windows.
+Cách sửa:
+```bash
+pip install accelerate==0.26.0
+```
+
+### 10.2 Lỗi `ImportError` liên quan đến SDXL
+Nguyên nhân: Thư viện `diffusers` quá cũ.
+Cách sửa:
+```bash
+pip install diffusers==0.36.0
+```
+
+### 10.3 Lỗi `InstantX/InstantID ... ip-adapter.bin not found`
+Nguyên nhân: Model loading path bị sai khi chạy qua Worker.
+Cách sửa: Code đã được update để dùng **Đường dẫn tuyệt đối**. Hãy đảm bảo file `ip-adapter.bin` nằm đúng tại `backend/models/instantid/ip-adapter.bin`.
 
 --------------------------------------------------
 
-## 10. Docker Training (Khuyến nghị)
+## 11. Hướng dẫn Chạy Hệ thống (Run App)
 
-### 10.1 Yêu cầu
-- Docker với NVIDIA Container Toolkit
-- WSL2 (Windows) hoặc Linux
-- GPU NVIDIA với driver >= 525
+### Cách 1: Chạy bằng Docker Compose (Khuyên dùng cho Production)
+Dễ dàng nhất vì đã bao gồm Redis, API, và Worker.
 
-### 10.2 Build Docker Image
 ```bash
-# Trong WSL hoặc Linux
-docker build -t hairstyle-training .
+# Bật Docker Desktop trước, sau đó chạy:
+docker compose up -d backend worker redis
+```
+- API sẽ chạy tại: `http://localhost:8000`
+- Swagger UI: `http://localhost:8000/docs`
+
+---
+
+### Cách 2: Chạy trên WSL (Khuyên dùng cho Development)
+
+> **Yêu cầu:** Mở **4 terminal WSL** riêng biệt (hoặc dùng tmux/screen).
+
+#### Terminal 1: Khởi động Redis
+```bash
+# Cài Redis nếu chưa có
+sudo apt update && sudo apt install redis-server -y
+
+# Chạy Redis server
+redis-server
 ```
 
-### 10.3 Chạy Training với Docker Compose
+#### Terminal 2: Khởi động Backend API (FastAPI)
 ```bash
-# GPU training với docker-compose
-docker compose up training
-```
-
-### 10.4 Chạy Training trực tiếp
-```bash
-docker run --gpus all -v $(pwd):/app \
-  hairstyle-training \
-  python backend/training/train_ip_adapter.py \
-    --num_epochs 100 \
-    --train_batch_size 4 \
-    --save_steps 500
-```
-
---------------------------------------------------
-
-## 11. Training IP-Adapter cho Hair Style
-
-### 11.1 Chạy với WSL (không cần Docker)
-```bash
-# Kích hoạt môi trường
+# Di chuyển vào thư mục dự án
 cd /mnt/c/Users/Admin/Desktop/TryHairStyle
+
+# Kích hoạt môi trường ảo
 source venv_wsl/bin/activate
 
-# Chạy training
-python backend/training/train_ip_adapter.py \
-  --num_epochs 100 \
-  --train_batch_size 4 \
-  --save_steps 500 \
-  --mixed_precision fp16
+# Chạy FastAPI server
+uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+API sẽ chạy tại: `http://localhost:8000`
+Swagger UI: `http://localhost:8000/docs`
+
+#### Terminal 3: Khởi động Celery Worker (Xử lý AI Tasks)
+```bash
+# Di chuyển vào thư mục dự án
+cd /mnt/c/Users/Admin/Desktop/TryHairStyle
+
+# Kích hoạt môi trường ảo
+source venv_wsl/bin/activate
+
+# Chạy Celery worker
+celery -A backend.app.tasks worker --loglevel=info
 ```
 
-### 11.2 Các tham số training quan trọng
-| Tham số | Mặc định | Mô tả |
-|---------|----------|-------|
-| `--num_epochs` | 100 | Số epoch training |
-| `--train_batch_size` | 4 | Batch size (giảm nếu OOM) |
-| `--learning_rate` | 1e-4 | Learning rate |
-| `--save_steps` | 500 | Lưu checkpoint mỗi N steps |
-| `--mixed_precision` | fp16 | Mixed precision (fp16/bf16/no) |
+#### Terminal 4: Khởi động Frontend (ReactJS)
+```bash
+# Di chuyển vào thư mục frontend
+cd /mnt/c/Users/Admin/Desktop/TryHairStyle/frontend
 
-### 11.3 Output
-Checkpoints sẽ được lưu tại: `backend/output/ip_adapter_hair/`
+# Cài dependencies (lần đầu)
+npm install
 
+# Chạy dev server
+npm run dev
 ```
-checkpoint-500/
-├── ip_adapter.bin     # IP-Adapter weights (~89MB)
-├── model.safetensors  # Full model state
-├── optimizer.bin      # Optimizer state
-└── ...
-```
+Frontend sẽ chạy tại: `http://localhost:5173`
 
-### 11.4 Sử dụng weights đã train
-```python
-import torch
+---
 
-# Load IP-Adapter weights
-ckpt = torch.load("backend/output/ip_adapter_hair/checkpoint-XXX/ip_adapter.bin")
-image_proj_weights = ckpt["image_proj"]
-adapter_weights = ckpt["ip_adapter"]
+### Cách 3: Chạy trên Windows (Powershell) - Chỉ Frontend
+
+> **Lưu ý:** Backend nên chạy trên WSL để tận dụng GPU với CUDA ổn định hơn.
+
+**Chạy Frontend trên Windows:**
+```powershell
+cd C:\Users\Admin\Desktop\TryHairStyle\frontend
+npm install
+npm run dev
 ```
+Frontend sẽ chạy tại: `http://localhost:5173`
+
+--------------------------------------------------
