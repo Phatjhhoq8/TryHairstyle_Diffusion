@@ -83,6 +83,7 @@ Khi có lỗi, AI phải:
 - Luôn giải thích lý do tại sao phải làm như vậy
 - Nói kiến thức liên quan và trích dẫn nguồn nếu có thể
 - Luôn hỏi ý kiến trước khi thay đổi code
+- Cân nhắc nên chạy venv_wsl nếu cần
 
 ---
 
@@ -126,11 +127,14 @@ Khi có lỗi, AI phải:
 
 ---
 
-## 11. Quy tắc Readme
+## 11. Quy tắc sau khi code xong
 
 | Quy tắc | Mô tả |
 |---------|-------|
-| **README.md** | Cập nhật README.md khi có thay đổi lớn |
+| **README.md** | Cập nhật README.md khi có thay đổi |
+| **Test lại** | Test lại code sau khi code xong |
+| **Kiểm tra lại** | Kiểm tra lại code sau khi code xong |
+| **Docker** | Dockerfile phải được update khi có thay đổi |
 
 ---
 
@@ -157,6 +161,7 @@ Khi có lỗi, AI phải:
 | Quy tắc | Mô tả |
 |---------|-------|
 | **Phải có biểu đồ loss** | Phải có biểu đồ loss sau mỗi lần huấn luyện mô hình |
+| **Phải có ảnh test** | Phải có ảnh test sau mỗi lần huấn luyện mô hình |
 
 ## 15. Quy trình huấn luyện
 
