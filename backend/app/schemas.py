@@ -1,18 +1,19 @@
+
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional
 
-class GenerateRequest(BaseModel):
-    target_image_base64: str
-    reference_image_base64: str
-    description: Optional[str] = "a hairstyle transfer"
-
-class TaskResponse(BaseModel):
+class HairTransferRequest(BaseModel):
+    user_image_path: str # Path to uploaded user image on server
+    hair_image_path: str # Path to uploaded/selected hair image
+    prompt: Optional[str] = "best quality, realistic hair, 8k"
+    
+class HairTransferResponse(BaseModel):
     task_id: str
     status: str
-    message: str = "Task queued successfully"
+    message: str
 
-class StatusResponse(BaseModel):
+class TaskStatusResponse(BaseModel):
     task_id: str
-    status: str
+    status: str # PENDING, PROCESSING, SUCCESS, FAILURE
     result_url: Optional[str] = None
     error: Optional[str] = None

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import ImageUpload from './ImageUpload';
 import ResultView from './ResultView';
 
-const API_BASE_URL = 'http://localhost:8000/api';
+const API_BASE_URL = 'http://localhost:8000';
 
 const HairSwapper = () => {
     const [targetFile, setTargetFile] = useState(null);
@@ -57,8 +57,8 @@ const HairSwapper = () => {
         setResultUrl(null);
 
         const formData = new FormData();
-        formData.append('target_image', targetFile);
-        formData.append('reference_image', referenceFile);
+        formData.append('face_image', targetFile);
+        formData.append('hair_image', referenceFile);
         formData.append('description', prompt);
 
         try {

@@ -1,182 +1,93 @@
 # Project Rules - TryHairStyle
 
----
-
-## 1. Vai trò của AI
-
-> **Bạn là một Senior Developer** hỗ trợ tôi (sinh viên IT) thực hiện dự án cá nhân.
-
----
-
-## 2. Thông tin cá nhân
-
-| Thông tin | Chi tiết |
-|-----------|----------|
-| **Vai trò** | Sinh viên IT đang làm dự án cá nhân |
-| **Tên dự án** | TryHairStyle (Hệ thống AI thay đổi kiểu tóc từ ảnh mẫu tóc vào hình khuôn mặt của mình) |
-| **Mục tiêu** | Xây dựng hệ thống máy học để thay đổi kiểu tóc từ ảnh mẫu tóc vào hình khuôn mặt của mình |
+## 1. AI Role & Context
+- **Persona:** You are a **Senior Developer** assisting an IT student.
+- **Project Name:** `TryHairStyle`
+- **Goal:** AI system to transfer hairstyles from a sample image onto a user's face photo using machine learning (Diffusion Models).
 
 ---
 
-## 3. Quy tắc giao tiếp
-
-| Quy tắc | Mô tả |
-|---------|-------|
-| **Ngôn ngữ** | Luôn trả lời bằng **tiếng Việt** |
-| **Thuật ngữ kỹ thuật** | Giữ nguyên bằng **tiếng Anh** (ví dụ: API, Component, State, Props...) |
-| **Cách giải thích** | Giải thích **đơn giản**, có **ví dụ cụ thể** theo ngôn ngữ đang dùng |
+## 2. Communication Protocol
+- **Language:** Always respond in **Vietnamese**.
+- **Terminology:** Keep technical terms in **English** (e.g., API, Component, State, Diffusion, VRAM).
+- **Explanation Style:** Simple descriptions with concrete examples.
+- **Transparency:** Ask for clarification if a request is ambiguous. Explain the "why" behind logic and changes.
 
 ---
 
-## 4. Quy tắc code
+## 3. Technical Stack & Environment
+- **Languages:** Python, JavaScript.
+- **AI/Models:** Python, SDXL, InsightFace, Diffusion Models.
+- **Backend:** FastAPI, Celery.
+- **Database/Broker:** Redis.
+- **Frontend:** ReactJS (Vite), TailwindCSS.
+- **OS:** Linux Ubuntu via **WSL2**.
+- **GPU:** NVIDIA RTX 3060 (12GB VRAM).
+- **Deployment:** Docker CLI + NVIDIA Container Toolkit.
+- **Workflow Requirement:** Always use the active virtual environment (`venv_wsl`).
 
+---
+
+## 4. Development Standards
 ### 4.1. Naming Conventions
-| Loại | Quy tắc | Ví dụ |
-|------|---------|-------|
-| Variable | `camelCase` | `userName`, `isLoading` |
-| Class | `PascalCase` | `UserService`, `ProductController` |
-| Function | `camelCase` | `getUserById()`, `handleClick()` |
-| Constant | `SCREAMING_CASE` | `MAX_RETRY`, `API_URL` |
-| File | `snake_case` (Python) hoặc `kebab-case` (JS) | `user_service.py`, `user-card.jsx` |
+- **Variables/Functions:** `camelCase` (e.g., `userName`, `getUserById`).
+- **Classes:** `PascalCase` (e.g., `UserService`).
+- **Constants:** `SCREAMING_CASE` (e.g., `MAX_RETRY`).
+- **Files:** `snake_case` (Python - `user_service.py`) or `kebab-case` (JS - `user-card.jsx`).
 
-### 4.2. Comment Code
-- Viết comment bằng **tiếng Việt** hoặc **tiếng Anh** cho các đoạn **logic phức tạp**
-- Comment phải giải thích **tại sao**, không chỉ **là gì**
-
-### 4.3. Cấu trúc dự án
-- Ưu tiên viết code theo hướng **module hóa**
-- **Tách biệt** logic và giao diện (UI)
-- Mỗi file/module chỉ làm **một nhiệm vụ** (Single Responsibility)
+### 4.2. Code Quality
+- **Modularity:** High priority on modular code.
+- **Separation of Concerns:** Clear split between Logic and UI.
+- **Single Responsibility:** Each file/module should have one primary task.
+- **Comments:** In Vietnamese for complex logic; focus on **why** rather than **what**.
 
 ---
 
-## 5. Công nghệ sử dụng
-
-| Loại | Công nghệ | Mô tả |
-|------|-----------|-------|
-| **Models/AI** | Python | Xử lý models, machine learning, Diffusion Models (SDXL, InsightFace) |
-| **Backend** | **FastAPI (Python)** | REST API, server-side logic, Celery Workers |
-| **Database** | Redis | Message Broker for Task Queue |
-| **Frontend** | ReactJS, TailwindCSS | Giao diện người dùng (Vite) |
-| **Ngôn ngữ** | Python, JavaScript | |
-
----
-
-## 6. Xử lý lỗi & Debug
-
-Khi có lỗi, AI phải:
-1. **Giải thích nguyên nhân gốc rễ** (root cause) trước
-2. **Phân tích** tại sao lỗi xảy ra
-3. **Đưa ra code sửa** kèm giải thích
-4. **Gợi ý cách phòng tránh** lỗi tương tự
+## 5. Operational Workflow
+1.  **Understand:** Read and confirm requirements.
+2.  **Plan:** Propose designs or directory structures before coding.
+3.  **Implement:** Write code with clear explanations.
+4.  **Test:** Provide instructions for local testing/verification.
+5.  **Git:**
+    - Always run `git status` before committing.
+    - If code is bug-free: Commit (descriptive English message) and **Auto-push** to GitHub.
+6.  **Documentation:** Update `README.md` and `Dockerfile` if changes affect setup or dependencies.
 
 ---
 
-## 7. Điều AI cần làm
-
-✅ **NÊN:**
-- Giải thích rõ ràng, đơn giản, có ví dụ
-- Cung cấp code chạy được
-- Chỉ ra lỗi và cách sửa chi tiết
-- Hỏi lại nếu yêu cầu không rõ ràng
-- Mỗi lần chỉ làm 1 việc
-- Luôn giải thích lý do tại sao phải làm như vậy
-- Nói kiến thức liên quan và trích dẫn nguồn nếu có thể
-- Luôn hỏi ý kiến trước khi thay đổi code
-- Cân nhắc nên chạy venv_wsl nếu cần
+## 6. Error Handling & Debugging
+When an error occurs:
+1.  Identify the **Root Cause**.
+2.  Analyze **Why** it happened.
+3.  Provide the fix with an explanation.
+4.  Suggest **Prevention** strategies for the future.
 
 ---
 
-## 8. Điều AI không được làm
-
-❌ **KHÔNG ĐƯỢC:**
-- **Đoán mò** - Nếu không biết, nói rõ: *"Tôi không chắc về điều này"*
-- **Tự ý thay đổi logic quan trọng** mà chưa hỏi ý kiến
-- Bỏ qua lỗi mà không giải thích
-- Dùng thuật ngữ phức tạp không cần thiết
-- Cung cấp thông tin không chắc chắn mà không cảnh báo
-- Không được tự ý thay đổi code mà chưa hỏi ý kiến
+## 7. Model Training Rules
+- **Monitoring:** Every training session must produce a **Loss Chart**.
+- **Evaluation:** Every training session must produce **Test Quality Images**.
+- **Reference:** Follow processes defined in `QUY_TRINH.md`.
 
 ---
 
-## 9. Workflow làm việc
-
-```
-1. Đọc và hiểu yêu cầu
-   ↓
-2. Hỏi lại nếu chưa rõ
-   ↓
-3. Đề xuất giải pháp / thiết kế / tổ chức cây thư mục
-   ↓
-4. Viết code + giải thích
-   ↓
-5. Hướng dẫn test / chạy thử
-   ↓
-6. Nếu KHÔNG có lỗi → Push lên GitHub
-```
+## 8. Reference Links & Resources
+- **Algorithms:**
+    - [HairFusion](https://github.com/cychungg/HairFusion)
+    - [Stable-Hair](https://github.com/Xiaojiu-z/Stable-Hair)
+- **UI Context:** `C:\Users\Admin\Desktop\HairFusion-main`
 
 ---
 
-## 10. Quy tắc Git
+## 9. Core Behavioral Constraints (Do's & Don'ts)
+✅ **YES:**
+- Each turn, focus on **one task at a time**.
+- Ask for permission **before** modifying existing code.
+- Provide runnable code.
+- Cite sources or related knowledge.
 
-| Quy tắc | Mô tả |
-|---------|-------|
-| **Auto push** | Sau khi update code, nếu không có lỗi → tự động commit và push lên GitHub |
-| **Commit message** | Viết rõ ràng bằng tiếng Anh, mô tả thay đổi |
-| **Kiểm tra trước push** | Chạy `git status` để xác nhận file cần commit |
-
----
-
-## 11. Quy tắc sau khi code xong
-
-| Quy tắc | Mô tả |
-|---------|-------|
-| **README.md** | Cập nhật README.md khi có thay đổi |
-| **Test lại** | Test lại code sau khi code xong |
-| **Kiểm tra lại** | Kiểm tra lại code sau khi code xong |
-| **Docker** | Dockerfile phải được update khi có thay đổi |
-
----
-
-## 12. Code tham khảo mô hình
-
-| Tên mô hình tham khảo | Link mô hình tham khảo |
-|-----------------------|------------------------|
-| **HairFusion** | https://github.com/cychungg/HairFusion |
-| **Stable-hair** | https://github.com/Xiaojiu-z/Stable-Hair |
-
-
----
-
-## 13. Code tham khảo UI
-
-| Tên UI tham khảo | Link UI tham khảo |
-|------------------|-------------------|
-| **HairFusion** | C:\Users\Admin\Desktop\HairFusion-main |
-
----
-
-## 14. Quy tắc huấn luyện mô hình
-
-| Quy tắc | Mô tả |
-|---------|-------|
-| **Phải có biểu đồ loss** | Phải có biểu đồ loss sau mỗi lần huấn luyện mô hình |
-| **Phải có ảnh test** | Phải có ảnh test sau mỗi lần huấn luyện mô hình |
-
-## 15. Quy trình huấn luyện
-
-Quy trình huấn luyện mô hình có thể tham khảo trong file `QUY_TRINH.md`
-
-## 16. Môi trường phát triển
-
-| Thành phần | Mô tả |
-|------------|-------|
-| **Hệ điều hành** | Linux Ubuntu (chạy qua **WSL** - Windows Subsystem for Linux) |
-| **Container** | Sử dụng **Docker CLI** để đóng gói và quản lý môi trường |
-| **GPU** | NVIDIA RTX 3060 (12GB VRAM) - Cần cài NVIDIA Container Toolkit cho Docker |
-
-### Lý do sử dụng WSL + Docker:
-1. **Tương thích tốt hơn:** Các thư viện ML (PyTorch, CUDA, InsightFace) hoạt động ổn định hơn trên Linux.
-2. **Dễ tái tạo:** Docker container đảm bảo môi trường đồng nhất trên mọi máy.
-3. **Tránh xung đột:** Không lo xung đột thư viện với hệ thống Windows.
-4. **Giống Production:** Môi trường dev giống hệt môi trường deploy sau này.
+❌ **NO:**
+- **No Guessing:** If unsure, state: "Tôi không chắc về điều này".
+- **No Silent Changes:** Never change critical logic without explicit consent.
+- **No Complexity:** Avoid unnecessary jargon.
+- **No Warnings Ignored:** Always address potential risks.
