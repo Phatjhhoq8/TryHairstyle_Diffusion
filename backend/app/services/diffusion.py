@@ -116,7 +116,10 @@ class HairDiffusionService:
         ref_hair = ref_hair_image.resize(target_size, Image.LANCZOS)
         
         # Set IP Adapter Scale
-        self.pipe.set_ip_adapter_scale(ip_adapter_scale)
+        if hasattr(self.pipe, "set_ip_adapter_scale"):
+             self.pipe.set_ip_adapter_scale(ip_adapter_scale)
+        else:
+             print("Warning: set_ip_adapter_scale not found on pipeline. Skipping scale set.", flush=True)
         
         # Generator seed
         generator = torch.Generator(self.device).manual_seed(42)
@@ -138,17 +141,32 @@ class HairDiffusionService:
             ).images[0]
         else:
             # SD1.5 Inpaint (No ControlNet Depth in this fallback)
-            # Just Inpaint + IP-Adapter
-            result = self.pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                image=image,
-                mask_image=mask,
-                ip_adapter_image=ref_hair,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                strength=0.99,
-                generator=generator
-            ).images[0]
+            # Just Inpaint + (Optional) IP-Adapter
+            
+            # Prepare args (some versions of diffusers don't support ip_adapter_image in __call__ even if loaded)
+            inpainting_args = {
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "image": image,
+                "mask_image": mask,
+                "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "strength": 0.99,
+                "generator": generator
+            }
+            
+            # Try with IP-Adapter arg first
+            try:
+                result = self.pipe(
+                    **inpainting_args,
+                    ip_adapter_image=ref_hair
+                ).images[0]
+            except TypeError as e:
+                # If argument is not supported
+                if "ip_adapter_image" in str(e):
+                    print(f"Warning: Pipeline doesn't accept 'ip_adapter_image' ({e}). Running standard Inpainting.", flush=True)
+                    result = self.pipe(**inpainting_args).images[0]
+                else:
+                    raise e # Re-raise if it's a different error
         
         return result
