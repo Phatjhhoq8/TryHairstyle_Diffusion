@@ -12,8 +12,13 @@
 python -m venv venv_wsl
 source venv_wsl/bin/activate
 
-Nâng cấp pip:
+Nâng cấp pip & Cài đặt thư viện:
+```bash
 pip install --upgrade pip
+pip install -r backend/requirements.txt
+```
+
+*Lưu ý: Nếu cần hỗ trợ CUDA (GPU), hãy cài PyTorch riêng ở bước 3.*
 
 --------------------------------------------------
 
@@ -219,8 +224,8 @@ cd /mnt/c/Users/Admin/Desktop/TryHairStyle
 # Kích hoạt môi trường ảo
 source venv_wsl/bin/activate
 
-# Chạy Celery worker
-celery -A backend.app.tasks worker --loglevel=info
+# Chạy Celery worker (Thêm pool=solo để chạy ổn định trên Windows/WSL)
+celery -A backend.app.tasks worker --loglevel=info --pool=solo
 ```
 
 #### Terminal 4: Khởi động Frontend (ReactJS)
@@ -249,5 +254,25 @@ npm install
 npm run dev
 ```
 Frontend sẽ chạy tại: `http://localhost:5173`
+
+--------------------------------------------------
+
+## 12. Chạy Kiểm Thử (Verification Scripts) (MỚI)
+
+Để kiểm tra nhanh hệ thống mà không cần bật full server (API/Worker), bạn có thể dùng các script test độc lập sau:
+
+### 12.1 CLI Test (Chạy ngầm)
+Tự động chạy pipeline hair transfer với ảnh ngẫu nhiên từ FFHQ.
+```bash
+python backend/tests/test_cli_ffhq.py
+```
+- Kết quả lưu tại: `backend/output/cli_test_result.png`
+
+### 12.2 UI Test (Giao diện trực quan)
+Bật giao diện web nhỏ gọn để chọn ảnh và chạy thử.
+```bash
+python backend/tests/test_ui_gradio.py
+```
+- Truy cập: `http://127.0.0.1:7861`
 
 --------------------------------------------------

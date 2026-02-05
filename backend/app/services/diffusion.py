@@ -76,8 +76,7 @@ class HairDiffusionService:
         
         # 2. Load IP-Adapter
         print(f">>> Loading IP-Adapter from {model_paths.IP_ADAPTER_SD15_PATH}")
-        # Note: AutoPipeline often returns a specific pipeline class. Verify it has load_ip_adapter.
-        # Most modern Diffusers pipelines have it.
+        self.ip_adapter_loaded = False
         
         try:
             self.pipe.load_ip_adapter(
@@ -85,10 +84,12 @@ class HairDiffusionService:
                 subfolder="", 
                 weight_name="ip-adapter-plus_sd15.bin"
             )
+            self.ip_adapter_loaded = True
+            print(">>> IP-Adapter loaded successfully.")
         except Exception as e:
             print(f"Warning: Failed to load IP-Adapter ({e}). Proceeding without it.")
         
-        self.pipe.to(self.device)
+        self.pipe.to(device=self.device, dtype=self.dtype)
         self.use_sdxl = False
         print(">>> SD1.5 Pipeline Loaded Successfully.")
 
@@ -116,7 +117,11 @@ class HairDiffusionService:
         ref_hair = ref_hair_image.resize(target_size, Image.LANCZOS)
         
         # Set IP Adapter Scale
-        self.pipe.set_ip_adapter_scale(ip_adapter_scale)
+        if self.ip_adapter_loaded and hasattr(self.pipe, "set_ip_adapter_scale"):
+             self.pipe.set_ip_adapter_scale(ip_adapter_scale)
+        else:
+             # print("Warning: IP Adapter not loaded or method missing. Skipping scale set.", flush=True)
+             pass
         
         # Generator seed
         generator = torch.Generator(self.device).manual_seed(42)
@@ -138,17 +143,34 @@ class HairDiffusionService:
             ).images[0]
         else:
             # SD1.5 Inpaint (No ControlNet Depth in this fallback)
-            # Just Inpaint + IP-Adapter
-            result = self.pipe(
-                prompt=prompt,
-                negative_prompt=negative_prompt,
-                image=image,
-                mask_image=mask,
-                ip_adapter_image=ref_hair,
-                num_inference_steps=num_inference_steps,
-                guidance_scale=guidance_scale,
-                strength=0.99,
-                generator=generator
-            ).images[0]
+            # Just Inpaint + (Optional) IP-Adapter
+            
+            # Prepare args (some versions of diffusers don't support ip_adapter_image in __call__ even if loaded)
+            inpainting_args = {
+                "prompt": prompt,
+                "negative_prompt": negative_prompt,
+                "image": image,
+                "mask_image": mask,
+                "num_inference_steps": num_inference_steps,
+                "guidance_scale": guidance_scale,
+                "strength": 0.99,
+                "generator": generator
+            }
+            
+            # Try with IP-Adapter arg first
+            # Only use ip_adapter_image if loaded
+            if self.ip_adapter_loaded:
+                try:
+                    result = self.pipe(
+                        **inpainting_args,
+                        ip_adapter_image=ref_hair
+                    ).images[0]
+                except (TypeError, AttributeError) as e:
+                    # If argument is not supported or causes attribute error due to partial load
+                    print(f"Warning: IP-Adapter failed ({e}). Running standard Inpainting.", flush=True)
+                    result = self.pipe(**inpainting_args).images[0]
+            else:
+                # Standard inpaint only
+                result = self.pipe(**inpainting_args).images[0]
         
         return result

@@ -41,8 +41,14 @@ def main():
     print(">>> Imports completed.", flush=True)
     
     # 1. Setup Data Paths
-    dataset_root = r"c:\Users\Admin\Desktop\TryHairStyle\backend\data\dataset\ffhq"
-    output_path = os.path.join(r"c:\Users\Admin\Desktop\TryHairStyle\backend\output", "cli_test_result.png")
+    # Use relative paths from project root (simple and cross-platform)
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    dataset_root = os.path.join(base_dir, "backend", "data", "dataset", "ffhq")
+    output_dir = os.path.join(base_dir, "backend", "output")
+    output_path = os.path.join(output_dir, "cli_test_result.png")
+    
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir, exist_ok=True)
     
     # Check if dataset exists
     if not os.path.exists(dataset_root):
@@ -123,12 +129,12 @@ def main():
         print("   - Creating Hair Mask...", flush=True)
         hair_mask = mask_service.get_mask(user_pil, target_class=17)
         # Debug: Save mask
-        hair_mask.save(os.path.join(r"c:\Users\Admin\Desktop\TryHairStyle\backend\output", "debug_mask.png"))
+        hair_mask.save(os.path.join(output_dir, "debug_mask.png"))
         
         # D. Depth Estimation
         print("   - Estimating Depth (Skipped/Dummy)...", flush=True)
         depth_map = ImageOps.grayscale(user_pil)
-        depth_map.save(os.path.join(r"c:\Users\Admin\Desktop\TryHairStyle\backend\output", "debug_depth.png"))
+        depth_map.save(os.path.join(output_dir, "debug_depth.png"))
 
         # E. Inpainting / Transfer
         print("   - Running Hair Diffusion...", flush=True)
