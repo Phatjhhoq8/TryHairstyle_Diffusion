@@ -12,8 +12,13 @@
 python -m venv venv_wsl
 source venv_wsl/bin/activate
 
-Nâng cấp pip:
+Nâng cấp pip & Cài đặt thư viện:
+```bash
 pip install --upgrade pip
+pip install -r backend/requirements.txt
+```
+
+*Lưu ý: Nếu cần hỗ trợ CUDA (GPU), hãy cài PyTorch riêng ở bước 3.*
 
 --------------------------------------------------
 

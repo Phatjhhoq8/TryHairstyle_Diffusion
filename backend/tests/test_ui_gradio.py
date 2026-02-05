@@ -56,7 +56,10 @@ def load_services():
     return "Services Already Loaded"
 
 def get_random_ffhq_image():
-    dataset_root = r"c:\Users\Admin\Desktop\TryHairStyle\backend\data\dataset\ffhq"
+    # Use relative paths from project root
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    dataset_root = os.path.join(base_dir, "backend", "data", "dataset", "ffhq")
+    
     if not os.path.exists(dataset_root):
         return None
     

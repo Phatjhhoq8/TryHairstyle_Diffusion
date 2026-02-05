@@ -1,12 +1,14 @@
 
 import cv2
 import numpy as np
-import insightface
-from insightface.app import FaceAnalysis
 from backend.app.config import model_paths, settings
 
 class FaceInfoService:
     def __init__(self):
+        # Lazy import to prevent hang on module load in WSL
+        import insightface
+        from insightface.app import FaceAnalysis
+        
         # Khởi tạo InsightFaceapp
         # allowed_modules=['detection', 'recognition'] để lấy embedding và kps
         # root trỏ về folder antelopev2 đã tải
