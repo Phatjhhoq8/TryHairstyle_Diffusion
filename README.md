@@ -153,26 +153,31 @@ Tải thủ công các file sau:
 - IP-Adapter Plus: copy kiểu tóc
 --------------------------------------------------
 
-## 10. Troubleshooting (Các lỗi thường gặp)
+## 10. Troubleshooting (Các lỗi thường gặp và cách khắc phục)
 
-### 10.1 Lỗi `module 'torch' has no attribute 'xpu'`
-Nguyên nhân: Thư viện `accelerate` bản mới nhất không tương thích tốt trên Windows.
-Cách sửa:
-```bash
-pip install accelerate==0.26.0
-```
+Chi tiết đầy đủ xem tại file: [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
 
-### 10.2 Lỗi `ImportError` liên quan đến SDXL
-Nguyên nhân: Thư viện `diffusers` quá cũ.
-Cách sửa:
-```bash
-pip install diffusers==0.36.0
-```
+### 10.1 Lỗi Xung đột thư viện (Transformers vs Diffusers)
+- **Lỗi:** `ImportError: cannot import name 'MT5Tokenizer'` hoặc `Qwen2_5_VL...`
+- **Nguyên nhân:** Xung đột phiên bản giữa `transformers`, `diffusers`, và `sentencepiece`.
+- **Cách sửa:** Sử dụng phiên bản "điểm ngọt" đã test kỹ:
+    ```bash
+    pip install transformers==4.49.0
+    ```
 
-### 10.3 Lỗi `InstantX/InstantID ... ip-adapter.bin not found`
-Nguyên nhân: Model loading path bị sai khi chạy qua Worker.
-Cách sửa: Code đã được update để dùng **Đường dẫn tuyệt đối**. Hãy đảm bảo file `ip-adapter.bin` nằm đúng tại `backend/models/instantid/ip-adapter.bin`.
+### 10.2 Lỗi Runtime Crash `NoneType` (IP-Adapter)
+- **Lỗi:** `AttributeError: 'NoneType' object has no attribute 'image_projection_layers'`
+- **Nguyên nhân:** Model IP-Adapter không load được nhưng code vẫn cố dùng.
+- **Cách sửa:** Đã patch lại code `diffusion.py` để tự động bỏ qua IP-Adapter nếu load lỗi, giúp app không bị crash.
 
+### 10.3 Lỗi Lệch kiểu dữ liệu (FP16 vs FP32)
+- **Lỗi:** `RuntimeError: Input type (HalfTensor) and weight type (FloatTensor)...`
+- **Nguyên nhân:** Model chính chạy FP16 nhưng IP-Adapter chạy FP32.
+- **Cách sửa:** Đã update code để ép kiểu toàn bộ pipeline sang FP16.
+
+### 10.4 Các lỗi cũ hơn
+- **Lỗi `module 'torch' has no attribute 'xpu'`**: Do `accelerate` mới không tương thích Windows. Sửa bằng `pip install accelerate==0.26.0` (hoặc mới hơn nếu dùng WSL).
+- **Lỗi `InstantX... ip-adapter.bin not found`**: Sai đường dẫn model. Sửa bằng cách dùng đường dẫn tuyệt đối.
 --------------------------------------------------
 
 ## 11. Hướng dẫn Chạy Hệ thống (Run App)
@@ -257,9 +262,9 @@ Frontend sẽ chạy tại: `http://localhost:5173`
 
 --------------------------------------------------
 
-## 12. Chạy Kiểm Thử (Verification Scripts) (MỚI)
+## 12. Chạy Kiểm Thử (Verification Scripts)
 
-Để kiểm tra nhanh hệ thống mà không cần bật full server (API/Worker), bạn có thể dùng các script test độc lập sau:
+Để kiểm tra nhanh hệ thống (Backend Logic), bạn có thể dùng script CLI:
 
 ### 12.1 CLI Test (Chạy ngầm)
 Tự động chạy pipeline hair transfer với ảnh ngẫu nhiên từ FFHQ.
@@ -268,8 +273,8 @@ python backend/tests/test_cli_ffhq.py
 ```
 - Kết quả lưu tại: `backend/output/cli_test_result.png`
 
-### 12.2 UI Test (Giao diện trực quan)
-Bật giao diện web nhỏ gọn để chọn ảnh và chạy thử.
+### 12.2 UI Test (Giao diện trực quan - Gradio)
+Bật giao diện web nhỏ gọn để chọn ảnh và chạy thử (Dùng để debug nhanh nếu không muốn chạy React).
 ```bash
 python backend/tests/test_ui_gradio.py
 ```

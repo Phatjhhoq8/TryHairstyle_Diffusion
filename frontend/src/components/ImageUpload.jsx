@@ -1,8 +1,15 @@
 import React, { useRef, useState } from 'react';
 
-const ImageUpload = ({ label, onImageSelected, id }) => {
+const ImageUpload = ({ label, onImageSelected, id, externalFile }) => {
     const [preview, setPreview] = useState(null);
     const inputRef = useRef(null);
+
+    // Handle external file changes (e.g. from Random button)
+    React.useEffect(() => {
+        if (externalFile) {
+            handleFile(externalFile);
+        }
+    }, [externalFile]);
 
     const handleFile = (file) => {
         if (file && file.type.startsWith('image/')) {

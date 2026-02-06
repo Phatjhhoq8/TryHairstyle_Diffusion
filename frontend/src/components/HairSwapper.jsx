@@ -7,7 +7,7 @@ const API_BASE_URL = 'http://localhost:8000';
 const HairSwapper = () => {
     const [targetFile, setTargetFile] = useState(null);
     const [referenceFile, setReferenceFile] = useState(null);
-    const [prompt, setPrompt] = useState("a hairstyle transfer");
+    const [prompt, setPrompt] = useState("high quality, realistic hairstyle");
     const [resultUrl, setResultUrl] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -45,6 +45,38 @@ const HairSwapper = () => {
             if (intervalId) clearInterval(intervalId);
         };
     }, [taskId, isLoading]);
+
+    // Helper to convert URL to File object
+    const urlToFile = async (url, filename, mimeType) => {
+        const res = await fetch(url);
+        const buf = await res.arrayBuffer();
+        return new File([buf], filename, { type: mimeType });
+    };
+
+    const handleRandomPair = async () => {
+        setIsLoading(true);
+        try {
+            const res = await fetch(`${API_BASE_URL}/random-pair`);
+            const data = await res.json();
+
+            if (data.target_url) {
+                const targetUrl = `${API_BASE_URL}${data.target_url}`;
+                const file = await urlToFile(targetUrl, "random_face.png", "image/png");
+                setTargetFile(file);
+            }
+
+            if (data.hair_url) {
+                const hairUrl = `${API_BASE_URL}${data.hair_url}`;
+                const file = await urlToFile(hairUrl, "random_hair.png", "image/png");
+                setReferenceFile(file);
+            }
+        } catch (err) {
+            console.error(err);
+            setError("Failed to load random images");
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
     const handleGenerate = async () => {
         if (!targetFile || !referenceFile) {
@@ -98,16 +130,28 @@ const HairSwapper = () => {
 
                     {/* Images Row */}
                     <div className="gradio-block p-4 bg-[#1f2937]">
+                        <div className="flex justify-between items-center mb-3">
+                            <span className="gradio-label text-base">Input Images</span>
+                            <button
+                                onClick={handleRandomPair}
+                                disabled={isLoading}
+                                className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded border border-gray-600 transition-colors"
+                            >
+                                🎲 Random Pair
+                            </button>
+                        </div>
                         <div className="grid grid-cols-2 gap-4">
                             <ImageUpload
                                 id="target-upload"
                                 label="Target Face"
                                 onImageSelected={setTargetFile}
+                                externalFile={targetFile}
                             />
                             <ImageUpload
                                 id="ref-upload"
                                 label="Reference Hair"
                                 onImageSelected={setReferenceFile}
+                                externalFile={referenceFile}
                             />
                         </div>
                     </div>
@@ -129,7 +173,7 @@ const HairSwapper = () => {
                         disabled={isLoading || !targetFile || !referenceFile}
                         className="btn-gradio-primary w-full py-3 text-lg"
                     >
-                        {isLoading ? 'Running...' : 'Run'}
+                        {isLoading ? 'Running...' : 'Run Transfer 🚀'}
                     </button>
 
                 </div>

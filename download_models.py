@@ -83,13 +83,18 @@ def download_file(repo_id, filename, target_dir, local_filename=None):
             # But hf_hub_download with local_dir preserves structure. 
             # Simplified: Use os.rename if needed, or rely on hf_hub handling.
             # To strictly rename:
-            full_downloaded_path = Path(file_path)
-            if full_downloaded_path.name != local_filename:
-                 # Check if we need to move it
-                 if not destination.exists():
-                     import shutil
-                     shutil.copy(full_downloaded_path, destination)
-                     print(f"  -> Used local copy: {destination}")
+            # Rename/Move logic:
+            full_downloaded_path = Path(file_path).resolve()
+            destination = (target_dir / local_filename).resolve()
+            
+            # If the downloaded file is not at the destination (e.g. it's in a subdir 'models/')
+            if full_downloaded_path != destination:
+                 if not destination.parent.exists():
+                     destination.parent.mkdir(parents=True)
+                 
+                 import shutil
+                 print(f"  -> Moving from {full_downloaded_path} to {destination}")
+                 shutil.copy(full_downloaded_path, destination)
 
         print("✅ Done.")
     except Exception as e:
