@@ -9,35 +9,39 @@
 
 ## 2. Tạo và kích hoạt môi trường ảo
 
+```bash
 python -m venv venv_wsl
 source venv_wsl/bin/activate
+```
 
-Nâng cấp pip & Cài đặt thư viện:
+--------------------------------------------------
+
+## 3. Cài đặt Môi trường (Theo đúng thứ tự để tránh lỗi)
+
+**Bước 1: Cài đặt PyTorch & xFormers (BẮT BUỘC TRƯỚC)**
+*Lưu ý: Cần cài PyTorch hỗ trợ CUDA 12.1 trở lên cho RTX 3060.*
+
+```bash
+# Gỡ bản cũ nếu có
+pip uninstall torch torchvision torchaudio xformers -y
+
+# 1. Cài PyTorch (Stable 2.5.1 + CUDA 12.4)
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+
+# 2. Cài xFormers (Tương thích với PyTorch đã cài)
+pip install xformers
+```
+
+**Bước 2: Cài đặt các thư viện dự án (Dependencies)**
+
 ```bash
 pip install --upgrade pip
 pip install -r backend/requirements.txt
 ```
 
-*Lưu ý: Nếu cần hỗ trợ CUDA (GPU), hãy cài PyTorch riêng ở bước 3.*
-
 --------------------------------------------------
 
-## 3. Cài đặt PyTorch (Stable 2.5.1 + CUDA 11.8)
-*Quan trọng: Phiên bản này hỗ trợ tốt nhất cho Diffusers 0.36.0 và card NVIDIA.*
-
-```bash
-pip install torch==2.5.1+cu118 torchvision==0.20.1+cu118 torchaudio==2.5.1+cu118 --index-url https://download.pytorch.org/whl/cu118
-```
-
---------------------------------------------------
-
-## 4. Cài đặt xFormers (tối ưu bộ nhớ & tốc độ)
-
-pip install xformers==0.0.33.post2 --no-deps
-
---------------------------------------------------
-
-## 5. Kiểm tra PyTorch & CUDA
+## 4. Kiểm tra PyTorch & CUDA
 
 python - << 'EOF'
 import torch, torchvision, torchaudio
@@ -52,7 +56,7 @@ Nếu cuda: True và hiện tên GPU → cài đặt thành công.
 
 --------------------------------------------------
 
-## 6. Tải dữ liệu (Dataset)
+## 5. Tải dữ liệu (Dataset)
 
 FFHQ (khuôn mặt chất lượng cao):
 https://drive.google.com/drive/folders/1tZUcXDBeOibC6jcMCtgRRz67pzrAHeHL
@@ -62,7 +66,7 @@ https://psh01087.github.io/K-Hairstyle/
 
 --------------------------------------------------
 
-## 7. Chuẩn bị HuggingFace CLI
+## 6. Chuẩn bị HuggingFace CLI
 
 pip install huggingface_hub
 huggingface-cli login
@@ -71,7 +75,7 @@ huggingface-cli login
 
 --------------------------------------------------
 
-## 8. Tải Model & Thư viện (QUAN TRỌNG)
+## 7. Tải Model & Thư viện (QUAN TRỌNG)
 
 ### Cách 1: Tự động (Khuyên dùng)
 Mình đã chuẩn bị sẵn script để tải toàn bộ model cần thiết.
@@ -147,17 +151,16 @@ Tải thủ công các file sau:
 
 --------------------------------------------------
 
-## 9. Ghi chú
+## 8. Ghi chú
 - BiSeNet: tách mask tóc cho Inpainting
 - IP-Adapter FaceID: giữ nguyên khuôn mặt
 - IP-Adapter Plus: copy kiểu tóc
 --------------------------------------------------
 
-## 10. Troubleshooting (Các lỗi thường gặp và cách khắc phục)
+## 9. Troubleshooting (Các lỗi thường gặp và cách khắc phục)
 
-Chi tiết đầy đủ xem tại file: [TROUBLESHOOTING.md](./TROUBLESHOOTING.md)
 
-### 10.1 Lỗi Xung đột thư viện (Transformers vs Diffusers)
+### 9.1 Lỗi Xung đột thư viện (Transformers vs Diffusers)
 - **Lỗi:** `ImportError: cannot import name 'MT5Tokenizer'` hoặc `Qwen2_5_VL...`
 - **Nguyên nhân:** Xung đột phiên bản giữa `transformers`, `diffusers`, và `sentencepiece`.
 - **Cách sửa:** Sử dụng phiên bản "điểm ngọt" đã test kỹ:
@@ -165,22 +168,22 @@ Chi tiết đầy đủ xem tại file: [TROUBLESHOOTING.md](./TROUBLESHOOTING.m
     pip install transformers==4.49.0
     ```
 
-### 10.2 Lỗi Runtime Crash `NoneType` (IP-Adapter)
+### 9.2 Lỗi Runtime Crash `NoneType` (IP-Adapter)
 - **Lỗi:** `AttributeError: 'NoneType' object has no attribute 'image_projection_layers'`
 - **Nguyên nhân:** Model IP-Adapter không load được nhưng code vẫn cố dùng.
 - **Cách sửa:** Đã patch lại code `diffusion.py` để tự động bỏ qua IP-Adapter nếu load lỗi, giúp app không bị crash.
 
-### 10.3 Lỗi Lệch kiểu dữ liệu (FP16 vs FP32)
+### 9.3 Lỗi Lệch kiểu dữ liệu (FP16 vs FP32)
 - **Lỗi:** `RuntimeError: Input type (HalfTensor) and weight type (FloatTensor)...`
 - **Nguyên nhân:** Model chính chạy FP16 nhưng IP-Adapter chạy FP32.
 - **Cách sửa:** Đã update code để ép kiểu toàn bộ pipeline sang FP16.
 
-### 10.4 Các lỗi cũ hơn
+### 9.4 Các lỗi cũ hơn
 - **Lỗi `module 'torch' has no attribute 'xpu'`**: Do `accelerate` mới không tương thích Windows. Sửa bằng `pip install accelerate==0.26.0` (hoặc mới hơn nếu dùng WSL).
 - **Lỗi `InstantX... ip-adapter.bin not found`**: Sai đường dẫn model. Sửa bằng cách dùng đường dẫn tuyệt đối.
 --------------------------------------------------
 
-## 11. Hướng dẫn Chạy Hệ thống (Run App)
+## 10. Hướng dẫn Chạy Hệ thống (Run App)
 
 ### Cách 1: Chạy bằng Docker Compose (Khuyên dùng cho Production)
 Dễ dàng nhất vì đã bao gồm Redis, API, và Worker.
@@ -262,18 +265,18 @@ Frontend sẽ chạy tại: `http://localhost:5173`
 
 --------------------------------------------------
 
-## 12. Chạy Kiểm Thử (Verification Scripts)
+## 11. Chạy Kiểm Thử (Verification Scripts)
 
 Để kiểm tra nhanh hệ thống (Backend Logic), bạn có thể dùng script CLI:
 
-### 12.1 CLI Test (Chạy ngầm)
+### 11.1 CLI Test (Chạy ngầm)
 Tự động chạy pipeline hair transfer với ảnh ngẫu nhiên từ FFHQ.
 ```bash
 python backend/tests/test_cli_ffhq.py
 ```
 - Kết quả lưu tại: `backend/output/cli_test_result.png`
 
-### 12.2 UI Test (Giao diện trực quan - Gradio)
+### 11.2 UI Test (Giao diện trực quan - Gradio)
 Bật giao diện web nhỏ gọn để chọn ảnh và chạy thử (Dùng để debug nhanh nếu không muốn chạy React).
 ```bash
 python backend/tests/test_ui_gradio.py
