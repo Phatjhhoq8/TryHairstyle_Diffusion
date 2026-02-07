@@ -58,8 +58,24 @@ Thumbs.db
 tmp/
 temp/
 
-# ===== Environment Variables =====
+# ===== Environment Variables / Secrets =====
 .env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# ===== Docker Sensitive Files =====
+docker-compose.override.yml
+*.pem
+*.key
+*.crt
+
+# ===== API Keys / Tokens =====
+**/secrets/
+*.token
+huggingface_token.txt
 
 # ===== Frontend =====
 node_modules/

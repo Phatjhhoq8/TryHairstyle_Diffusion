@@ -78,7 +78,6 @@ huggingface-cli login
 ## 7. Tải Model & Thư viện (QUAN TRỌNG)
 
 ### Cách 1: Tự động (Khuyên dùng)
-Mình đã chuẩn bị sẵn script để tải toàn bộ model cần thiết.
 
 1. Đảm bảo đã kích hoạt môi trường ảo:
 ```bash
@@ -185,15 +184,60 @@ Tải thủ công các file sau:
 
 ## 10. Hướng dẫn Chạy Hệ thống (Run App)
 
-### Cách 1: Chạy bằng Docker Compose (Khuyên dùng cho Production)
-Dễ dàng nhất vì đã bao gồm Redis, API, và Worker.
+### Cách 1: Chạy bằng Docker Compose (Khuyên dùng cho Production/Deploy)
 
+> **Yêu cầu hệ thống:**
+> - Docker + Docker Compose (v2.0+)
+> - NVIDIA Container Toolkit (cho GPU support)
+> - GPU NVIDIA với ít nhất 12GB VRAM
+
+#### Bước 1: Chuẩn bị Models
+Đảm bảo thư mục `backend/models/` đã có đầy đủ models (xem Section 7).
+
+#### Bước 2: Cấu hình Environment
 ```bash
-# Bật Docker Desktop trước, sau đó chạy:
-docker compose up -d backend worker redis
+# Copy file env mẫu
+cp .env.example .env
 ```
-- API sẽ chạy tại: `http://localhost:8000`
-- Swagger UI: `http://localhost:8000/docs`
+
+#### Bước 3: Build Docker Images
+```bash
+docker compose build
+```
+
+#### Bước 4: Khởi động toàn bộ hệ thống
+```bash
+# Chạy tất cả services (Redis, Backend, Celery, Frontend)
+docker compose up -d
+
+# Xem logs
+docker compose logs -f
+
+# Kiểm tra trạng thái
+docker compose ps
+```
+
+#### Truy cập:
+- **Frontend:** `http://localhost:3000`
+- **API Swagger:** `http://localhost:8000/docs`
+
+#### Dừng hệ thống:
+```bash
+docker compose down
+```
+
+#### Troubleshooting Docker:
+```bash
+# Xem logs của service cụ thể
+docker compose logs backend
+docker compose logs celery-worker
+
+# Restart một service
+docker compose restart backend
+
+# Rebuild và restart
+docker compose up -d --build
+```
 
 ---
 
