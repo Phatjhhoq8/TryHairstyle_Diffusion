@@ -44,7 +44,7 @@ def main():
     # Use relative paths from project root (simple and cross-platform)
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     dataset_root = os.path.join(base_dir, "backend", "data", "dataset", "ffhq")
-    output_dir = os.path.join(base_dir, "backend", "output")
+    output_dir = str(OUTPUT_DIR)
     output_path = os.path.join(output_dir, "cli_test_result.png")
     
     if not os.path.exists(output_dir):

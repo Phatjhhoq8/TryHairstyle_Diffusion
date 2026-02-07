@@ -5,7 +5,7 @@ import uuid
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from backend.app.config import settings, OUTPUT_DIR, BACKEND_DIR
+from backend.app.config import settings, OUTPUT_DIR, UPLOAD_DIR, BACKEND_DIR
 from backend.app.schemas import HairTransferResponse, TaskStatusResponse
 from backend.app.tasks import process_hair_transfer, celery_app
 from celery.result import AsyncResult
@@ -21,11 +21,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Directories
-UPLOAD_DIR = BACKEND_DIR / "uploads"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# Directories (Now managed in config.py)
 
 # Mount Static Files (to serve results)
+# Specific mount for Output (data/output)
+app.mount("/static/output", StaticFiles(directory=OUTPUT_DIR), name="static_output")
+# Specific mount for Uploads (data/uploads) - Needed if we want to serve uploaded images back
+app.mount("/static/uploads", StaticFiles(directory=UPLOAD_DIR), name="static_uploads")
+# General mount for other backend files (like default uploads/dataset if in backend)
 app.mount("/static", StaticFiles(directory=BACKEND_DIR), name="static")
 
 @app.post("/upload", tags=["Upload"])
@@ -46,7 +49,8 @@ async def upload_image(file: UploadFile = File(...)):
 async def generate_hair(
     face_image: UploadFile = File(...),
     hair_image: UploadFile = File(...),
-    description: str = Form("high quality realistic hair")
+    description: str = Form("high quality realistic hair"),
+    use_refiner: bool = Form(False)
 ):
     """
     Endpoint tương thích với React Frontend.
@@ -66,7 +70,7 @@ async def generate_hair(
         shutil.copyfileobj(hair_image.file, f)
         
     # 2. Trigger Celery Task
-    task = process_hair_transfer.delay(str(face_path), str(hair_path), description)
+    task = process_hair_transfer.delay(str(face_path), str(hair_path), description, use_refiner)
     
     return {
         "task_id": task.id,
@@ -75,7 +79,7 @@ async def generate_hair(
     }
 
 @app.post("/transfer", response_model=HairTransferResponse, tags=["Core"])
-async def transfer_hair(user_img: str, hair_img: str, prompt: str = "high quality realistic hair"):
+async def transfer_hair(user_img: str, hair_img: str, prompt: str = "high quality realistic hair", use_refiner: bool = False):
     """
     API cũ (giữ lại để tương thích CLI cũ).
     """
@@ -85,7 +89,7 @@ async def transfer_hair(user_img: str, hair_img: str, prompt: str = "high qualit
     if not os.path.exists(user_path) or not os.path.exists(hair_path):
         raise HTTPException(status_code=404, detail="Image file not found")
     
-    task = process_hair_transfer.delay(user_path, hair_path, prompt)
+    task = process_hair_transfer.delay(user_path, hair_path, prompt, use_refiner)
     
     return {
         "task_id": task.id,

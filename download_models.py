@@ -28,11 +28,18 @@ MODELS = {
     },
 
     # --- SDXL (Advanced/Future Use) ---
-    # "sdxl_base": {
-    #     "repo_id": "stabilityai/stable-diffusion-xl-base-1.0",
-    #     "type": "model",
-    #     "path": MODELS_DIR / "stable-diffusion" / "sd_xl_base_1.0"
-    # },
+    "sdxl_base": {
+        "repo_id": "diffusers/stable-diffusion-xl-1.0-inpainting-0.1",
+        "type": "model",
+        "path": MODELS_DIR / "stable-diffusion" / "sd_xl_inpainting"
+    },
+
+    "sdxl_refiner": {
+        "repo_id": "stabilityai/stable-diffusion-xl-refiner-1.0",
+        "type": "file",
+        "filename": "sd_xl_refiner_1.0_0.9vae.safetensors",
+        "path": MODELS_DIR
+    },
     
     "controlnet_depth": {
         "repo_id": "diffusers/controlnet-depth-sdxl-1.0",
@@ -51,6 +58,7 @@ MODELS = {
         "repo_id": "h94/IP-Adapter", 
         "type": "file",
         "filename": "sdxl_models/ip-adapter-plus_sdxl_vit-h.bin",
+        "local_filename": "ip-adapter-plus_sdxl_vit-h.bin",
         "path": MODELS_DIR / "ip_adapter_hair"
     },
 

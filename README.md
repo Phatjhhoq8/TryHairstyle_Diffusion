@@ -96,23 +96,23 @@ Script sẽ tự động tải:
 
 ### Cách 2: Tải Thủ công (Nếu script lỗi)
 
-### 8.1 Stable Diffusion v1.5
+### 8.1 Stable Diffusion XL Inpainting (1024x1024)
 
 mkdir -p models/stable-diffusion
 cd models/stable-diffusion
 
-hf download runwayml/stable-diffusion-v1-5 \
-  --local-dir sd15
+hf download diffusers/stable-diffusion-xl-1.0-inpainting-0.1 \
+  --local-dir sd_xl_inpainting
 
 --------------------------------------------------
 
-### 8.2 ControlNet Depth (giữ hình dạng đầu)
+### 8.2 ControlNet Depth SDXL
 
-mkdir -p models/controlnet
-cd models/controlnet
+mkdir -p models/controlnet_depth
+cd models/controlnet_depth
 
-hf download lllyasviel/control_v11f1p_sd15_depth \
-  --local-dir depth
+hf download diffusers/controlnet-depth-sdxl-1.0 \
+  --local-dir .
 
 --------------------------------------------------
 

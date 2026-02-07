@@ -8,6 +8,7 @@ const HairSwapper = () => {
     const [targetFile, setTargetFile] = useState(null);
     const [referenceFile, setReferenceFile] = useState(null);
     const [prompt, setPrompt] = useState("high quality, realistic hairstyle");
+    const [useRefiner, setUseRefiner] = useState(false);
     const [resultUrl, setResultUrl] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState(null);
@@ -92,6 +93,7 @@ const HairSwapper = () => {
         formData.append('face_image', targetFile);
         formData.append('hair_image', referenceFile);
         formData.append('description', prompt);
+        formData.append('use_refiner', useRefiner);
 
         try {
             const response = await fetch(`${API_BASE_URL}/generate`, {
@@ -165,6 +167,25 @@ const HairSwapper = () => {
                             value={prompt}
                             onChange={(e) => setPrompt(e.target.value)}
                         />
+                    </div>
+
+                    {/* Settings Row */}
+                    <div className="gradio-block p-4 bg-[#1f2937] flex items-center gap-3">
+                        <input
+                            type="checkbox"
+                            id="useRefiner"
+                            checked={useRefiner}
+                            onChange={(e) => setUseRefiner(e.target.checked)}
+                            className="w-5 h-5 text-blue-600 rounded focus:ring-blue-500"
+                        />
+                        <div className="flex flex-col">
+                            <label htmlFor="useRefiner" className="text-gray-200 font-medium cursor-pointer">
+                                High Quality Mode (SDXL Refiner)
+                            </label>
+                            <span className="text-xs text-gray-400">
+                                Slower (30-50%) but much better hair details.
+                            </span>
+                        </div>
                     </div>
 
                     {/* Button */}
