@@ -74,7 +74,7 @@ def get_random_ffhq_image():
     img_path = os.path.join(folder_path, random.choice(files))
     return Image.open(img_path).convert("RGB")
 
-def process_pipeline(user_image, hair_image, prompt):
+def process_pipeline(user_image, hair_image, prompt, use_refiner):
     if user_image is None or hair_image is None:
         return None, "Please select both images."
     
@@ -103,16 +103,18 @@ def process_pipeline(user_image, hair_image, prompt):
         hair_mask = mask_service.get_mask(user_image, target_class=17)
         
         # 3. Depth (Dummy for now to avoid crash if transformers issues persist, 
-        # or use simple grayscale as fallback which works for SD1.5 Inpaint pipe)
+        # or use simple grayscale as fallback which works for S1.5 Inpaint pipe)
         depth_map = ImageOps.grayscale(user_image)
         
         # 4. Diffusion
+        print(f"Running Generation (Refiner: {use_refiner})...", flush=True)
         result = diffusion_service.generate(
             base_image=user_image,
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_image,
-            prompt=prompt
+            prompt=prompt,
+            use_refiner=use_refiner
         )
         
         return result, status_msg
@@ -140,6 +142,7 @@ with gr.Blocks(title="TryHairStyle - FFHQ Test") as demo:
         with gr.Column():
             gr.Markdown("### 2. Settings")
             prompt_input = gr.Textbox(label="Prompt", value="high quality, realistic hairstyle")
+            refiner_chk = gr.Checkbox(label="Use SDXL Refiner (High Quality)", value=False)
             run_btn = gr.Button("🚀 Run Transfer", variant="primary")
             
         with gr.Column():
@@ -157,12 +160,12 @@ with gr.Blocks(title="TryHairStyle - FFHQ Test") as demo:
     
     run_btn.click(
         fn=process_pipeline,
-        inputs=[user_input, hair_input, prompt_input],
+        inputs=[user_input, hair_input, prompt_input, refiner_chk],
         outputs=[output_image, log_output]
     )
 
 if __name__ == "__main__":
     # Launch on localhost
     print("Launching Gradio UI...", flush=True)
-    # Using port 7861 to avoid conflict with stuck process
-    demo.launch(server_name="127.0.0.1", server_port=7861, share=False)
+    # Using port 7862 to avoid conflict with stuck process
+    demo.launch(server_name="127.0.0.1", server_port=7862, share=False)

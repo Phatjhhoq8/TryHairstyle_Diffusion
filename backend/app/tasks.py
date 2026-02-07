@@ -18,23 +18,43 @@ celery_app = Celery(
     backend=settings.REDIS_URL
 )
 
-# Global Service Instances (Lazy Loading recommended usually, but initializing here for simplicity in worker)
-# Worker process will load these ONCE when starting.
-print("Loading AI Models...")
-try:
-    face_service = FaceInfoService()
-    mask_service = SegmentationService()
-    diffusion_service = HairDiffusionService()
-    print("AI Models Loaded Successfully!")
-except Exception as e:
-    print(f"Error loading models: {e}")
-    # In production, we might want to fail fast or handle this gracefully
-    face_service = None
+# Global Service Cache (Lazy Load)
+_SERVICES = {
+    "face": None,
+    "mask": None,
+    "diffusion": None,
+    "loaded": False
+}
+
+def get_services():
+    """Lazy load services to ensure they run in the worker process (safe for CUDA/Celery)"""
+    if _SERVICES["loaded"]:
+        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"]
+        
+    print(">>> Initializing AI Models in Worker Process...")
+    try:
+        if not _SERVICES["face"]:
+             _SERVICES["face"] = FaceInfoService()
+        if not _SERVICES["mask"]:
+             _SERVICES["mask"] = SegmentationService()
+        if not _SERVICES["diffusion"]:
+             _SERVICES["diffusion"] = HairDiffusionService()
+             
+        _SERVICES["loaded"] = True
+        print(">>> AI Models Loaded Successfully!")
+        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"]
+    except Exception as e:
+        print(f"Critical Error loading models: {e}")
+        import traceback
+        traceback.print_exc()
+        raise e
 
 @celery_app.task(bind=True)
-def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str):
-    if not face_service:
-        return {"status": "FAILURE", "error": "Models not loaded properly"}
+def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, use_refiner: bool = False):
+    try:
+        face_service, mask_service, diffusion_service = get_services()
+    except Exception as e:
+        return {"status": "FAILURE", "error": f"Model Load Failed: {str(e)}"}
 
     try:
         # Update state
@@ -95,7 +115,8 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_pil,
-            prompt=prompt
+            prompt=prompt,
+            use_refiner=use_refiner
         )
         
         # 6. Save Output

@@ -6,25 +6,22 @@ from pathlib import Path
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 BACKEND_DIR = BASE_DIR / "backend"
 MODELS_DIR = BACKEND_DIR / "models"
-OUTPUT_DIR = BACKEND_DIR / "output"
+OUTPUT_DIR = BACKEND_DIR / "data" / "output"
+UPLOAD_DIR = BACKEND_DIR / "data" / "uploads"
 
-# Ensure output directory exists
+# Ensure directories exist
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # Model Paths
 class ModelPaths:
     # Stable Diffusion XL
-    SDXL_BASE = "stabilityai/stable-diffusion-xl-base-1.0" # Tải online hoặc trỏ vào local nếu đã tải full
-    # Nếu dùng file safetensors đơn lẻ thì code load phải khác, ở đây giả định dùng diffusers repo structure
-    # Hoặc trỏ vào folder đã download script:
-    # SDXL_BASE = str(MODELS_DIR / "stable-diffusion" / "sd_xl_base_1.0.safetensors") 
-    
-    # Ở đây ta sẽ dùng repo id HuggingFace vì trong script download trước đó 
-    # nó có vẻ download dạng cache hoặc folder diffusers. 
-    # Tuy nhiên để tối ưu tốc độ và offline, ta nên trỏ vào folder local nếu có.
-    # Dựa trên `ls` trước đó: backend/models/sd_xl_refiner... (chỉ thấy refiner?)
-    # Tạm thời ta set default là repo ID để diffusers tự handle cache.
-    SDXL_REPO = "stabilityai/stable-diffusion-xl-base-1.0"
+    # Stable Diffusion XL
+    SDXL_BASE = str(MODELS_DIR / "stable-diffusion" / "sd_xl_inpainting")
+    # SDXL_BASE = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1" # Fallback repo id if local missing
+    SDXL_REFINER = str(MODELS_DIR / "sd_xl_refiner_1.0_0.9vae.safetensors")
+
+    # SDXL_REPO = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
     
     # SD1.5 Paths (Fallback)
     SD15_BASE = str(MODELS_DIR / "stable-diffusion" / "sd15")
@@ -42,6 +39,9 @@ class ModelPaths:
     
     # Specific file for SD1.5 IP Adapter
     IP_ADAPTER_SD15_PATH = str(MODELS_DIR / "ip_adapter_hair" / "ip-adapter-plus_sd15.bin")
+    # Specific file for SDXL IP Adapter
+    IP_ADAPTER_SDXL_PATH = str(MODELS_DIR / "ip_adapter_hair" / "ip-adapter-plus_sdxl_vit-h.bin")
+    IMAGE_ENCODER_PATH = str(MODELS_DIR / "image_encoder")
 
     # Face Packing (cho InsightFace)
     ANTELOPEV2_PACK = str(MODELS_DIR / "antelopev2")
