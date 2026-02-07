@@ -1,0 +1,19 @@
+# Node modules (rebuild in container)
+node_modules/
+
+# Build output (rebuild in container)
+dist/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Logs
+*.log
+
+# Environment
+.env*

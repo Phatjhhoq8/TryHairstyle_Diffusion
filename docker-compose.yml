@@ -1,0 +1,85 @@
+services:
+  # Redis - Message Broker cho Celery
+  redis:
+    image: redis:7-alpine
+    container_name: tryhair_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Backend - FastAPI Server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tryhair_backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/models:/workspace/backend/models:ro
+      - ./backend/data:/workspace/backend/data
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - HUGFACE_TOKEN=${HUGFACE_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=all
+    depends_on:
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+    restart: unless-stopped
+
+  # Celery Worker - Xử lý AI Tasks
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: tryhair_celery
+    command: celery -A backend.app.tasks worker --loglevel=info --pool=solo
+    volumes:
+      - ./backend/models:/workspace/backend/models:ro
+      - ./backend/data:/workspace/backend/data
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - HUGFACE_TOKEN=${HUGFACE_TOKEN}
+      - NVIDIA_VISIBLE_DEVICES=all
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+    restart: unless-stopped
+
+  # Frontend - React App (Nginx)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: tryhair_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  redis_data:
