@@ -19,21 +19,32 @@ class FaceInfoService:
         )
         self.app.prepare(ctx_id=0, det_size=(640, 640))
 
-    def analyze(self, image_cv2):
+    def analyze_all(self, image_cv2):
         """
-        Phân tích khuôn mặt từ ảnh OpenCV (BGR).
-        Trả về face_info của khuôn mặt lớn nhất tìm thấy.
+        Phân tích TẤT CẢ khuôn mặt từ ảnh OpenCV (BGR).
+        Trả về list face_info, sắp xếp theo kích thước (lớn nhất đầu tiên).
         """
         faces = self.app.get(image_cv2)
         if len(faces) == 0:
-            return None
+            return []
         
-        # Sắp xếp lấy khuôn mặt to nhất (theo diện tích bbox)
+        # Sắp xếp theo diện tích bbox (lớn → nhỏ)
         faces = sorted(
             faces, 
             key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]), 
             reverse=True
         )
+        return faces
+
+    def analyze(self, image_cv2):
+        """
+        Phân tích khuôn mặt từ ảnh OpenCV (BGR).
+        Trả về face_info của khuôn mặt lớn nhất tìm thấy.
+        (Backward compatible - dùng analyze_all() internally)
+        """
+        faces = self.analyze_all(image_cv2)
+        if len(faces) == 0:
+            return None
         return faces[0]
 
     def get_face_embedding(self, face_info):

@@ -65,11 +65,11 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         user_pil = Image.fromarray(cv2.cvtColor(user_cv2, cv2.COLOR_BGR2RGB))
         hair_pil = Image.open(hair_img_path).convert("RGB")
         
-        # 2. Face Analysis
+        # 2. Face Analysis (phát hiện TẤT CẢ khuôn mặt)
         self.update_state(state='PROCESSING', meta={'step': 'Face Analysis'})
         
         # Auto-rotate logic: Try 0, 90, 180, 270 degrees
-        face_info = None
+        faces = []
         for angle in [None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
             if angle is not None:
                 print(f"No face found. Rotating image {angle}...")
@@ -77,12 +77,12 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
                 # Update user_pil as well to match user_cv2 for later steps
                 user_pil = Image.fromarray(cv2.cvtColor(user_cv2, cv2.COLOR_BGR2RGB))
             
-            face_info = face_service.analyze(user_cv2)
-            if face_info:
-                print("Face detected successfully.")
+            faces = face_service.analyze_all(user_cv2)
+            if faces:
+                print(f"Detected {len(faces)} face(s) successfully.")
                 break
         
-        if not face_info:
+        if not faces:
             return {"status": "FAILURE", "error": "No face detected in user image (tried multiple orientations)"}
         
         # 3. Segmentation (Create Mask)

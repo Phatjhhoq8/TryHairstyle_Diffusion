@@ -11,6 +11,7 @@ const HairSwapper = () => {
     const [useRefiner, setUseRefiner] = useState(false);
     const [resultUrl, setResultUrl] = useState(null);
     const [isLoading, setIsLoading] = useState(false);
+    const [isLoadingRandom, setIsLoadingRandom] = useState(false); // Loading riêng cho random
     const [error, setError] = useState(null);
     const [taskId, setTaskId] = useState(null);
 
@@ -55,7 +56,8 @@ const HairSwapper = () => {
     };
 
     const handleRandomPair = async () => {
-        setIsLoading(true);
+        setIsLoadingRandom(true);
+        setError(null);
         try {
             const res = await fetch(`${API_BASE_URL}/random-pair`);
             const data = await res.json();
@@ -75,7 +77,7 @@ const HairSwapper = () => {
             console.error(err);
             setError("Failed to load random images");
         } finally {
-            setIsLoading(false);
+            setIsLoadingRandom(false);
         }
     };
 
@@ -136,10 +138,10 @@ const HairSwapper = () => {
                             <span className="gradio-label text-base">Input Images</span>
                             <button
                                 onClick={handleRandomPair}
-                                disabled={isLoading}
-                                className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded border border-gray-600 transition-colors"
+                                disabled={isLoadingRandom || isLoading}
+                                className="text-xs bg-gray-700 hover:bg-gray-600 text-white px-2 py-1 rounded border border-gray-600 transition-colors disabled:opacity-50"
                             >
-                                🎲 Random Pair
+                                {isLoadingRandom ? '⏳ Loading...' : '🎲 Random Pair'}
                             </button>
                         </div>
                         <div className="grid grid-cols-2 gap-4">

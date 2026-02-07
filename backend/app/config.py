@@ -16,7 +16,6 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 # Model Paths
 class ModelPaths:
     # Stable Diffusion XL
-    # Stable Diffusion XL
     SDXL_BASE = str(MODELS_DIR / "stable-diffusion" / "sd_xl_inpainting")
     # SDXL_BASE = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1" # Fallback repo id if local missing
     SDXL_REFINER = str(MODELS_DIR / "sd_xl_refiner_1.0_0.9vae.safetensors")
