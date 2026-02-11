@@ -7,6 +7,9 @@ import time
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+# CRITICAL: Import torch patch BEFORE any diffusers/transformers imports!
+from backend.app.utils import torch_patch  # noqa: F401
+
 def main():
     print(">>> Starting Hair Transfer CLI Test (FFHQ Dataset)", flush=True)
     

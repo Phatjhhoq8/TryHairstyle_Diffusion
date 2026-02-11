@@ -7,6 +7,9 @@ import time
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+# CRITICAL: Import torch patch BEFORE any diffusers/transformers imports!
+from backend.app.utils import torch_patch  # noqa: F401
+
 def main():
     print(">>> Starting Hair Transfer CLI Test (FFHQ Dataset) - WITH REFINER", flush=True)
     
@@ -29,7 +32,7 @@ def main():
         print(f"Warning: Could not import HairDiffusionService ({e}).", flush=True)
         return
 
-    print(">>> Imports completed.", flush=True)
+
     
     # 1. Setup Data Paths
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -70,12 +73,17 @@ def main():
     # 3. Load Models
     print("\n>>> Loading Models...", flush=True)
     try:
+        print("   - limit FaceInfoService...", flush=True)
         face_service = FaceInfoService()
+        print("   - limit SegmentationService...", flush=True)
         mask_service = SegmentationService()
+        print("   - limit HairDiffusionService...", flush=True)
         diffusion_service = HairDiffusionService()
         print(">>> All Models Loaded Successfully!", flush=True)
     except Exception as e:
         print(f"Error loading models: {e}")
+        import traceback
+        traceback.print_exc()
         return
 
     # 4. Run Pipeline with REFINER
@@ -108,11 +116,17 @@ def main():
         print(f"\n>>> Saving Result to {output_path}")
         result_image.save(output_path)
         print("SUCCESS: Pipeline completed.")
+        with open("refiner_error.log", "w") as f:
+            f.write("SUCCESS: Pipeline completed.\n")
         
     except Exception as e:
         print(f"\nFAILURE: Pipeline failed with error: {e}")
         import traceback
         traceback.print_exc()
+        # Write to file
+        with open("refiner_error.log", "w") as f:
+            f.write(f"Error: {e}\n")
+            traceback.print_exc(file=f)
 
 if __name__ == "__main__":
     main()

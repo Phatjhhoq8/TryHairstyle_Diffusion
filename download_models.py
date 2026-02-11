@@ -67,6 +67,23 @@ MODELS = {
         "type": "file",
         "filename": "79999_iter.pth",
         "path": MODELS_DIR / "bisenet"
+    },
+    
+    # --- Face Detection & Embedding (NEW) ---
+    "yolo_face": {
+        "repo_id": "arnabdhar/YOLOv8-Face-Detection",
+        "type": "file",
+        "filename": "model.pt",
+        "local_filename": "yolov8n-face.pt",
+        "path": MODELS_DIR
+    },
+    
+    "adaface": {
+        "type": "gdrive",  # Special type for Google Drive
+        "gdrive_id": "1eUaSHG4pGlIZK7hBkqjyp2fc2epKoBvI",
+        "filename": "adaface_ir101_webface4m.ckpt",
+        "path": MODELS_DIR,
+        "size_mb": 250
     }
 }
 
@@ -126,6 +143,30 @@ def download_model_repo(repo_id, target_dir, allow_patterns=None, ignore_pattern
     except Exception as e:
         print(f"❌ Failed: {e}")
 
+def download_from_gdrive(gdrive_id, filename, target_dir):
+    """Download file from Google Drive using gdown"""
+    print(f"\nDownloading {filename} from Google Drive...")
+    try:
+        import gdown
+    except ImportError:
+        print("Installing gdown...")
+        os.system("pip install gdown")
+        import gdown
+    
+    target_path = target_dir / filename
+    if target_path.exists():
+        print(f"✅ Already exists: {target_path}")
+        return
+    
+    target_dir.mkdir(parents=True, exist_ok=True)
+    url = f"https://drive.google.com/uc?id={gdrive_id}"
+    
+    try:
+        gdown.download(url, str(target_path), quiet=False)
+        print("✅ Done.")
+    except Exception as e:
+        print(f"❌ Failed: {e}")
+
 def main():
     install_libraries()
     
@@ -145,6 +186,9 @@ def main():
         elif config["type"] == "model":
             allow = config.get("allow_patterns", None)
             download_model_repo(config["repo_id"], target_path, allow_patterns=allow)
+        
+        elif config["type"] == "gdrive":
+            download_from_gdrive(config["gdrive_id"], config["filename"], target_path)
             
     print("\n\n🎉 ALL DOWNLOADS COMPLETED!")
     print("Verify your 'backend/models' folder structure.")
