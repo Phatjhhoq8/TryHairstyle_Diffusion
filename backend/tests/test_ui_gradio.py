@@ -1,28 +1,31 @@
 
 import sys
 import os
+print("Importing random/cv2/numpy...", flush=True)
 import random
 import cv2
 import numpy as np
 
-# Monkeypatch for huggingface_hub > 0.23 compatibility with older Gradio/Libs
-import os
-try:
-    import huggingface_hub.constants
-    if not hasattr(huggingface_hub.constants, 'hf_cache_home'):
-        huggingface_hub.constants.hf_cache_home = huggingface_hub.constants.HF_HOME
-except ImportError:
-    pass
-
+print("Importing gradio...", flush=True)
 import gradio as gr
+print("Importing PIL...", flush=True)
 from PIL import Image, ImageOps
 
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+print("Importing backend config...", flush=True)
 from backend.app.config import settings
+
+# Apply patches for diffusers compatibility
+print("Applying torch/diffusers/transformers patches...", flush=True)
+from backend.app.utils import torch_patch
+
+print("Importing face service...", flush=True)
 from backend.app.services.face import FaceInfoService
+print("Importing mask service...", flush=True)
 from backend.app.services.mask import SegmentationService
+print("Importing diffusion service...", flush=True)
 from backend.app.services.diffusion import HairDiffusionService
 
 # Global Services

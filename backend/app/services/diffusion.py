@@ -1,6 +1,58 @@
 
 import os
 import torch
+
+# Monkey-patch cho torch.xpu nếu chưa có (để tương thích diffusers/transformers mới + torch cũ)
+# Lý do: diffusers 0.36+ và transformers 4.48+ kiểm tra torch.xpu nhưng torch < 2.4 không có module này đầy đủ
+if not hasattr(torch, 'xpu') or not hasattr(torch.xpu, 'is_available'):
+    class _DummyXPU:
+        @staticmethod
+        def is_available():
+            return False
+        @staticmethod
+        def device_count():
+            return 0
+        @staticmethod
+        def empty_cache():
+            pass
+        @staticmethod
+        def synchronize():
+            pass
+        @staticmethod
+        def current_device():
+            return 0
+        @staticmethod
+        def memory_allocated(device=None):
+            return 0
+        @staticmethod
+        def max_memory_allocated(device=None):
+            return 0
+        @staticmethod
+        def manual_seed(seed):
+            pass
+        @staticmethod
+        def set_rng_state(state, device=None):
+            pass
+        @staticmethod
+        def get_rng_state(device=None):
+            return None
+        @staticmethod
+        def reset_peak_memory_stats(device=None):
+            pass
+    torch.xpu = _DummyXPU()
+
+# Monkey-patch cho torch.backends.cuda.is_flash_attention_available (cho torch cũ)
+if not hasattr(torch.backends.cuda, 'is_flash_attention_available'):
+    torch.backends.cuda.is_flash_attention_available = lambda: False
+
+# Monkey-patch cho torch.utils.flop_counter._unpack_params (nếu thiếu)
+try:
+    from torch.utils import flop_counter
+    if not hasattr(flop_counter, '_unpack_params'):
+        flop_counter._unpack_params = lambda params: params # Dummy implementation
+except ImportError:
+    pass
+
 import cv2
 import numpy as np
 from PIL import Image
@@ -75,7 +127,7 @@ class HairDiffusionService:
                      text_encoder_2=text_enc_2,  # Only share text_encoder_2
                      tokenizer_2=getattr(self.pipe, 'tokenizer_2', None),
                      vae=self.pipe.vae,
-                     torch_dtype=self.dtype,
+                     torch_dtype=torch.float32,
                      use_safetensors=True
                 )
                 print("DEBUG: Refiner Pipeline Initialized.")
@@ -86,7 +138,7 @@ class HairDiffusionService:
                      text_encoder_2=getattr(self.pipe, 'text_encoder_2', None),
                      tokenizer_2=getattr(self.pipe, 'tokenizer_2', None),
                      vae=self.pipe.vae,
-                     torch_dtype=self.dtype,
+                     torch_dtype=torch.float32,
                      use_safetensors=True
                 )
 
@@ -97,9 +149,8 @@ class HairDiffusionService:
                  else:
                      print(f"   - {name}: {type(module)}")
 
-             print("DEBUG: Moving Refiner UNet to Device (Skipping full pipeline .to() to protect shared components)...")
-             if hasattr(self.refiner, 'unet') and self.refiner.unet:
-                 self.refiner.unet.to(self.device, self.dtype)
+             print("DEBUG: Moving Refiner Pipeline to Device...")
+             self.refiner.to(self.device, self.dtype)
              
              # Also ensure scheduler is compatible if needed, but it's not on device.
              print(">>> Refiner Loaded.")
@@ -304,16 +355,16 @@ class HairDiffusionService:
             if use_refiner and self.refiner:
                  print(">>> Running Refiner...")
                  try:
-                     result = self.refiner(
-                         prompt=prompt,
-                         negative_prompt=negative_prompt,
-                         image=latents[0], # Pass latents from base
-                         # mask_image=mask, # Refiner (Img2Img) doesn't use mask in this flow
-                         num_inference_steps=num_inference_steps,
-                         denoising_start=0.8,
-                         strength=0.99, # Refiner strength
-                         generator=generator
-                     ).images[0]
+                    result = self.refiner(
+                        prompt=prompt,
+                        negative_prompt=negative_prompt,
+                        image=latents, # Pass latents (4D) to Refiner
+                        # mask_image=mask, 
+                        num_inference_steps=num_inference_steps,
+                        denoising_start=0.8,
+                        strength=0.99, 
+                        generator=generator
+                    ).images[0]
                  except Exception as e:
                      print(f"Error in SDXL Refiner generation: {e}")
                      import traceback

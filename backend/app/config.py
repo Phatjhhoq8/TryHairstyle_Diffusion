@@ -44,6 +44,12 @@ class ModelPaths:
 
     # Face Packing (cho InsightFace)
     ANTELOPEV2_PACK = str(MODELS_DIR / "antelopev2")
+    
+    # YOLOv8-Face (cho partial face detection)
+    YOLO_FACE_MODEL = str(MODELS_DIR / "yolov8n-face.pt")
+    
+    # AdaFace (cho profile face embedding)
+    ADAFACE_MODEL = str(MODELS_DIR / "adaface_ir101_webface4m.ckpt")
 
 # App Settings
 class Settings:
