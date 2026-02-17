@@ -2,56 +2,7 @@
 import os
 import torch
 
-# Monkey-patch cho torch.xpu nếu chưa có (để tương thích diffusers/transformers mới + torch cũ)
-# Lý do: diffusers 0.36+ và transformers 4.48+ kiểm tra torch.xpu nhưng torch < 2.4 không có module này đầy đủ
-if not hasattr(torch, 'xpu') or not hasattr(torch.xpu, 'is_available'):
-    class _DummyXPU:
-        @staticmethod
-        def is_available():
-            return False
-        @staticmethod
-        def device_count():
-            return 0
-        @staticmethod
-        def empty_cache():
-            pass
-        @staticmethod
-        def synchronize():
-            pass
-        @staticmethod
-        def current_device():
-            return 0
-        @staticmethod
-        def memory_allocated(device=None):
-            return 0
-        @staticmethod
-        def max_memory_allocated(device=None):
-            return 0
-        @staticmethod
-        def manual_seed(seed):
-            pass
-        @staticmethod
-        def set_rng_state(state, device=None):
-            pass
-        @staticmethod
-        def get_rng_state(device=None):
-            return None
-        @staticmethod
-        def reset_peak_memory_stats(device=None):
-            pass
-    torch.xpu = _DummyXPU()
-
-# Monkey-patch cho torch.backends.cuda.is_flash_attention_available (cho torch cũ)
-if not hasattr(torch.backends.cuda, 'is_flash_attention_available'):
-    torch.backends.cuda.is_flash_attention_available = lambda: False
-
-# Monkey-patch cho torch.utils.flop_counter._unpack_params (nếu thiếu)
-try:
-    from torch.utils import flop_counter
-    if not hasattr(flop_counter, '_unpack_params'):
-        flop_counter._unpack_params = lambda params: params # Dummy implementation
-except ImportError:
-    pass
+import backend.app.utils.torch_patch
 
 import cv2
 import numpy as np
@@ -60,7 +11,6 @@ from diffusers import (
     StableDiffusionXLControlNetInpaintPipeline,
     StableDiffusionXLInpaintPipeline,
     StableDiffusionXLImg2ImgPipeline,
-    StableDiffusionInpaintPipeline,
     ControlNetModel,
     AutoencoderKL
 )
@@ -72,58 +22,44 @@ class HairDiffusionService:
     def __init__(self):
         self.device = torch.device(settings.DEVICE)
         self.dtype = torch.float16 if "cuda" in settings.DEVICE else torch.float32
-        # Set to True for SDXL migration as requested
-        self.use_sdxl = True 
         
         print(f"Initializing HairDiffusionService (Device: {self.device}, Dtype: {self.dtype})")
         
         try:
-            if self.use_sdxl:
-                self._load_sdxl_pipeline()
-            else:
-                self._load_sd15_pipeline()
+            self._load_sdxl_pipeline()
             
         except Exception as e:
             print(f"Error loading Pipeline: {e}")
-            # Fallback attempts could go here
-            if self.use_sdxl:
-                print("Falling back to SD1.5 due to SDXL error...")
-                self.use_sdxl = False
-                try:
-                    self._load_sd15_pipeline()
-                except Exception as e2:
-                    print(f"Critical: Failed to load both SDXL and SD1.5: {e2}")
-                    raise e2
+            raise e
 
 
 
     def _load_refiner(self):
-        """Lazy load refiner only when needed"""
+        """Tải refiner chỉ khi cần (lazy load)"""
         if hasattr(self, 'refiner') and self.refiner is not None:
              return
              
         print(">>> Loading SDXL Refiner for High Quality Mode...")
         
         try:
-             # Check if local exists
+             # Kiểm tra xem file nội bộ có tồn tại không
              if os.path.exists(model_paths.SDXL_REFINER):
                 print(f"Loading Refiner from single file: {model_paths.SDXL_REFINER}")
                 
-                # Check Base Pipe components
+                # Kiểm tra các thành phần của Base Pipe
                 text_enc_2 = getattr(self.pipe, 'text_encoder_2', None)
                 if text_enc_2 is None:
                     print("Warning: Base pipe has no text_encoder_2. Refiner might fail.")
                 else:
                     print(f"DEBUG: Sharing text_encoder_2 from Base: {type(text_enc_2)}")
 
-                # Refiner ONLY uses text_encoder_2 (CLIP ViT-G/14 with projection).
-                # It does NOT use text_encoder (CLIP ViT-L/14).
-                # Sharing text_encoder from Base causes dimension mismatch (1280 vs 768 pooled).
-                # Let from_single_file handle text_encoder internally or leave it unused.
+                # Refiner CHỈ sử dụng text_encoder_2 (CLIP ViT-G/14 với projection).
+                # Nó KHÔNG sử dụng text_encoder (CLIP ViT-L/14).
+                # Việc chia sẻ text_encoder từ Base gây ra lỗi sai lệch kích thước (1280 vs 768 pooled).
+                # Để from_single_file tự xử lý text_encoder bên trong hoặc để trống.
                 
                 self.refiner = StableDiffusionXLImg2ImgPipeline.from_single_file(
                      model_paths.SDXL_REFINER,
-                     # Do NOT share text_encoder - Refiner doesn't use it and dimensions differ
                      text_encoder_2=text_enc_2,  # Only share text_encoder_2
                      tokenizer_2=getattr(self.pipe, 'tokenizer_2', None),
                      vae=self.pipe.vae,
@@ -152,7 +88,7 @@ class HairDiffusionService:
              print("DEBUG: Moving Refiner Pipeline to Device...")
              self.refiner.to(self.device, self.dtype)
              
-             # Also ensure scheduler is compatible if needed, but it's not on device.
+             # Cũng đảm bảo scheduler tương thích nếu cần, nhưng nó không nằm trên thiết bị.
              print(">>> Refiner Loaded.")
         except Exception as e:
              print(f"Failed to load Refiner: {e}")
@@ -163,7 +99,7 @@ class HairDiffusionService:
     def _load_sdxl_pipeline(self):
         print(">>> Loading SDXL Inpaint Pipeline (with ControlNet)...")
         
-        # 1. Load ControlNet Depth (SDXL)
+        # 1. Tải ControlNet Depth (SDXL)
         try:
             controlnet = ControlNetModel.from_pretrained(
                 model_paths.CONTROLNET_DEPTH,
@@ -178,8 +114,8 @@ class HairDiffusionService:
                 torch_dtype=self.dtype
              )
 
-        # 2. Load SDXL Inpaint Pipeline
-        # We need StableDiffusionXLControlNetInpaintPipeline
+        # 2. Tải SDXL Inpaint Pipeline
+        # Chúng ta cần StableDiffusionXLControlNetInpaintPipeline
         try:
             if os.path.exists(model_paths.SDXL_BASE):
                 print(f"Loading SDXL from local: {model_paths.SDXL_BASE}")
@@ -201,20 +137,20 @@ class HairDiffusionService:
             print(f"Failed to load SDXL Pipe: {e}")
             raise e
 
-        # 3. Load IP-Adapter (SDXL)
+        # 3. Tải IP-Adapter (SDXL)
         print(f">>> Loading IP-Adapter SDXL from {model_paths.IP_ADAPTER_SDXL_PATH}")
         self.ip_adapter_loaded = False
         
         try:
-            # Note: For SDXL IP-Adapter, we need image encoder to encode reference images.
-            # load_ip_adapter needs the image_encoder_folder to properly initialize.
+            # Lưu ý: Đối với SDXL IP-Adapter, ta cần image encoder để mã hóa ảnh tham chiếu.
+            # load_ip_adapter cần image_encoder_folder để khởi tạo đúng cách.
             
-            # Check if local image encoder exists
+            # Kiểm tra xem image encoder nội bộ có tồn tại không
             if os.path.exists(model_paths.IMAGE_ENCODER_PATH):
                 print(f">>> Using local image encoder: {model_paths.IMAGE_ENCODER_PATH}")
                 image_encoder_folder = model_paths.IMAGE_ENCODER_PATH
             else:
-                # Use HuggingFace repo for image encoder (CLIP ViT-H for SDXL IP-Adapter Plus)
+                # Sử dụng HuggingFace repo cho image encoder (CLIP ViT-H cho SDXL IP-Adapter Plus)
                 print(">>> Downloading image encoder from HuggingFace...")
                 image_encoder_folder = "h94/IP-Adapter"  # Will auto-download
             
@@ -232,35 +168,7 @@ class HairDiffusionService:
         self.pipe.to(self.device, self.dtype)
         print(">>> SDXL Pipeline Loaded Successfully.")
 
-    def _load_sd15_pipeline(self):
-        print(">>> Loading SD1.5 Inpaint Pipeline (AutoPipeline)...")
-        from diffusers import AutoPipelineForInpainting
-        
-        # 1. Load SD1.5 Inpaint Pipe
-        variant = "fp16" if self.dtype == torch.float16 else None
-        
-        # ... (simplified loading logic reused from before or kept minimal)
-        self.pipe = AutoPipelineForInpainting.from_pretrained(
-             model_paths.SD15_BASE,
-             torch_dtype=self.dtype,
-             variant=variant
-        )
-        
-        # 2. Load IP-Adapter
-        self.ip_adapter_loaded = False
-        try:
-            self.pipe.load_ip_adapter(
-                model_paths.IP_ADAPTER_PLUS_HAIR, 
-                subfolder="", 
-                weight_name="ip-adapter-plus_sd15.bin"
-            )
-            self.ip_adapter_loaded = True
-        except Exception:
-            pass
-            
-        self.pipe.to(self.device, self.dtype)
-        self.use_sdxl = False
-        print(">>> SD1.5 Pipeline Loaded Successfully.")
+
 
     def generate(
         self, 
@@ -277,124 +185,106 @@ class HairDiffusionService:
         use_refiner: bool = False
     ):
         """
-        Thực hiện Inpainting thay tóc (SDXL 1024x1024 hoặc SD1.5 512x512).
+        Thực hiện Inpainting thay tóc (SDXL 1024x1024).
         """
-        # Resize inputs based on model
-        target_size = (1024, 1024) if self.use_sdxl else (512, 512)
+        # Thay đổi kích thước đầu vào dựa trên model
+        target_size = (1024, 1024)
         
         image = base_image.resize(target_size, Image.LANCZOS)
         mask = mask_image.resize(target_size, Image.NEAREST)
         ref_hair = ref_hair_image.resize(target_size, Image.LANCZOS)
         
-        # Generator seed
+        # Generator seed (hạt giống sinh ngẫu nhiên)
         generator = torch.Generator(self.device).manual_seed(42)
         
-        # Set IP Adapter Scale
+        # Thiết lập tỷ lệ IP Adapter
         try:
             if self.ip_adapter_loaded:
                 self.pipe.set_ip_adapter_scale(ip_adapter_scale)
         except:
              pass
 
-        if self.use_sdxl:
-            # ControlNet requires Control Image (Depth)
-            # Resize control image to match target
-            if control_image:
-                 control = control_image.resize(target_size, Image.BILINEAR)
-            else:
-                 # Should not happen if tasks.py provides it, but as fallback creates blank
-                 control = Image.new("RGB", target_size, (0, 0, 0))
-
-            print(f"Running SDXL Inference (Refiner: {use_refiner})...")
-            
-            # 1. Run Base (High noise fraction if using refiner)
-            extra_args = {}
-            if use_refiner:
-                 print("DEBUG: Calling _load_refiner()...")
-                 self._load_refiner()
-                 print("DEBUG: _load_refiner() returned.")
-                 
-                 if self.refiner:
-                      print("DEBUG: Refiner object exists. Setting output_type=latent")
-                      extra_args["output_type"] = "latent"
-                      extra_args["denoising_end"] = 0.8
-            
-            # Prepare arguments dynamically
-            input_args = {
-                "prompt": prompt,
-                "negative_prompt": negative_prompt,
-                "image": image,       
-                "mask_image": mask,   
-                "control_image": control, 
-                "num_inference_steps": num_inference_steps,
-                "guidance_scale": guidance_scale,
-                "controlnet_conditioning_scale": controlnet_scale, 
-                "strength": 0.99,     
-                "generator": generator
-            }
-            
-            # Only add IP Adapter if loaded
-            if self.ip_adapter_loaded:
-                 input_args["ip_adapter_image"] = ref_hair
-            
-            # Add Refiner args
-            input_args.update(extra_args)
-
-            print(f"Debug: Arguments prepared. Keys: {list(input_args.keys())}")
-            print("Debug: Starting Base Pipeline Inference...")
-            
-            try:
-                latents = self.pipe(**input_args).images
-                print("Debug: Base Inference Complete. Latents acquired.")
-            except Exception as e:
-                print(f"Error in SDXL Base generation: {e}")
-                import traceback
-                traceback.print_exc()
-                raise e
-            
-            if use_refiner and self.refiner:
-                 print(">>> Running Refiner...")
-                 try:
-                    result = self.refiner(
-                        prompt=prompt,
-                        negative_prompt=negative_prompt,
-                        image=latents, # Pass latents (4D) to Refiner
-                        # mask_image=mask, 
-                        num_inference_steps=num_inference_steps,
-                        denoising_start=0.8,
-                        strength=0.99, 
-                        generator=generator
-                    ).images[0]
-                 except Exception as e:
-                     print(f"Error in SDXL Refiner generation: {e}")
-                     import traceback
-                     traceback.print_exc()
-                     # Fallback to base result (convert latent to image if needed)
-                     # Note: If output_type was latent, we need to decode it manually to fallback
-                     # But for now let's raise
-                     raise e
-            else:
-                 # Standard output
-                 if isinstance(latents, list):
-                     result = latents[0]
-                 else:
-                     result = latents # Should handle if it returns image directly depending on version
+        # ControlNet yêu cầu Control Image (Depth)
+        # Thay đổi kích thước control image để khớp với mục tiêu
+        if control_image:
+             control = control_image.resize(target_size, Image.BILINEAR)
         else:
-            # SD1.5 Logic (Fallback)
-            print("Running SD1.5 Inference...")
-            inpainting_args = {
-                "prompt": prompt, 
-                "negative_prompt": negative_prompt,
-                "image": image,
-                "mask_image": mask,
-                "num_inference_steps": num_inference_steps,
-                "guidance_scale": guidance_scale,
-                "strength": 0.99,
-                "generator": generator
-            }
-            if self.ip_adapter_loaded:
-                result = self.pipe(**inpainting_args, ip_adapter_image=ref_hair).images[0]
-            else:
-                result = self.pipe(**inpainting_args).images[0]
+             # Không nên xảy ra nếu tasks.py đã cung cấp, nhưng tạo ảnh trắng để dự phòng
+             control = Image.new("RGB", target_size, (0, 0, 0))
+
+        print(f"Running SDXL Inference (Refiner: {use_refiner})...")
+        
+        # 1. Chạy Base (High noise fraction nếu dùng refiner)
+        extra_args = {}
+        if use_refiner:
+             print("DEBUG: Calling _load_refiner()...")
+             self._load_refiner()
+             print("DEBUG: _load_refiner() returned.")
+             
+             if self.refiner:
+                  print("DEBUG: Refiner object exists. Setting output_type=latent")
+                  extra_args["output_type"] = "latent"
+                  extra_args["denoising_end"] = 0.8
+        
+        # Chuẩn bị các tham số động
+        input_args = {
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
+            "image": image,       
+            "mask_image": mask,   
+            "control_image": control, 
+            "num_inference_steps": num_inference_steps,
+            "guidance_scale": guidance_scale,
+            "controlnet_conditioning_scale": controlnet_scale, 
+            "strength": 0.99,     
+            "generator": generator
+        }
+        
+        # Chỉ thêm IP Adapter nếu đã tải
+        if self.ip_adapter_loaded:
+             input_args["ip_adapter_image"] = ref_hair
+        
+        # Thêm tham số Refiner
+        input_args.update(extra_args)
+
+        print(f"Debug: Arguments prepared. Keys: {list(input_args.keys())}")
+        print("Debug: Starting Base Pipeline Inference...")
+        
+        try:
+            latents = self.pipe(**input_args).images
+            print("Debug: Base Inference Complete. Latents acquired.")
+        except Exception as e:
+            print(f"Error in SDXL Base generation: {e}")
+            import traceback
+            traceback.print_exc()
+            raise e
+        
+        if use_refiner and self.refiner:
+             print(">>> Running Refiner...")
+             try:
+                result = self.refiner(
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    image=latents, # Truyền latents (4D) cho Refiner
+                    # mask_image=mask, 
+                    num_inference_steps=num_inference_steps,
+                    denoising_start=0.8,
+                    strength=0.99, 
+                    generator=generator
+                ).images[0]
+             except Exception as e:
+                 print(f"Error in SDXL Refiner generation: {e}")
+                 import traceback
+                 traceback.print_exc()
+                 # Dự phòng về kết quả base (chuyển đổi latent sang ảnh nếu cần)
+                 # Lưu ý: Nếu output_type là latent, ta cần giải mã thủ công để fallback
+                 # Nhưng hiện tại hãy raise lỗi
+                 raise e
+        else:
+             # Output chuẩn
+             if isinstance(latents, list):
+                 result = latents[0]
+             else:
+                 result = latents # Cần xử lý nếu nó trả về ảnh trực tiếp tùy thuộc vào phiên bản
         
         return result

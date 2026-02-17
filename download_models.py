@@ -10,22 +10,7 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 # Define models to download
 MODELS = {
-    # --- SD1.5 (Primary Working Pipeline) ---
-    "sd15_base": {
-        "repo_id": "runwayml/stable-diffusion-v1-5",
-        "type": "model",
-        "path": MODELS_DIR / "stable-diffusion" / "sd15",
-        # Download fp16 variants and critical config files for bandwidth efficiency
-        "allow_patterns": ["*fp16.safetensors", "*.json", "*.txt", "tokenizer/*"] 
-    },
-    
-    "ip_adapter_sd15": {
-        "repo_id": "h94/IP-Adapter",
-        "type": "file",
-        "filename": "models/ip-adapter-plus_sd15.bin", # Correct path in repo
-        "local_filename": "ip-adapter-plus_sd15.bin",   # Rename locally for clarity
-        "path": MODELS_DIR / "ip_adapter_hair"
-    },
+
 
     # --- SDXL (Advanced/Future Use) ---
     "sdxl_base": {

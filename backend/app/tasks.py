@@ -7,18 +7,14 @@ from celery import Celery
 from backend.app.config import settings, OUTPUT_DIR
 from backend.app.services.face import FaceInfoService
 from backend.app.services.mask import SegmentationService
-from backend.app.services.diffusion import HairDiffusionService # Heavy load
+from backend.app.services.diffusion import HairDiffusionService
 
-# Initialize Celery
-# Note: In production, backend should be Redis/Database to store results. 
-# Here using Redis for broker and backend.
 celery_app = Celery(
     "hair_tasks",
     broker=settings.REDIS_URL,
     backend=settings.REDIS_URL
 )
 
-# Global Service Cache (Lazy Load)
 _SERVICES = {
     "face": None,
     "mask": None,

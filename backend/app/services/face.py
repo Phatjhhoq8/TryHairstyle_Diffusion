@@ -46,26 +46,13 @@ class YOLOFaceDetector:
             print(f"[YOLOFaceDetector] Error loading model: {e}")
             self.model = None
     
-    def detect(self, image_cv2, conf_threshold=0.5):
-        """
-        Detect faces trong ảnh OpenCV (BGR).
-        
-        Args:
-            image_cv2: Ảnh OpenCV (BGR)
-            conf_threshold: Ngưỡng confidence (0.0 - 1.0)
-            
-        Returns:
-            List of dict với keys: bbox, confidence
-            bbox format: [x1, y1, x2, y2]
-        """
+    def detect(self, image_cv2, conf_threshold=0.4):
         if self.model is None:
             return []
         
         try:
-            # YOLOv8 expects RGB
             image_rgb = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2RGB)
-            
-            # Run inference
+
             results = self.model(image_rgb, verbose=False, conf=conf_threshold)
             
             faces = []
@@ -83,7 +70,6 @@ class YOLOFaceDetector:
                         'confidence': conf
                     })
             
-            # Sort by bbox area (largest first)
             faces = sorted(
                 faces,
                 key=lambda x: (x['bbox'][2] - x['bbox'][0]) * (x['bbox'][3] - x['bbox'][1]),
@@ -97,42 +83,25 @@ class YOLOFaceDetector:
             return []
     
     def is_available(self):
-        """Check if YOLO model is loaded"""
         return self.model is not None
 
 
 class PartialFaceInfo:
-    """
-    Wrapper class cho partial face info (từ YOLO + AdaFace).
-    Compatible với InsightFace face_info interface.
-    """
     def __init__(self, bbox, embedding, kps=None, det_score=0.0):
         self.bbox = np.array(bbox)
         self.embedding = embedding
-        self.kps = kps  # Có thể None cho partial faces
+        self.kps = kps
         self.det_score = det_score
-        self.is_partial = True  # Flag để biết đây là partial face
+        self.is_partial = True
 
 
 class FaceInfoService:
-    """
-    Hybrid Face Detection Service với AdaFace fallback.
-    
-    Pipeline:
-    1. YOLOv8-Face detect tất cả faces (kể cả partial/profile)
-    2. InsightFace analyze để lấy embedding, keypoints
-    3. Nếu InsightFace không detect được → dùng AdaFace để extract embedding
-    """
-    
     def __init__(self):
-        # Lazy import to prevent hang on module load in WSL
         import insightface
         from insightface.app import FaceAnalysis
         
-        # YOLOv8-Face cho partial face detection
         self.yolo_detector = YOLOFaceDetector()
         
-        # InsightFace cho full analysis (embedding, keypoints)
         self.app = FaceAnalysis(
             name='antelopev2', 
             root=model_paths.INSIGHTFACE_ROOT, 
@@ -147,7 +116,6 @@ class FaceInfoService:
         print("[FaceInfoService] Initialized with hybrid YOLO + InsightFace + AdaFace")
     
     def _init_adaface(self):
-        """Lazy init AdaFace service"""
         if self._adaface_init_attempted:
             return self.adaface is not None
         
@@ -167,12 +135,6 @@ class FaceInfoService:
             return False
     
     def _match_yolo_to_insight(self, yolo_faces, insight_faces, iou_threshold=0.5):
-        """
-        Match YOLO detections với InsightFace detections.
-        
-        Returns:
-            List of unmatched YOLO faces (partial faces)
-        """
         if len(insight_faces) == 0:
             return yolo_faces
         
@@ -197,7 +159,6 @@ class FaceInfoService:
         return unmatched
     
     def _compute_iou(self, box1, box2):
-        """Compute IoU between two bboxes [x1, y1, x2, y2]"""
         x1 = max(box1[0], box2[0])
         y1 = max(box1[1], box2[1])
         x2 = min(box1[2], box2[2])
@@ -223,13 +184,6 @@ class FaceInfoService:
         1. YOLO detect tất cả faces
         2. InsightFace analyze từng face
         3. Với faces mà InsightFace miss → dùng AdaFace để extract embedding
-        
-        Args:
-            image_cv2: Ảnh OpenCV BGR
-            use_adaface_fallback: Có dùng AdaFace cho partial faces không
-            
-        Returns:
-            List face_info objects (cả InsightFace và PartialFaceInfo)
         """
         # Step 1: YOLO detection (có thể detect partial faces)
         yolo_faces = []
