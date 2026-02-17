@@ -114,7 +114,6 @@ class ContextPath(nn.Module):
 
     def forward(self, x):
         # ResNet Backbone
-        # ResNet Backbone
         x = self.resnet.conv1(x)
         x = self.resnet.bn1(x)
         x = self.resnet.relu(x)

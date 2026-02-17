@@ -8,13 +8,6 @@ import numpy as np
 from PIL import Image
 from backend.app.config import model_paths, settings
 
-# Định nghĩa model BiSeNet (rút gọn để chạy inference)
-# Do cấu trúc BiSeNet khá dài, ta sẽ dùng code tối giản hoặc load state dictionary vào structure.
-# Để đơn giản và chính xác, ta cần định nghĩa class BiSeNet tương tự như repo gốc.
-# Tuy nhiên, để tránh file quá dài, ở đây ta sẽ dùng một thủ thuật: 
-# Load model script từ một file utils hoặc define class ngay đây nếu không quá phức tạp.
-# Dưới đây là định nghĩa class BiSeNet cơ bản cần thiết để load weights 79999_iter.pth.
-
 # --- BiSeNet Arch Definitions (Simplified for Inference) ---
 class ConvBNReLU(nn.Module):
     def __init__(self, in_chan, out_chan, ks=3, stride=1, padding=1):
@@ -35,23 +28,8 @@ class BiSeNet(nn.Module):
         # FOR NOW: I will implementing a PLACEHOLDER wrapper that assumes the model structure is standard.
         # If this fails, we will need to copy the full BiSeNet.py code.
         pass
-    
-    # ... (Full architecture is too long for this single block)
 
-# Để an toàn và thực tế, thay vì define lại toàn bộ mạng (dễ lỗi sai structure),
-# ta sẽ dùng thư viện 'transformers' nếu có hỗ trợ SegFormer (mới hơn, tốt hơn).
-# NHƯNG yêu cầu là BiSeNet.
-# Giải pháp: Ta sẽ viết 1 file utils/bisenet_arch.py chứa kiến trúc mạng (Copy từ GitHub official),
-# sau đó import vào đây.
-# Tuy nhiên, hiện tại tôi sẽ viết logic xử lý ảnh trước, 
-# và giả định ta có thể load model bằng torch.load nếu nó là full model (ko phải chỉ state_dict).
-# Nếu là state_dict (file .pth thường là vậy), ta BẮT BUỘC phải có class definition.
-
-# -> Quyết định: Tạo file `backend/app/services/bisenet_arch.py` trước containing full arch.
-# Nhưng tôi không thể switch task ngay. 
-# -> Tôi sẽ viết file `mask.py` này import từ `bisenet_arch`, và sau bước này tôi sẽ tạo file `bisenet_arch.py`.
-
-from .bisenet_arch import BiSeNet # Sẽ tạo file này ngay sau
+from .bisenet_arch import BiSeNet
 
 class SegmentationService:
     def __init__(self):

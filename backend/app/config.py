@@ -22,8 +22,7 @@ class ModelPaths:
 
     # SDXL_REPO = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
     
-    # SD1.5 Paths (Fallback)
-    SD15_BASE = str(MODELS_DIR / "stable-diffusion" / "sd15")
+
     
     # Adapters (Local Paths from download_models.py structure)
     INSIGHTFACE_ROOT = str(BACKEND_DIR)
@@ -36,8 +35,7 @@ class ModelPaths:
     INSTANTID_ADAPTER = str(MODELS_DIR / "instantid" / "ip-adapter.bin")
     IP_ADAPTER_PLUS_HAIR = str(MODELS_DIR / "ip_adapter_hair") # Folder
     
-    # Specific file for SD1.5 IP Adapter
-    IP_ADAPTER_SD15_PATH = str(MODELS_DIR / "ip_adapter_hair" / "ip-adapter-plus_sd15.bin")
+
     # Specific file for SDXL IP Adapter
     IP_ADAPTER_SDXL_PATH = str(MODELS_DIR / "ip_adapter_hair" / "ip-adapter-plus_sdxl_vit-h.bin")
     IMAGE_ENCODER_PATH = str(MODELS_DIR / "image_encoder")
