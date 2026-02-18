@@ -69,6 +69,12 @@ MODELS = {
         "filename": "adaface_ir101_webface4m.ckpt",
         "path": MODELS_DIR,
         "size_mb": 250
+    },
+
+    "3ddfa_v2": {
+        "type": "git",
+        "repo_url": "https://github.com/cleardusk/3DDFA_V2.git",
+        "path": MODELS_DIR / "3ddfa_v2"
     }
 }
 
@@ -174,9 +180,28 @@ def main():
         
         elif config["type"] == "gdrive":
             download_from_gdrive(config["gdrive_id"], config["filename"], target_path)
+
+        elif config["type"] == "git":
+            download_git_repo(config["repo_url"], target_path)
             
     print("\n\n🎉 ALL DOWNLOADS COMPLETED!")
     print("Verify your 'backend/models' folder structure.")
+    print("NOTE: For 3DDFA_V2, you must build the Sim3DR extension manually if not done:")
+    print("  cd backend/models/3ddfa_v2/Sim3DR")
+    print("  python setup.py build_ext --inplace")
+
+def download_git_repo(repo_url, target_dir):
+    print(f"\nCloning {repo_url}...")
+    if target_dir.exists() and (target_dir / ".git").exists():
+        print(f"✅ Already exists: {target_dir}")
+        # Optional: git pull
+        return
+    
+    try:
+        os.system(f"git clone {repo_url} {target_dir}")
+        print("✅ Done.")
+    except Exception as e:
+        print(f"❌ Failed: {e}")
 
 if __name__ == "__main__":
     main()
