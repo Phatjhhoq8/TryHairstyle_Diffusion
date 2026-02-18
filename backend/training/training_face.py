@@ -209,6 +209,7 @@ class TrainingFacePipeline:
             # ==========================================
             # STEP 4: 3D RECONSTRUCTION (chỉ khi pose lớn)
             # ==========================================
+            reconResult = None
             if absYaw >= self.yawThreshold:
                 self.logger.info("  [Step 4] 3D Reconstruction...")
                 reconResult = self.reconstructor.reconstruct(imageCv2, bbox)
@@ -250,10 +251,14 @@ class TrainingFacePipeline:
             # Lấy landmarks 106 từ pose result
             landmarks106 = poseResult.get("landmarks_106", None)
             
+            # Lấy 3D vertices nếu có (cho face mask enhancement)
+            vertices3D = reconResult["vertices"] if reconResult else None
+            
             visPaths = self.visualizer.createVisualization(
                 imageCv2, bbox, faceId, basePath,
                 landmarks106=landmarks106,
-                poseInfo=poseInfoForVis
+                poseInfo=poseInfoForVis,
+                vertices3D=vertices3D
             )
             
             # ==========================================

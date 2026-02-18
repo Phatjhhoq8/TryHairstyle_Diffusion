@@ -90,8 +90,9 @@ python download_models.py
 Script sẽ tự động tải:
 - ControlNet Depth (SDXL)
 - InstantID & IP-Adapter
-- Face Parsing models
+- **SegFormer Face Parsing** (thay thế BiSeNet)
 - CLIP Image Encoder
+- YOLOv8-Face, AdaFace, 3DDFA V2
 
 ### Cách 2: Tải Thủ công (Nếu script lỗi)
 
@@ -135,20 +136,21 @@ hf download h94/IP-Adapter \
 
 --------------------------------------------------
 
-### 8.5 BiSeNet – Face Parsing (tách mask tóc)
+### 8.5 SegFormer – Face Parsing (tách mask tóc & khuôn mặt)
 
-mkdir -p models/bisenet
-cd models/bisenet
+SegFormer (Transformer-based) thay thế BiSeNet, accuracy cao hơn đặc biệt trên profile views.
 
-Tải thủ công các file sau:
+```bash
+# Tải tự động bằng download_models.py (khuyên dùng)
+python download_models.py
 
-- 79999_iter.pth  
-  https://huggingface.co/vivym/face-parsing-bisenet/blob/768606b84908769d31ddd78b2e1105319839edfa/79999_iter.pth
+# Hoặc tải thủ công bằng HuggingFace CLI:
+mkdir -p backend/models/segformer_face_parsing
+cd backend/models/segformer_face_parsing
+hf download jonathandinu/face-parsing --local-dir .
+```
 
-- best_dice_loss_mitou_0.655.pth  
-  https://drive.google.com/file/d/1ulUgHwFct-vFwGCAfJ4Oa9DBlNDzm5r4/view
-
---------------------------------------------------
+> **Lưu ý:** Nếu chưa download local, pipeline sẽ tự download từ HuggingFace hub lần đầu chạy (~350MB).
 
 ### 8.6 3DDFA_V2 (3D Face Alignment)
 
@@ -162,10 +164,10 @@ python setup.py build_ext --inplace
 --------------------------------------------------
 
 ## 8. Ghi chú
-- BiSeNet: tách mask tóc cho Inpainting
+- **SegFormer** (`jonathandinu/face-parsing`): Tách mask face/hair (19 classes CelebAMask-HQ)
 - IP-Adapter FaceID: giữ nguyên khuôn mặt
 - IP-Adapter Plus: copy kiểu tóc
---------------------------------------------------
+- Training pipeline hỗ trợ 3D mesh face enhancement + directional hair dilation cho profile views
 
 ## 9. Troubleshooting (Các lỗi thường gặp và cách khắc phục)
 

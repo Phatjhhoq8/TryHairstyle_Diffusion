@@ -20,24 +20,26 @@ from PIL import Image
 
 from backend.training.utils import setupLogger, getDevice, ensureDir
 
-# Đường dẫn
+# SegFormer config
+SEGFORMER_MODEL_ID = "jonathandinu/face-parsing"
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
-BISENET_CHECKPOINT = str(BASE_DIR / "backend" / "models" / "bisenet" / "79999_iter.pth")
+SEGFORMER_LOCAL_PATH = str(BASE_DIR / "backend" / "models" / "segformer_face_parsing")
 
-# BiSeNet class mapping (CelebAMask-HQ 19 classes)
+# SegFormer class mapping (jonathandinu/face-parsing)
 # 0: background
-# 1: skin, 2: l_brow, 3: r_brow, 4: l_eye, 5: r_eye
-# 6: eye_g (glasses), 7: l_ear, 8: r_ear, 9: ear_r (earring)
-# 10: nose, 11: mouth, 12: u_lip, 13: l_lip
-# 14: neck, 15: necklace, 16: cloth, 17: hair, 18: hat
+# 1: skin, 2: nose, 3: eye_g (glasses), 4: l_eye, 5: r_eye
+# 6: l_brow, 7: r_brow, 8: l_ear, 9: r_ear
+# 10: mouth, 11: u_lip, 12: l_lip
+# 13: hair, 14: hat, 15: ear_r (earring)
+# 16: neck_l (necklace), 17: neck, 18: cloth
 
 # Nhóm face (skin + features)
-FACE_CLASSES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14}
+FACE_CLASSES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 17}
 
 # Nhóm hair
-HAIR_CLASSES = {17}
+HAIR_CLASSES = {13}
 
-# Background = tất cả còn lại (0, 15, 16, 18)
+# Background = tất cả còn lại (0, 14, 16, 18)
 
 
 class TrainingVisualizer:
@@ -54,31 +56,38 @@ class TrainingVisualizer:
     def __init__(self):
         self.logger = setupLogger("Visualizer")
         self.device = getDevice()
-        self.bisenet = None
-        self._loadBiSeNet()
+        self.segformer = None
+        self.imageProcessor = None
+        self._loadSegFormer()
     
-    def _loadBiSeNet(self):
-        """Load BiSeNet model cho face parsing."""
+    def _loadSegFormer(self):
+        """Load SegFormer model. Ưu tiên local path, fallback HuggingFace hub."""
         try:
-            from backend.app.services.bisenet_arch import BiSeNet
+            from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
             
-            if not os.path.exists(BISENET_CHECKPOINT):
-                self.logger.error(f"BiSeNet checkpoint không tìm thấy: {BISENET_CHECKPOINT}")
-                return
+            # Ưu tiên load từ local (đã download bằng download_models.py)
+            modelSource = SEGFORMER_LOCAL_PATH
+            if os.path.isdir(SEGFORMER_LOCAL_PATH):
+                self.logger.info(f"Loading SegFormer từ local: {SEGFORMER_LOCAL_PATH}")
+            else:
+                # Fallback: download từ HuggingFace hub
+                self.logger.info(f"Local không tìm thấy, loading SegFormer từ HuggingFace: {SEGFORMER_MODEL_ID}")
+                modelSource = SEGFORMER_MODEL_ID
             
-            model = BiSeNet(n_classes=19)
-            checkpoint = torch.load(BISENET_CHECKPOINT, map_location="cpu")
-            model.load_state_dict(checkpoint, strict=False)
+            self.imageProcessor = SegformerImageProcessor.from_pretrained(modelSource)
+            model = SegformerForSemanticSegmentation.from_pretrained(modelSource)
             model.to(self.device)
             model.eval()
             
-            self.bisenet = model
-            self.logger.info("BiSeNet loaded cho face parsing")
+            self.segformer = model
+            self.logger.info("SegFormer loaded cho face parsing (19 classes)")
+        except ImportError:
+            self.logger.error("Thiếu transformers. Chạy: pip install transformers")
         except Exception as e:
-            self.logger.error(f"Lỗi load BiSeNet: {e}")
-            self.bisenet = None
+            self.logger.error(f"Lỗi load SegFormer: {e}")
+            self.segformer = None
     
-    def createVisualization(self, imageCv2, bbox, faceId, basePath, landmarks106=None, poseInfo=None):
+    def createVisualization(self, imageCv2, bbox, faceId, basePath, landmarks106=None, poseInfo=None, vertices3D=None):
         """
         Tạo 1 ảnh visualize ghép 2x2 cho 1 khuôn mặt.
         
@@ -103,8 +112,19 @@ class TrainingVisualizer:
         ensureDir(os.path.dirname(basePath))
         h, w = imageCv2.shape[:2]
         
-        # Chạy BiSeNet 1 lần, dùng cho cả 4 ảnh
-        parsing = self._runBiSeNet(imageCv2)
+        # Chạy SegFormer 1 lần, dùng cho cả 4 ảnh
+        parsing = self._runSegFormer(imageCv2)
+        
+        # Mở rộng face mask bằng 3D mesh khi có dữ liệu 3D
+        if vertices3D is not None and parsing is not None:
+            parsing = self._enhanceFaceMaskWith3D(parsing, vertices3D, w, h)
+            self.logger.info(f"  Face mask enhanced bằng 3D mesh projection")
+        
+        # Mở rộng hair mask về phía sau ót khi profile lớn
+        if poseInfo is not None and parsing is not None:
+            yaw = poseInfo.get("yaw", 0)
+            if abs(yaw) >= 45:
+                parsing = self._dilateHairByYaw(parsing, yaw)
         
         # Tạo 4 ảnh con
         img1 = self._createBboxImage(imageCv2, bbox, faceId, poseInfo)
@@ -127,38 +147,42 @@ class TrainingVisualizer:
         
         return outputPath
     
-    def _runBiSeNet(self, imageCv2):
+    def _runSegFormer(self, imageCv2):
         """
-        Chạy BiSeNet 1 lần, trả về parsing map (512x512).
+        Chạy SegFormer 1 lần, trả về parsing map (512x512).
+        
+        SegFormer output logits ở ~H/4 x W/4 → upsample về 512x512.
         
         Returns:
             numpy array (512, 512) class labels, hoặc None
         """
-        if self.bisenet is None:
+        if self.segformer is None:
             return None
         
         try:
+            # Convert BGR → RGB → PIL
             imageRgb = cv2.cvtColor(imageCv2, cv2.COLOR_BGR2RGB)
             pilImage = Image.fromarray(imageRgb)
-            pilImage = pilImage.resize((512, 512), Image.BILINEAR)
             
-            imgArray = np.array(pilImage).astype(np.float32) / 255.0
-            imgTensor = torch.from_numpy(imgArray.transpose(2, 0, 1))
-            imgTensor = imgTensor.unsqueeze(0).to(self.device)
-            
-            mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(self.device)
-            std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(self.device)
-            imgTensor = (imgTensor - mean) / std
+            # Preprocess bằng SegformerImageProcessor
+            inputs = self.imageProcessor(images=pilImage, return_tensors="pt").to(self.device)
             
             with torch.no_grad():
-                output = self.bisenet(imgTensor)
-                if isinstance(output, tuple):
-                    output = output[0]
-                parsing = output.squeeze(0).argmax(0).cpu().numpy()
+                outputs = self.segformer(**inputs)
+                logits = outputs.logits  # (1, 19, ~H/4, ~W/4)
+                
+                # Upsample về 512x512 (giống BiSeNet output size)
+                upsampled = F.interpolate(
+                    logits,
+                    size=(512, 512),
+                    mode='bilinear',
+                    align_corners=False
+                )
+                parsing = upsampled.argmax(dim=1)[0].cpu().numpy()
             
             return parsing
         except Exception as e:
-            self.logger.error(f"Lỗi BiSeNet forward: {e}")
+            self.logger.error(f"Lỗi SegFormer forward: {e}")
             return None
     
     # ============================================================
@@ -361,6 +385,134 @@ class TrainingVisualizer:
         
         return vis
     
+    # ============================================================
+    # 5. DIRECTIONAL HAIR DILATION THEO YAW
+    # ============================================================
+    def _dilateHairByYaw(self, parsing, yaw):
+        """
+        Mở rộng hair mask về phía sau ót dựa trên hướng yaw.
+        
+        Khi mặt quay phải (yaw>0) → tóc sau ót nằm bên trái → dilate sang trái.
+        Khi mặt quay trái (yaw<0) → tóc sau ót nằm bên phải → dilate sang phải.
+        Lượng dilation tỉ lệ với |yaw|.
+        
+        Chỉ fill vào vùng background, KHÔNG ghi đè face/skin.
+        
+        Args:
+            parsing: numpy (512, 512) — BiSeNet parsing map
+            yaw: float — góc yaw (độ)
+        
+        Returns:
+            numpy (512, 512) — parsing map đã dilate hair
+        """
+        try:
+            absYaw = abs(yaw)
+            
+            # Tính kernel width tỉ lệ với yaw (45°→10px, 90°→40px trong 512-space)
+            kernelW = int(np.interp(absYaw, [45, 90], [10, 40]))
+            kernelH = max(3, kernelW // 4)  # Chiều dọc nhỏ hơn để không lan quá nhiều
+            
+            if kernelW < 3:
+                return parsing
+            
+            # Tạo asymmetric kernel — chỉ dilate 1 hướng
+            kernel = np.zeros((kernelH, kernelW), dtype=np.uint8)
+            
+            if yaw > 0:
+                # Mặt quay phải → dilate sang TRÁI (cột 0 → giữa)
+                kernel[:, :kernelW // 2 + 1] = 1
+            else:
+                # Mặt quay trái → dilate sang PHẢI (giữa → cột cuối)
+                kernel[:, kernelW // 2:] = 1
+            
+            # Tách hair mask từ parsing
+            hairMask = np.zeros((512, 512), dtype=np.uint8)
+            for cls in HAIR_CLASSES:
+                hairMask[parsing == cls] = 255
+            
+            # Dilate
+            dilatedHair = cv2.dilate(hairMask, kernel, iterations=1)
+            
+            # Vùng mới = dilated - original
+            newHairPixels = (dilatedHair > 0) & (hairMask == 0)
+            
+            # Chỉ fill vào vùng background (class 0), KHÔNG ghi đè face/skin/hat
+            enhancedParsing = parsing.copy()
+            fillMask = newHairPixels & (parsing == 0)
+            enhancedParsing[fillMask] = 13  # hair class (SegFormer)
+            
+            filledPixels = np.sum(fillMask)
+            direction = "trái" if yaw > 0 else "phải"
+            self.logger.info(
+                f"  Hair dilated về {direction}: "
+                f"{filledPixels} pixels (kernel={kernelW}x{kernelH}, yaw={yaw:.0f}°)"
+            )
+            
+            return enhancedParsing
+            
+        except Exception as e:
+            self.logger.warning(f"  Lỗi dilate hair: {e}")
+            return parsing
+    
+    # ============================================================
+    # 6. ENHANCE FACE MASK VỚI 3D MESH
+    # ============================================================
+    def _enhanceFaceMaskWith3D(self, parsing, vertices3D, imgW, imgH):
+        """
+        Bổ sung face region bằng 3D mesh projection.
+        
+        Dùng convex hull từ 3D projected points để fill vùng face
+        mà BiSeNet bỏ sót (thường xảy ra khi profile >45°).
+        
+        Chỉ fill vào vùng background/cloth, KHÔNG ghi đè hair.
+        
+        Args:
+            parsing: numpy (512, 512) — BiSeNet parsing map
+            vertices3D: numpy (3, N) — 3D vertices (x, y, z in image coords)
+            imgW, imgH: kích thước ảnh gốc
+        
+        Returns:
+            numpy (512, 512) — parsing map đã enhance
+        """
+        try:
+            # Lấy tọa độ 2D projection từ 3D vertices
+            xs = vertices3D[0, :]  # x coords (image space)
+            ys = vertices3D[1, :]  # y coords (image space)
+            
+            # Scale về 512x512 (parsing space)
+            xsScaled = (xs / imgW * 512).astype(np.int32)
+            ysScaled = (ys / imgH * 512).astype(np.int32)
+            
+            # Clip bounds
+            xsScaled = np.clip(xsScaled, 0, 511)
+            ysScaled = np.clip(ysScaled, 0, 511)
+            
+            # Tạo contour points cho convex hull
+            pts = np.column_stack([xsScaled, ysScaled])
+            
+            # Convex hull bao quanh toàn bộ face mesh
+            hull = cv2.convexHull(pts)
+            
+            # Fill convex hull → tạo face region mask
+            meshMask = np.zeros((512, 512), dtype=np.uint8)
+            cv2.fillConvexPoly(meshMask, hull, 255)
+            
+            # Chỉ fill vào vùng background/cloth (KHÔNG ghi đè hair/hat)
+            # background=0, cloth=18 → fill thành skin=1
+            enhancedParsing = parsing.copy()
+            fillableClasses = {0, 18}  # background, cloth (SegFormer)
+            fillMask = np.isin(parsing, list(fillableClasses)) & (meshMask > 0)
+            enhancedParsing[fillMask] = 1  # Đánh dấu là skin (class 1)
+            
+            filledPixels = np.sum(fillMask)
+            self.logger.info(f"  3D mesh enhanced: {filledPixels} pixels bổ sung vào face mask")
+            
+            return enhancedParsing
+            
+        except Exception as e:
+            self.logger.warning(f"  Lỗi enhance face mask với 3D: {e}")
+            return parsing  # Fallback: trả về parsing gốc
+    
     def isAvailable(self):
-        """Kiểm tra BiSeNet đã sẵn sàng chưa."""
-        return self.bisenet is not None
+        """Kiểm tra SegFormer đã sẵn sàng chưa."""
+        return self.segformer is not None

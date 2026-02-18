@@ -54,6 +54,12 @@ MODELS = {
         "path": MODELS_DIR / "bisenet"
     },
     
+    "segformer_face_parsing": {
+        "repo_id": "jonathandinu/face-parsing",
+        "type": "model",
+        "path": MODELS_DIR / "segformer_face_parsing"
+    },
+    
     # --- Face Detection & Embedding (NEW) ---
     "yolo_face": {
         "repo_id": "arnabdhar/YOLOv8-Face-Detection",

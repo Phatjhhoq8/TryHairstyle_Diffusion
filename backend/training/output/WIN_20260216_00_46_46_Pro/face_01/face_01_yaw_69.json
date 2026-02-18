@@ -1,8 +1,8 @@
 {
     "face_id": 1,
     "yaw": -69.16,
-    "pitch": 9.11,
-    "roll": 15.38,
+    "pitch": 9.1,
+    "roll": 15.37,
     "bbox": [
         976.6,
         181.7,
@@ -16,5 +16,5 @@
     "embedding_dim": 512,
     "pose_method": "3DDFA",
     "yaw_threshold": 45.0,
-    "timestamp": "2026-02-18T17:40:27.258618"
+    "timestamp": "2026-02-19T01:59:48.237853"
 }
