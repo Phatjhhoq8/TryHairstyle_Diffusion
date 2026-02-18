@@ -150,6 +150,17 @@ Tải thủ công các file sau:
 
 --------------------------------------------------
 
+### 8.6 3DDFA_V2 (3D Face Alignment)
+
+mkdir -p models/3ddfa_v2
+cd models/3ddfa_v2
+git clone https://github.com/cleardusk/3DDFA_V2.git .
+# Build Sim3DR (C++ Extension)
+cd Sim3DR
+python setup.py build_ext --inplace
+
+--------------------------------------------------
+
 ## 8. Ghi chú
 - BiSeNet: tách mask tóc cho Inpainting
 - IP-Adapter FaceID: giữ nguyên khuôn mặt

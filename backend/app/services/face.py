@@ -195,6 +195,11 @@ class FaceInfoService:
         insight_faces = self.app.get(image_cv2)
         print(f"[FaceInfoService] InsightFace detected {len(insight_faces)} face(s)")
         
+        # DEBUG: Check 106 landmarks availability
+        if len(insight_faces) > 0:
+            has_106 = hasattr(insight_faces[0], 'landmark_2d_106') and insight_faces[0].landmark_2d_106 is not None
+            print(f"[FaceInfoService] 106 Landmarks available: {has_106}")
+
         # Danh sách kết quả cuối cùng
         all_faces = list(insight_faces)
         
@@ -257,8 +262,19 @@ class FaceInfoService:
         return face_info.embedding
 
     def get_keypoints(self, face_info):
+        """
+        Trả về keypoints. Ưu tiên 106 points nếu có.
+        """
+        if hasattr(face_info, 'landmark_2d_106') and face_info.landmark_2d_106 is not None:
+             return face_info.landmark_2d_106
         return face_info.kps
     
+    def get_5_keypoints(self, face_info):
+        """
+        Luôn trả về 5 points chuẩn (cho alignment/metrics cũ).
+        """
+        return face_info.kps
+
     def is_partial_face(self, face_info):
         """Check if face_info is partial face (from AdaFace)"""
         return getattr(face_info, 'is_partial', False)

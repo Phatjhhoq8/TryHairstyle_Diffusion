@@ -196,7 +196,19 @@ hair_pil = Image.open(hair_img_path).convert("RGB")
 faces = self.app.get(image_cv2)
 ```
 
-### 3.2.2: Kiểm tra và xoay ảnh nếu cần
+### 3.2.2: Xử lý Profile Face (Góc nghiêng > 45°)
+```python
+# Kiểm tra góc Yaw từ Pose
+if abs(yaw) > 45:
+    # Sử dụng 3DDFA_V2 để dựng 3D Pose & Landmarks
+    # Thực hiện Roll Correction (Xoay thẳng đầu)
+    # Align & Crop 112x112
+    # Trích xuất Embedding bằng AdaFace
+else:
+    # Sử dụng InsightFace/AdaFace 2D alignment thông thường
+```
+
+### 3.2.3: Kiểm tra và xoay ảnh nếu cần
 ```python
 # Dòng 29-31: Nếu không tìm thấy mặt, thử xoay 90°
 if len(faces) == 0:
@@ -204,7 +216,7 @@ if len(faces) == 0:
     faces = self.app.get(rotated)
 ```
 
-### 3.2.3: Chọn khuôn mặt lớn nhất
+### 3.2.4: Chọn khuôn mặt lớn nhất
 ```python
 # Dòng 32-36: Sort theo diện tích bbox
 faces = sorted(

@@ -26,13 +26,16 @@
 | **Segmentation** | **BiSeNet-v2** hoặc **FaceParsing.PyTorch** → Tách Mask (Tóc, Mặt, Cổ) |
 | **Adapter (Identity)** | **InstantID** → Giữ khuôn mặt mạnh mẽ |
 | **Adapter (Style)** | **IP-Adapter Plus** → Transfer kiểu tóc (Style/Reference) |
+| **Profile Alignment** | **3DDFA_V2** → Căn chỉnh 3D cho góc nghiêng lớn (>45°) |
 | **ControlNet** | **ControlNet Depth** → Giữ cấu trúc đầu |
 
 ---
 
 ## III. Preprocessing (Tiền xử lý)
 
-1.  **Alignment:** Căn chỉnh khuôn mặt dựa trên vị trí mắt.
+1.  **Alignment:**
+    *   **Frontal Face (<45°):** Căn chỉnh 2D dựa trên 5 điểm (mắt, mũi, miệng).
+    *   **Profile Face (>45°):** Căn chỉnh 3D (3DDFA_V2) + Roll Correction để giữ nguyên góc nghiêng tự nhiên.
 2.  **Normalization:** Chuẩn hóa kích thước ảnh (Target Size: 1024x1024 cho SDXL).
 3.  **Masking (Tách nền/bộ phận):**
     *   Tách riêng các vùng: `hair` (tóc), `face` (mặt), `neck` (cổ), `background` (nền).
