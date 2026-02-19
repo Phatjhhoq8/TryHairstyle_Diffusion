@@ -1,0 +1,20 @@
+{
+    "face_id": 1,
+    "yaw": -69.16,
+    "pitch": 9.12,
+    "roll": 15.39,
+    "bbox": [
+        976.6,
+        181.7,
+        1384.5,
+        739.6
+    ],
+    "confidence": 0.873,
+    "embedding_model": "InsightFace",
+    "embedding_path": "face_01_yaw_69.npy",
+    "visualization_path": "face_01_yaw_69.png",
+    "embedding_dim": 512,
+    "pose_method": "3DDFA",
+    "yaw_threshold": 45.0,
+    "timestamp": "2026-02-20T00:52:07.111473"
+}

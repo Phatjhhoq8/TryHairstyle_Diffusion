@@ -87,7 +87,7 @@ class TrainingVisualizer:
             self.logger.error(f"Lỗi load SegFormer: {e}")
             self.segformer = None
     
-    def createVisualization(self, imageCv2, bbox, faceId, basePath, landmarks106=None, poseInfo=None, vertices3D=None):
+    def createVisualization(self, imageCv2, bbox, faceId, basePath, landmarks106=None, poseInfo=None, vertices3D=None, allBboxes=None):
         """
         Tạo 1 ảnh visualize ghép 2x2 cho 1 khuôn mặt.
         
@@ -105,6 +105,7 @@ class TrainingVisualizer:
             basePath: str — đường dẫn base (không có extension)
             landmarks106: numpy array (106, 2) hoặc None
             poseInfo: dict {yaw, pitch, roll} hoặc None
+            allBboxes: list of [x1, y1, x2, y2] — tất cả bboxes trong ảnh
         
         Returns:
             str: đường dẫn file đã lưu
@@ -112,12 +113,16 @@ class TrainingVisualizer:
         ensureDir(os.path.dirname(basePath))
         h, w = imageCv2.shape[:2]
         
-        # Chạy SegFormer 1 lần, dùng cho cả 4 ảnh
-        parsing = self._runSegFormer(imageCv2)
+        # Chạy SegFormer trên vùng crop quanh bbox (isolate từng face)
+        parsing = self._runSegFormerForFace(imageCv2, bbox)
+        
+        # Lọc bỏ face/hair của khuôn mặt lân cận (nếu có nhiều face)
+        if parsing is not None and allBboxes is not None and len(allBboxes) > 1:
+            parsing = self._filterParsingForFace(parsing, bbox, allBboxes)
         
         # Mở rộng face mask bằng 3D mesh khi có dữ liệu 3D
         if vertices3D is not None and parsing is not None:
-            parsing = self._enhanceFaceMaskWith3D(parsing, vertices3D, w, h)
+            parsing = self._enhanceFaceMaskWith3D(parsing, vertices3D)
             self.logger.info(f"  Face mask enhanced bằng 3D mesh projection")
         
         # Mở rộng hair mask về phía sau ót khi profile lớn
@@ -185,6 +190,191 @@ class TrainingVisualizer:
             self.logger.error(f"Lỗi SegFormer forward: {e}")
             return None
     
+    def _runSegFormerForFace(self, imageCv2, bbox, margin=0.8):
+        """
+        Crop vùng quanh bbox → chạy SegFormer → map parsing về full-image resolution.
+        
+        Đảm bảo mỗi face chỉ có parsing của chính nó, không lẫn face khác.
+        
+        Args:
+            imageCv2: numpy array (BGR) — ảnh gốc full
+            bbox: [x1, y1, x2, y2] — bounding box của face
+            margin: float — tỉ lệ mở rộng bbox (0.8 = 80% mỗi phía)
+        
+        Returns:
+            numpy array (imgH, imgW) class labels ở full-image resolution, hoặc None
+        """
+        if self.segformer is None:
+            return None
+        
+        try:
+            imgH, imgW = imageCv2.shape[:2]
+            x1, y1, x2, y2 = bbox
+            bw, bh = x2 - x1, y2 - y1
+            
+            # Mở rộng bbox — phía trên nhiều hơn để bắt tóc
+            cx1 = max(0, int(x1 - bw * margin))
+            cy1 = max(0, int(y1 - bh * margin * 1.5))  # Trên mở rộng thêm 50%
+            cx2 = min(imgW, int(x2 + bw * margin))
+            cy2 = min(imgH, int(y2 + bh * margin * 0.5))  # Dưới ít hơn (cổ/vai)
+            
+            # Crop ảnh
+            cropped = imageCv2[cy1:cy2, cx1:cx2]
+            
+            if cropped.size == 0:
+                self.logger.warning("  Crop region rỗng, fallback full image")
+                return self._runSegFormer(imageCv2)
+            
+            cropH, cropW = cropped.shape[:2]
+            self.logger.info(f"  SegFormer crop: ({cx1},{cy1})-({cx2},{cy2}) = {cropW}x{cropH}")
+            
+            # Chạy SegFormer trên crop
+            cropParsing = self._runSegFormer(cropped)
+            if cropParsing is None:
+                return None
+            
+            # Scale parsing (512x512) về kích thước crop thực
+            cropParsingResized = cv2.resize(
+                cropParsing.astype(np.uint8),
+                (cropW, cropH),
+                interpolation=cv2.INTER_NEAREST
+            ).astype(np.int64)
+            
+            # Tạo full-image parsing (toàn background = 0)
+            fullParsing = np.zeros((imgH, imgW), dtype=np.int64)
+            
+            # Đặt crop parsing vào đúng vị trí
+            fullParsing[cy1:cy2, cx1:cx2] = cropParsingResized
+            
+            return fullParsing
+            
+        except Exception as e:
+            self.logger.error(f"  Lỗi SegFormer crop: {e}")
+            return None
+    
+    def _filterParsingForFace(self, parsing, targetBbox, allBboxes):
+        """
+        Lọc parsing: chỉ giữ face/hair thuộc targetBbox, loại bỏ face lân cận.
+        
+        Chiến lược 2 lớp:
+        1. Exclusion zones: tạo vùng cấm quanh các bbox khác
+        2. Connected components: giữ face component gần targetBbox nhất
+        
+        Args:
+            parsing: numpy (H, W) — full-image parsing
+            targetBbox: [x1, y1, x2, y2] — bbox của face hiện tại
+            allBboxes: list of [x1, y1, x2, y2] — tất cả bboxes
+        
+        Returns:
+            numpy (H, W) — parsing đã lọc
+        """
+        try:
+            pH, pW = parsing.shape[:2]
+            filtered = parsing.copy()
+            
+            tx1, ty1, tx2, ty2 = targetBbox
+            tCenterX = (tx1 + tx2) / 2
+            tCenterY = (ty1 + ty2) / 2
+            
+            # ========================================
+            # LỚP 1: Exclusion zones quanh bbox khác
+            # ========================================
+            # Với mỗi bbox khác, tạo vùng cấm (bbox thu nhỏ 20%)
+            # — mọi face/hair pixel trong vùng này → background
+            for otherBbox in allBboxes:
+                ox1, oy1, ox2, oy2 = otherBbox
+                oCenterX = (ox1 + ox2) / 2
+                oCenterY = (oy1 + oy2) / 2
+                
+                # Bỏ qua bbox trùng (cùng face)
+                dist = np.sqrt((tCenterX - oCenterX)**2 + (tCenterY - oCenterY)**2)
+                if dist < 5:  # ~cùng bbox
+                    continue
+                
+                # Tạo exclusion zone = bbox khác (co vào 20% để chắc chắn)
+                ow, oh = ox2 - ox1, oy2 - oy1
+                shrink = 0.2
+                ex1 = max(0, int(ox1 + ow * shrink))
+                ey1 = max(0, int(oy1 + oh * shrink))
+                ex2 = min(pW, int(ox2 - ow * shrink))
+                ey2 = min(pH, int(oy2 - oh * shrink))
+                
+                # Xóa face/hair trong exclusion zone
+                for cls in FACE_CLASSES | HAIR_CLASSES:
+                    regionMask = (filtered[ey1:ey2, ex1:ex2] == cls)
+                    filtered[ey1:ey2, ex1:ex2][regionMask] = 0
+            
+            # ========================================
+            # LỚP 2: Connected components cho FACE
+            # ========================================
+            # Giữ chỉ face component gần targetBbox nhất
+            faceMask = np.zeros((pH, pW), dtype=np.uint8)
+            for cls in FACE_CLASSES:
+                faceMask[filtered == cls] = 255
+            
+            numLabels, labels = cv2.connectedComponents(faceMask)
+            
+            if numLabels > 2:  # Có nhiều hơn 1 face component
+                bestLabel = -1
+                bestDist = float('inf')
+                
+                for label in range(1, numLabels):
+                    ys, xs = np.where(labels == label)
+                    if len(xs) == 0:
+                        continue
+                    centroid = (np.mean(xs), np.mean(ys))
+                    d = np.sqrt((centroid[0] - tCenterX)**2 + (centroid[1] - tCenterY)**2)
+                    if d < bestDist:
+                        bestDist = d
+                        bestLabel = label
+                
+                # Xóa face components xa target
+                removedPixels = 0
+                for label in range(1, numLabels):
+                    if label != bestLabel:
+                        wrongFaceMask = (labels == label)
+                        filtered[wrongFaceMask] = 0
+                        removedPixels += np.sum(wrongFaceMask)
+                
+                if removedPixels > 0:
+                    self.logger.info(f"  Loại bỏ {removedPixels} face pixels thuộc face khác")
+            
+            # ========================================
+            # LỚP 3: Connected components cho HAIR
+            # ========================================
+            # Giữ hair components gần target face, loại components xa
+            hairMask = np.zeros((pH, pW), dtype=np.uint8)
+            for cls in HAIR_CLASSES:
+                hairMask[filtered == cls] = 255
+            
+            numHairLabels, hairLabels = cv2.connectedComponents(hairMask)
+            
+            if numHairLabels > 2:  # Có nhiều hair components
+                tbw = tx2 - tx1
+                maxHairDist = tbw * 2.0  # Hair không nên xa quá 2x bbox width
+                
+                removedHair = 0
+                for label in range(1, numHairLabels):
+                    ys, xs = np.where(hairLabels == label)
+                    if len(xs) == 0:
+                        continue
+                    centroid = (np.mean(xs), np.mean(ys))
+                    d = np.sqrt((centroid[0] - tCenterX)**2 + (centroid[1] - tCenterY)**2)
+                    
+                    if d > maxHairDist:
+                        wrongHairMask = (hairLabels == label)
+                        filtered[wrongHairMask] = 0
+                        removedHair += np.sum(wrongHairMask)
+                
+                if removedHair > 0:
+                    self.logger.info(f"  Loại bỏ {removedHair} hair pixels xa face hiện tại")
+            
+            return filtered
+            
+        except Exception as e:
+            self.logger.warning(f"  Lỗi filter parsing: {e}")
+            return parsing
+    
     # ============================================================
     # 1. BBOX IMAGE
     # ============================================================
@@ -216,7 +406,8 @@ class TrainingVisualizer:
         if parsing is None:
             return None
         
-        mask = np.full((512, 512, 3), 128, dtype=np.uint8)  # Xám (background)
+        pH, pW = parsing.shape[:2]
+        mask = np.full((pH, pW, 3), 128, dtype=np.uint8)  # Xám (background)
         
         for cls in FACE_CLASSES:
             mask[parsing == cls] = [255, 255, 255]  # Trắng
@@ -224,7 +415,9 @@ class TrainingVisualizer:
         for cls in HAIR_CLASSES:
             mask[parsing == cls] = [0, 0, 0]  # Đen
         
-        return cv2.resize(mask, (targetW, targetH), interpolation=cv2.INTER_NEAREST)
+        if (pH, pW) != (targetH, targetW):
+            mask = cv2.resize(mask, (targetW, targetH), interpolation=cv2.INTER_NEAREST)
+        return mask
     
     # ============================================================
     # 3. GEOMETRY IMAGE
@@ -239,10 +432,11 @@ class TrainingVisualizer:
         
         # Vẽ vùng hair đỏ bán trong suốt (từ parsing)
         if parsing is not None:
-            hairMask512 = np.zeros((512, 512), dtype=np.uint8)
+            pH, pW = parsing.shape[:2]
+            hairMaskP = np.zeros((pH, pW), dtype=np.uint8)
             for cls in HAIR_CLASSES:
-                hairMask512[parsing == cls] = 255
-            hairMask = cv2.resize(hairMask512, (w, h), interpolation=cv2.INTER_NEAREST)
+                hairMaskP[parsing == cls] = 255
+            hairMask = cv2.resize(hairMaskP, (w, h), interpolation=cv2.INTER_NEAREST) if (pH, pW) != (h, w) else hairMaskP
             
             # Overlay đỏ cho hair
             redOverlay = np.zeros_like(vis)
@@ -251,10 +445,11 @@ class TrainingVisualizer:
         
         # Vẽ face contour bằng parsing (viền trắng)
         if parsing is not None:
-            faceMask512 = np.zeros((512, 512), dtype=np.uint8)
+            pH, pW = parsing.shape[:2]
+            faceMaskP = np.zeros((pH, pW), dtype=np.uint8)
             for cls in FACE_CLASSES:
-                faceMask512[parsing == cls] = 255
-            faceMask = cv2.resize(faceMask512, (w, h), interpolation=cv2.INTER_NEAREST)
+                faceMaskP[parsing == cls] = 255
+            faceMask = cv2.resize(faceMaskP, (w, h), interpolation=cv2.INTER_NEAREST) if (pH, pW) != (h, w) else faceMaskP
             contours, _ = cv2.findContours(faceMask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             cv2.drawContours(vis, contours, -1, (255, 255, 255), 1)
         
@@ -365,15 +560,17 @@ class TrainingVisualizer:
         if parsing is None:
             return vis
         
-        # Tạo mask face + hair
-        faceHairMask512 = np.zeros((512, 512), dtype=np.uint8)
-        for cls in FACE_CLASSES:
-            faceHairMask512[parsing == cls] = 255
-        for cls in HAIR_CLASSES:
-            faceHairMask512[parsing == cls] = 255
+        pH, pW = parsing.shape[:2]
         
-        # Resize về kích thước gốc
-        faceHairMask = cv2.resize(faceHairMask512, (w, h), interpolation=cv2.INTER_NEAREST)
+        # Tạo mask face + hair
+        faceHairMaskP = np.zeros((pH, pW), dtype=np.uint8)
+        for cls in FACE_CLASSES:
+            faceHairMaskP[parsing == cls] = 255
+        for cls in HAIR_CLASSES:
+            faceHairMaskP[parsing == cls] = 255
+        
+        # Resize về kích thước gốc nếu cần
+        faceHairMask = cv2.resize(faceHairMaskP, (w, h), interpolation=cv2.INTER_NEAREST) if (pH, pW) != (h, w) else faceHairMaskP
         
         # Overlay đỏ (BGR: Blue=0, Green=0, Red=200)
         redOverlay = np.zeros_like(vis)
@@ -399,17 +596,19 @@ class TrainingVisualizer:
         Chỉ fill vào vùng background, KHÔNG ghi đè face/skin.
         
         Args:
-            parsing: numpy (512, 512) — BiSeNet parsing map
+            parsing: numpy (H, W) — parsing map (full-image resolution)
             yaw: float — góc yaw (độ)
         
         Returns:
-            numpy (512, 512) — parsing map đã dilate hair
+            numpy (H, W) — parsing map đã dilate hair
         """
         try:
             absYaw = abs(yaw)
+            pH, pW = parsing.shape[:2]
             
-            # Tính kernel width tỉ lệ với yaw (45°→10px, 90°→40px trong 512-space)
-            kernelW = int(np.interp(absYaw, [45, 90], [10, 40]))
+            # Tính kernel width tỉ lệ với yaw, scale theo parsing size
+            scaleFactor = pW / 512.0
+            kernelW = int(np.interp(absYaw, [45, 90], [10, 40]) * scaleFactor)
             kernelH = max(3, kernelW // 4)  # Chiều dọc nhỏ hơn để không lan quá nhiều
             
             if kernelW < 3:
@@ -426,7 +625,7 @@ class TrainingVisualizer:
                 kernel[:, kernelW // 2:] = 1
             
             # Tách hair mask từ parsing
-            hairMask = np.zeros((512, 512), dtype=np.uint8)
+            hairMask = np.zeros((pH, pW), dtype=np.uint8)
             for cls in HAIR_CLASSES:
                 hairMask[parsing == cls] = 255
             
@@ -457,44 +656,42 @@ class TrainingVisualizer:
     # ============================================================
     # 6. ENHANCE FACE MASK VỚI 3D MESH
     # ============================================================
-    def _enhanceFaceMaskWith3D(self, parsing, vertices3D, imgW, imgH):
+    def _enhanceFaceMaskWith3D(self, parsing, vertices3D):
         """
         Bổ sung face region bằng 3D mesh projection.
         
         Dùng convex hull từ 3D projected points để fill vùng face
-        mà BiSeNet bỏ sót (thường xảy ra khi profile >45°).
+        mà SegFormer bỏ sót (thường xảy ra khi profile >45°).
         
         Chỉ fill vào vùng background/cloth, KHÔNG ghi đè hair.
         
         Args:
-            parsing: numpy (512, 512) — BiSeNet parsing map
+            parsing: numpy (H, W) — parsing map (full-image resolution)
             vertices3D: numpy (3, N) — 3D vertices (x, y, z in image coords)
-            imgW, imgH: kích thước ảnh gốc
         
         Returns:
-            numpy (512, 512) — parsing map đã enhance
+            numpy (H, W) — parsing map đã enhance
         """
         try:
-            # Lấy tọa độ 2D projection từ 3D vertices
-            xs = vertices3D[0, :]  # x coords (image space)
-            ys = vertices3D[1, :]  # y coords (image space)
+            pH, pW = parsing.shape[:2]
             
-            # Scale về 512x512 (parsing space)
-            xsScaled = (xs / imgW * 512).astype(np.int32)
-            ysScaled = (ys / imgH * 512).astype(np.int32)
+            # Lấy tọa độ 2D projection từ 3D vertices
+            # vertices3D đã ở image space, parsing cũng ở full-image resolution
+            xs = vertices3D[0, :].astype(np.int32)
+            ys = vertices3D[1, :].astype(np.int32)
             
             # Clip bounds
-            xsScaled = np.clip(xsScaled, 0, 511)
-            ysScaled = np.clip(ysScaled, 0, 511)
+            xs = np.clip(xs, 0, pW - 1)
+            ys = np.clip(ys, 0, pH - 1)
             
             # Tạo contour points cho convex hull
-            pts = np.column_stack([xsScaled, ysScaled])
+            pts = np.column_stack([xs, ys])
             
             # Convex hull bao quanh toàn bộ face mesh
             hull = cv2.convexHull(pts)
             
             # Fill convex hull → tạo face region mask
-            meshMask = np.zeros((512, 512), dtype=np.uint8)
+            meshMask = np.zeros((pH, pW), dtype=np.uint8)
             cv2.fillConvexPoly(meshMask, hull, 255)
             
             # Chỉ fill vào vùng background/cloth (KHÔNG ghi đè hair/hat)

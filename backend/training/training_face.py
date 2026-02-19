@@ -144,6 +144,9 @@ class TrainingFacePipeline:
         # ==========================================
         results = []
         
+        # Thu thập tất cả bboxes để visualizer loại trừ face lân cận
+        allBboxes = [fd["bbox"] for fd in faces]
+        
         for idx, faceData in enumerate(faces):
             faceId = idx + 1
             bbox = faceData["bbox"]
@@ -154,7 +157,7 @@ class TrainingFacePipeline:
             self.logger.info(f"  Confidence: {confidence:.3f}")
             
             faceResult = self._processSingleFace(
-                imageCv2, bbox, confidence, faceId, outputDir
+                imageCv2, bbox, confidence, faceId, outputDir, allBboxes
             )
             
             if faceResult is not None:
@@ -166,7 +169,7 @@ class TrainingFacePipeline:
         
         return results
     
-    def _processSingleFace(self, imageCv2, bbox, confidence, faceId, outputDir):
+    def _processSingleFace(self, imageCv2, bbox, confidence, faceId, outputDir, allBboxes=None):
         """
         Xử lý 1 khuôn mặt hoàn chỉnh.
         
@@ -258,7 +261,8 @@ class TrainingFacePipeline:
                 imageCv2, bbox, faceId, basePath,
                 landmarks106=landmarks106,
                 poseInfo=poseInfoForVis,
-                vertices3D=vertices3D
+                vertices3D=vertices3D,
+                allBboxes=allBboxes
             )
             
             # ==========================================

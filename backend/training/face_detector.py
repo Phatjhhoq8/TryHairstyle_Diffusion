@@ -92,6 +92,12 @@ class TrainingFaceDetector:
                         "confidence": float(confs[i])
                     })
             
+            # Sắp xếp theo confidence giảm dần
+            faces.sort(key=lambda f: f["confidence"], reverse=True)
+            
+            # NMS: loại bỏ bbox trùng lặp (IoU > 0.5)
+            faces = self._nmsFilter(faces, iouThreshold=0.5)
+            
             # Sắp xếp theo diện tích giảm dần (face lớn nhất trước)
             faces.sort(
                 key=lambda f: (f["bbox"][2] - f["bbox"][0]) * (f["bbox"][3] - f["bbox"][1]),
@@ -104,6 +110,66 @@ class TrainingFaceDetector:
         except Exception as e:
             self.logger.error(f"Lỗi detection: {e}")
             return []
+    
+    def _nmsFilter(self, faces, iouThreshold=0.5):
+        """
+        Non-Maximum Suppression — loại bỏ bbox trùng lặp.
+        
+        Khi 2 bbox có IoU > threshold, giữ cái confidence cao hơn.
+        Input đã sort theo confidence giảm dần.
+        
+        Args:
+            faces: list of dict (đã sort theo confidence giảm dần)
+            iouThreshold: float — ngưỡng IoU để coi là trùng
+        
+        Returns:
+            list of dict — faces đã loại bỏ trùng lặp
+        """
+        if len(faces) <= 1:
+            return faces
+        
+        keep = []
+        suppressed = set()
+        
+        for i, faceA in enumerate(faces):
+            if i in suppressed:
+                continue
+            keep.append(faceA)
+            
+            bA = faceA["bbox"]
+            for j in range(i + 1, len(faces)):
+                if j in suppressed:
+                    continue
+                bB = faces[j]["bbox"]
+                
+                iou = self._computeIoU(bA, bB)
+                if iou > iouThreshold:
+                    suppressed.add(j)
+                    self.logger.info(
+                        f"  NMS: loại bbox trùng (IoU={iou:.2f}, conf={faces[j]['confidence']:.3f})"
+                    )
+        
+        return keep
+    
+    def _computeIoU(self, boxA, boxB):
+        """Tính IoU giữa 2 bbox [x1, y1, x2, y2]."""
+        x1 = max(boxA[0], boxB[0])
+        y1 = max(boxA[1], boxB[1])
+        x2 = min(boxA[2], boxB[2])
+        y2 = min(boxA[3], boxB[3])
+        
+        interW = max(0, x2 - x1)
+        interH = max(0, y2 - y1)
+        interArea = interW * interH
+        
+        areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+        areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+        
+        union = areaA + areaB - interArea
+        if union <= 0:
+            return 0.0
+        
+        return interArea / union
     
     def detectBatch(self, images, confThreshold=None):
         """
