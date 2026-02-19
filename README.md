@@ -90,7 +90,7 @@ python download_models.py
 Script sẽ tự động tải:
 - ControlNet Depth (SDXL)
 - InstantID & IP-Adapter
-- **SegFormer Face Parsing** (thay thế BiSeNet)
+- **SegFormer Face Parsing** (tách mask face/hair)
 - CLIP Image Encoder
 - YOLOv8-Face, AdaFace, 3DDFA V2
 
@@ -138,7 +138,7 @@ hf download h94/IP-Adapter \
 
 ### 8.5 SegFormer – Face Parsing (tách mask tóc & khuôn mặt)
 
-SegFormer (Transformer-based) thay thế BiSeNet, accuracy cao hơn đặc biệt trên profile views.
+SegFormer (Transformer-based) cho face/hair parsing, accuracy cao đặc biệt trên profile views.
 
 ```bash
 # Tải tự động bằng download_models.py (khuyên dùng)

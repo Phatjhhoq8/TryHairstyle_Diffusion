@@ -1,92 +1,22 @@
 """
-Face Detection Service - Hybrid YOLO + InsightFace + AdaFace
+Face Detection Service - Sử dụng training modules đã refactor.
 
 Pipeline:
-1. YOLOv8-Face detect tất cả faces (kể cả partial/profile)
-2. InsightFace analyze để lấy embedding, keypoints
-3. Nếu InsightFace không detect được (partial) → dùng AdaFace fallback
+1. TrainingFaceDetector (YOLOv8-Face + NMS) detect tất cả faces
+2. InsightFace analyze để lấy embedding, keypoints, 106 landmarks
+3. TrainingEmbedder cho embedding extraction theo yaw (InsightFace < 45° / AdaFace ≥ 45°)
 """
 
 import cv2
 import numpy as np
 import os
 from backend.app.config import model_paths, settings
-
-
-class YOLOFaceDetector:
-    """
-    YOLOv8-Face detector cho việc phát hiện khuôn mặt.
-    Có thể detect partial/profile faces tốt hơn InsightFace.
-    """
-    
-    def __init__(self):
-        self.model = None
-        self._load_model()
-    
-    def _load_model(self):
-        """Lazy load YOLOv8-Face model"""
-        try:
-            from ultralytics import YOLO
-            
-            model_path = model_paths.YOLO_FACE_MODEL
-            
-            if not os.path.exists(model_path):
-                print(f"[YOLOFaceDetector] Model not found at {model_path}")
-                print("[YOLOFaceDetector] Run: python download_models.py")
-                self.model = None
-                return
-            
-            self.model = YOLO(model_path)
-            print(f"[YOLOFaceDetector] Loaded model from {model_path}")
-            
-        except ImportError:
-            print("[YOLOFaceDetector] ultralytics not installed. Run: pip install ultralytics")
-            self.model = None
-        except Exception as e:
-            print(f"[YOLOFaceDetector] Error loading model: {e}")
-            self.model = None
-    
-    def detect(self, image_cv2, conf_threshold=0.4):
-        if self.model is None:
-            return []
-        
-        try:
-            image_rgb = cv2.cvtColor(image_cv2, cv2.COLOR_BGR2RGB)
-
-            results = self.model(image_rgb, verbose=False, conf=conf_threshold)
-            
-            faces = []
-            for result in results:
-                boxes = result.boxes
-                if boxes is None:
-                    continue
-                    
-                for box in boxes:
-                    bbox = box.xyxy[0].cpu().numpy()  # [x1, y1, x2, y2]
-                    conf = float(box.conf[0].cpu().numpy())
-                    
-                    faces.append({
-                        'bbox': bbox.tolist(),
-                        'confidence': conf
-                    })
-            
-            faces = sorted(
-                faces,
-                key=lambda x: (x['bbox'][2] - x['bbox'][0]) * (x['bbox'][3] - x['bbox'][1]),
-                reverse=True
-            )
-            
-            return faces
-            
-        except Exception as e:
-            print(f"[YOLOFaceDetector] Detection error: {e}")
-            return []
-    
-    def is_available(self):
-        return self.model is not None
+from backend.app.services.face_detector import TrainingFaceDetector
+from backend.app.services.embedder import TrainingEmbedder
 
 
 class PartialFaceInfo:
+    """Wrapper cho face không được InsightFace xử lý đầy đủ."""
     def __init__(self, bbox, embedding, kps=None, det_score=0.0):
         self.bbox = np.array(bbox)
         self.embedding = embedding
@@ -96,12 +26,23 @@ class PartialFaceInfo:
 
 
 class FaceInfoService:
+    """
+    Service phân tích khuôn mặt.
+    
+    Sử dụng:
+    - TrainingFaceDetector: YOLOv8-Face + NMS cho detection
+    - InsightFace (antelopev2): landmarks, embedding cho frontal face
+    - TrainingEmbedder: yaw-based embedding switching (InsightFace/AdaFace)
+    """
+    
     def __init__(self):
         import insightface
         from insightface.app import FaceAnalysis
         
-        self.yolo_detector = YOLOFaceDetector()
+        # YOLOv8-Face detector (từ training module, có NMS)
+        self.yolo_detector = TrainingFaceDetector()
         
+        # InsightFace cho landmark extraction + embedding
         self.app = FaceAnalysis(
             name='antelopev2', 
             root=model_paths.INSIGHTFACE_ROOT, 
@@ -109,56 +50,34 @@ class FaceInfoService:
         )
         self.app.prepare(ctx_id=0, det_size=(640, 640))
         
-        # AdaFace cho partial face embedding (lazy load)
-        self.adaface = None
-        self._adaface_init_attempted = False
+        # Training Embedder cho yaw-based embedding (lazy load)
+        self.embedder = None
+        self._embedder_init_attempted = False
         
-        print("[FaceInfoService] Initialized with hybrid YOLO + InsightFace + AdaFace")
+        print("[FaceInfoService] Initialized with TrainingFaceDetector + InsightFace + TrainingEmbedder")
     
-    def _init_adaface(self):
-        if self._adaface_init_attempted:
-            return self.adaface is not None
+    def _init_embedder(self):
+        """Lazy init TrainingEmbedder."""
+        if self._embedder_init_attempted:
+            return self.embedder is not None
         
-        self._adaface_init_attempted = True
+        self._embedder_init_attempted = True
         try:
-            from backend.app.services.adaface_service import AdaFaceService
-            self.adaface = AdaFaceService()
-            if not self.adaface.is_available():
-                print("[FaceInfoService] AdaFace model not available")
-                self.adaface = None
+            self.embedder = TrainingEmbedder()
+            avail = self.embedder.isAvailable()
+            if not avail.get("insightface") and not avail.get("adaface"):
+                print("[FaceInfoService] TrainingEmbedder: không có model nào available")
+                self.embedder = None
                 return False
-            print("[FaceInfoService] AdaFace initialized for profile face support")
+            print(f"[FaceInfoService] TrainingEmbedder initialized: {avail}")
             return True
         except Exception as e:
-            print(f"[FaceInfoService] AdaFace init failed: {e}")
-            self.adaface = None
+            print(f"[FaceInfoService] TrainingEmbedder init failed: {e}")
+            self.embedder = None
             return False
     
-    def _match_yolo_to_insight(self, yolo_faces, insight_faces, iou_threshold=0.5):
-        if len(insight_faces) == 0:
-            return yolo_faces
-        
-        unmatched = []
-        
-        for yolo_face in yolo_faces:
-            yolo_bbox = yolo_face['bbox']
-            matched = False
-            
-            for insight_face in insight_faces:
-                insight_bbox = insight_face.bbox.tolist()
-                
-                # Tính IoU
-                iou = self._compute_iou(yolo_bbox, insight_bbox)
-                if iou > iou_threshold:
-                    matched = True
-                    break
-            
-            if not matched:
-                unmatched.append(yolo_face)
-        
-        return unmatched
-    
     def _compute_iou(self, box1, box2):
+        """Tính IoU giữa 2 bbox."""
         x1 = max(box1[0], box2[0])
         y1 = max(box1[1], box2[1])
         x2 = min(box1[2], box2[2])
@@ -175,21 +94,45 @@ class FaceInfoService:
             return 0
         
         return inter_area / union_area
+    
+    def _match_yolo_to_insight(self, yolo_faces, insight_faces, iou_threshold=0.5):
+        """Tìm YOLO faces không match với InsightFace (partial/profile)."""
+        if len(insight_faces) == 0:
+            return yolo_faces
+        
+        unmatched = []
+        
+        for yolo_face in yolo_faces:
+            yolo_bbox = yolo_face['bbox']
+            matched = False
+            
+            for insight_face in insight_faces:
+                insight_bbox = insight_face.bbox.tolist()
+                
+                iou = self._compute_iou(yolo_bbox, insight_bbox)
+                if iou > iou_threshold:
+                    matched = True
+                    break
+            
+            if not matched:
+                unmatched.append(yolo_face)
+        
+        return unmatched
 
     def analyze_all(self, image_cv2, use_adaface_fallback=True):
         """
         Phân tích TẤT CẢ khuôn mặt từ ảnh OpenCV (BGR).
         
         Pipeline:
-        1. YOLO detect tất cả faces
+        1. YOLO detect tất cả faces (có NMS loại trùng)
         2. InsightFace analyze từng face
-        3. Với faces mà InsightFace miss → dùng AdaFace để extract embedding
+        3. Với faces mà InsightFace miss → dùng TrainingEmbedder
         """
-        # Step 1: YOLO detection (có thể detect partial faces)
+        # Step 1: YOLO detection (có NMS tích hợp)
         yolo_faces = []
-        if self.yolo_detector.is_available():
-            yolo_faces = self.yolo_detector.detect(image_cv2, conf_threshold=0.4)
-            print(f"[FaceInfoService] YOLO detected {len(yolo_faces)} face(s)")
+        if self.yolo_detector.isAvailable():
+            yolo_faces = self.yolo_detector.detect(image_cv2)
+            print(f"[FaceInfoService] YOLO detected {len(yolo_faces)} face(s) (with NMS)")
         
         # Step 2: InsightFace analysis
         insight_faces = self.app.get(image_cv2)
@@ -208,30 +151,29 @@ class FaceInfoService:
             unmatched_yolo = self._match_yolo_to_insight(yolo_faces, insight_faces)
             
             if len(unmatched_yolo) > 0:
-                print(f"[FaceInfoService] Found {len(unmatched_yolo)} partial face(s), trying AdaFace...")
+                print(f"[FaceInfoService] Found {len(unmatched_yolo)} partial face(s), trying TrainingEmbedder...")
                 
-                # Init AdaFace nếu chưa
-                if self._init_adaface():
+                # Init TrainingEmbedder nếu chưa
+                if self._init_embedder():
                     for yolo_face in unmatched_yolo:
                         bbox = yolo_face['bbox']
                         
-                        # Extract embedding bằng AdaFace
-                        embedding = self.adaface.get_embedding(image_cv2, bbox=bbox)
+                        # Dùng TrainingEmbedder (yaw=90 vì partial face thường profile)
+                        result = self.embedder.getEmbedding(image_cv2, bbox, yaw=90.0)
                         
-                        if embedding is not None:
-                            # Tạo PartialFaceInfo
+                        if result is not None:
                             partial_face = PartialFaceInfo(
                                 bbox=bbox,
-                                embedding=embedding,
-                                kps=None,  # Không có keypoints cho partial faces
+                                embedding=result["embedding"],
+                                kps=None,
                                 det_score=yolo_face['confidence']
                             )
                             all_faces.append(partial_face)
-                            print(f"[FaceInfoService] ✓ AdaFace extracted embedding for partial face")
+                            print(f"[FaceInfoService] ✓ {result['model_name']} extracted embedding for partial face")
                         else:
-                            print(f"[FaceInfoService] ✗ AdaFace failed for partial face")
+                            print(f"[FaceInfoService] ✗ TrainingEmbedder failed for partial face")
                 else:
-                    print(f"[FaceInfoService] AdaFace not available, skipping {len(unmatched_yolo)} partial face(s)")
+                    print(f"[FaceInfoService] TrainingEmbedder not available, skipping {len(unmatched_yolo)} partial face(s)")
         
         if len(all_faces) == 0:
             if len(yolo_faces) > 0:
@@ -276,7 +218,7 @@ class FaceInfoService:
         return face_info.kps
 
     def is_partial_face(self, face_info):
-        """Check if face_info is partial face (from AdaFace)"""
+        """Check if face_info is partial face (from TrainingEmbedder)"""
         return getattr(face_info, 'is_partial', False)
     
     def get_detection_status(self, image_cv2):
@@ -288,13 +230,13 @@ class FaceInfoService:
             dict với keys:
                 - yolo_count: Số faces YOLO detect được
                 - insight_count: Số faces InsightFace detect được  
-                - adaface_count: Số partial faces AdaFace xử lý được
+                - adaface_count: Số partial faces xử lý được
                 - status: 'success' | 'partial_faces_processed' | 'partial_faces_skipped' | 'no_face'
                 - message: Thông báo cho user
         """
         yolo_faces = []
-        if self.yolo_detector.is_available():
-            yolo_faces = self.yolo_detector.detect(image_cv2, conf_threshold=0.4)
+        if self.yolo_detector.isAvailable():
+            yolo_faces = self.yolo_detector.detect(image_cv2)
         
         insight_faces = self.app.get(image_cv2)
         
@@ -302,12 +244,12 @@ class FaceInfoService:
         insight_count = len(insight_faces)
         adaface_count = 0
         
-        # Check partial faces với AdaFace
-        if yolo_count > insight_count and self._init_adaface():
+        # Check partial faces với TrainingEmbedder
+        if yolo_count > insight_count and self._init_embedder():
             unmatched = self._match_yolo_to_insight(yolo_faces, insight_faces)
             for yolo_face in unmatched:
-                embedding = self.adaface.get_embedding(image_cv2, bbox=yolo_face['bbox'])
-                if embedding is not None:
+                result = self.embedder.getEmbedding(image_cv2, yolo_face['bbox'], yaw=90.0)
+                if result is not None:
                     adaface_count += 1
         
         total_processed = insight_count + adaface_count

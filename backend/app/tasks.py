@@ -83,7 +83,7 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         
         # 3. Segmentation (Create Mask)
         self.update_state(state='PROCESSING', meta={'step': 'Creating Hair Mask'})
-        # Mask tóc từ biSeNet
+        # Mask tóc từ SegFormer
         hair_mask = mask_service.get_mask(user_pil, target_class=17) # 17 is hair
         
         # 4. Depth Map (ControlNet Input)

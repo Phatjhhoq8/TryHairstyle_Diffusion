@@ -6,7 +6,7 @@ Pipeline chính orchestrate toàn bộ quy trình:
 2. Landmark & Pose Estimation (InsightFace + 3DDFA V2)
 3. Embedding Extraction (InsightFace ArcFace / AdaFace theo góc yaw)
 4. 3D Reconstruction (3DDFA V2, chỉ khi |yaw| >= 45°)
-5. Visualization & Segmentation (BiSeNet)
+5. Visualization & Segmentation (SegFormer)
 6. Export: .npy + .png + .json cho mỗi face
 
 Sẵn sàng tích hợp vào backend API.
@@ -23,16 +23,16 @@ import numpy as np
 from pathlib import Path
 from datetime import datetime
 
-from backend.training.utils import (
+from backend.app.services.training_utils import (
     setupLogger, getDevice, generateFilename,
     loadImageSafe, normalizeEmbedding, ensureDir,
     convertToWslPath
 )
-from backend.training.face_detector import TrainingFaceDetector
-from backend.training.pose_estimator import TrainingPoseEstimator
-from backend.training.embedder import TrainingEmbedder
-from backend.training.reconstructor_3d import TrainingReconstructor3D
-from backend.training.visualizer import TrainingVisualizer
+from backend.app.services.face_detector import TrainingFaceDetector
+from backend.app.services.pose_estimator import TrainingPoseEstimator
+from backend.app.services.embedder import TrainingEmbedder
+from backend.app.services.reconstructor_3d import TrainingReconstructor3D
+from backend.app.services.visualizer import TrainingVisualizer
 
 # Ngưỡng yaw cho logic chuyển model
 YAW_THRESHOLD = 45.0

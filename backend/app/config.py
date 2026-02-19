@@ -26,7 +26,6 @@ class ModelPaths:
     
     # Adapters (Local Paths from download_models.py structure)
     INSIGHTFACE_ROOT = str(BACKEND_DIR)
-    BISENET_CHECKPOINT = str(MODELS_DIR / "bisenet" / "79999_iter.pth")
     
     # ControlNet (SDXL)
     CONTROLNET_DEPTH = str(MODELS_DIR / "controlnet_depth")

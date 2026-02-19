@@ -17,10 +17,10 @@ import torch.nn.functional as F
 from pathlib import Path
 from PIL import Image
 
-from backend.training.utils import setupLogger, getDevice, normalizeEmbedding
+from backend.app.services.training_utils import setupLogger, getDevice, normalizeEmbedding
 
 # Đường dẫn
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 INSIGHTFACE_ROOT = str(BASE_DIR / "backend")
 ADAFACE_MODEL_PATH = str(BASE_DIR / "backend" / "models" / "adaface_ir101_webface4m.ckpt")
 

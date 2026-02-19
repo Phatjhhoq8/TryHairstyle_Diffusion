@@ -1,13 +1,13 @@
 {
     "face_id": 1,
     "yaw": 29.81,
-    "pitch": 7.31,
+    "pitch": 7.3,
     "roll": 1.92,
     "bbox": [
         711.6,
         228.5,
         1176.9,
-        807.6
+        807.5
     ],
     "confidence": 0.9133,
     "embedding_model": "InsightFace",
@@ -16,5 +16,5 @@
     "embedding_dim": 512,
     "pose_method": "3DDFA",
     "yaw_threshold": 45.0,
-    "timestamp": "2026-02-20T00:52:09.190743"
+    "timestamp": "2026-02-20T01:27:38.124886"
 }

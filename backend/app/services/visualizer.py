@@ -18,11 +18,11 @@ import torch.nn.functional as F
 from pathlib import Path
 from PIL import Image
 
-from backend.training.utils import setupLogger, getDevice, ensureDir
+from backend.app.services.training_utils import setupLogger, getDevice, ensureDir
 
 # SegFormer config
 SEGFORMER_MODEL_ID = "jonathandinu/face-parsing"
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 SEGFORMER_LOCAL_PATH = str(BASE_DIR / "backend" / "models" / "segformer_face_parsing")
 
 # SegFormer class mapping (jonathandinu/face-parsing)
@@ -176,7 +176,7 @@ class TrainingVisualizer:
                 outputs = self.segformer(**inputs)
                 logits = outputs.logits  # (1, 19, ~H/4, ~W/4)
                 
-                # Upsample về 512x512 (giống BiSeNet output size)
+                # Upsample về 512x512
                 upsampled = F.interpolate(
                     logits,
                     size=(512, 512),

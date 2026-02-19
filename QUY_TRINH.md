@@ -23,7 +23,7 @@
 | :--- | :--- |
 | **Base Model** | **SDXL** (Stable Diffusion XL) |
 | **Face Analysis** | **InsightFace** (buffalo_l) → Trích xuất ID Embedding |
-| **Segmentation** | **BiSeNet-v2** hoặc **FaceParsing.PyTorch** → Tách Mask (Tóc, Mặt, Cổ) |
+| **Segmentation** | **SegFormer** (`jonathandinu/face-parsing`) → Tách Mask (Tóc, Mặt, Cổ) |
 | **Adapter (Identity)** | **InstantID** → Giữ khuôn mặt mạnh mẽ |
 | **Adapter (Style)** | **IP-Adapter Plus** → Transfer kiểu tóc (Style/Reference) |
 | **Profile Alignment** | **3DDFA_V2** → Căn chỉnh 3D cho góc nghiêng lớn (>45°) |
@@ -81,7 +81,7 @@ Nếu model có sẵn chưa đủ tốt, thực hiện training 2 giai đoạn:
 ## VI. Inference Pipeline (Quy trình chạy thật)
 
 1.  **Preprocessing:**
-    *   `Target Image` → **BiSeNet** → Mask Tóc cũ + Mask Cổ/Vai.
+    *   `Target Image` → **SegFormer** → Mask Tóc cũ + Mask Cổ/Vai.
     *   `Target Image` → **ControlNet Preprocessor** → Depth Map.
     *   `Target Image` → **InsightFace** → ID Embedding.
 
@@ -118,7 +118,7 @@ Nếu model có sẵn chưa đủ tốt, thực hiện training 2 giai đoạn:
 graph TD
     %% Inputs
     Target["Ảnh Gốc (Target)"] --> InsightFace["InsightFace<br>(Face Analysis)"]
-    Target --> Seg["Segmentation<br>(BiSeNet/FaceParsing)"]
+    Target --> Seg["Segmentation<br>(SegFormer)"]
     Target --> Depth["ControlNet Preprocessor<br>(Depth Estimation)"]
     Ref["Ảnh Mẫu (Reference)"] --> CLIP["CLIP Image Encoder"]
 

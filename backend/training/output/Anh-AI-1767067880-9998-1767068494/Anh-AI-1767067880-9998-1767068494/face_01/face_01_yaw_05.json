@@ -16,5 +16,5 @@
     "embedding_dim": 512,
     "pose_method": "3DDFA",
     "yaw_threshold": 45.0,
-    "timestamp": "2026-02-20T00:51:09.829503"
+    "timestamp": "2026-02-20T01:26:36.338223"
 }

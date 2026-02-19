@@ -7,7 +7,7 @@
         819.6,
         195.1,
         1281.4,
-        782.7
+        782.6
     ],
     "confidence": 0.9546,
     "embedding_model": "InsightFace",
@@ -16,5 +16,5 @@
     "embedding_dim": 512,
     "pose_method": "3DDFA",
     "yaw_threshold": 45.0,
-    "timestamp": "2026-02-20T00:52:02.507620"
+    "timestamp": "2026-02-20T01:27:31.296160"
 }

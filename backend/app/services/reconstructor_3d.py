@@ -10,10 +10,10 @@ import os
 import numpy as np
 from pathlib import Path
 
-from backend.training.utils import setupLogger, getDevice
+from backend.app.services.training_utils import setupLogger, getDevice
 
 # Đường dẫn
-BASE_DIR = Path(__file__).resolve().parent.parent.parent
+BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 TDDFA_DIR = str(BASE_DIR / "backend" / "models" / "3ddfa_v2")
 
 

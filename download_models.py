@@ -47,13 +47,6 @@ MODELS = {
         "path": MODELS_DIR / "ip_adapter_hair"
     },
 
-    "face_parser": {
-        "repo_id": "vivym/face-parsing-bisenet", 
-        "type": "file",
-        "filename": "79999_iter.pth",
-        "path": MODELS_DIR / "bisenet"
-    },
-    
     "segformer_face_parsing": {
         "repo_id": "jonathandinu/face-parsing",
         "type": "model",

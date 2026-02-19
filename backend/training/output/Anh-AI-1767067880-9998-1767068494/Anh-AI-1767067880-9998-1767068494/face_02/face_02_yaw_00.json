@@ -1,12 +1,12 @@
 {
     "face_id": 2,
-    "yaw": -0.63,
+    "yaw": -0.62,
     "pitch": 0.69,
-    "roll": 0.28,
+    "roll": 0.27,
     "bbox": [
         417.1,
         116.1,
-        599.6,
+        599.5,
         379.0
     ],
     "confidence": 0.9436,
@@ -16,5 +16,5 @@
     "embedding_dim": 512,
     "pose_method": "3DDFA",
     "yaw_threshold": 45.0,
-    "timestamp": "2026-02-20T00:51:16.690540"
+    "timestamp": "2026-02-20T01:26:43.307291"
 }

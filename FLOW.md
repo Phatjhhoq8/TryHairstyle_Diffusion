@@ -112,11 +112,10 @@ self.app.prepare(ctx_id=0, det_size=(640, 640))  # Chuẩn bị detect
 # Hàm: SegmentationService.__init__()
 # Dòng: 56-68
 
-self.net = BiSeNet(n_classes=19)          # 19 class segmentation
-self.net.load_state_dict(                 # Load weights
-    torch.load(model_paths.BISENET_CHECKPOINT)
-)
-self.net.to(self.device).eval()           # Chuyển sang GPU, eval mode
+from transformers import SegformerImageProcessor, SegformerForSemanticSegmentation
+self.processor = SegformerImageProcessor.from_pretrained(model_paths.SEGFORMER_LOCAL_PATH)
+self.model = SegformerForSemanticSegmentation.from_pretrained(model_paths.SEGFORMER_LOCAL_PATH)
+self.model.to(self.device).eval()
 ```
 
 ### 2.1.3: Khởi tạo HairDiffusionService
@@ -248,7 +247,7 @@ return faces[0]  # Trả về mặt lớn nhất
 # Dòng 74-75: Lưu kích thước gốc
 w, h = image_pil.size
 
-# Dòng 77: Resize cho BiSeNet
+# Dòng 77: Resize cho SegFormer
 img_resized = image_pil.resize((512, 512), Image.BILINEAR)
 ```
 
@@ -258,7 +257,7 @@ img_resized = image_pil.resize((512, 512), Image.BILINEAR)
 img_tensor = self.to_tensor(img_resized).unsqueeze(0).to(self.device)
 ```
 
-### 3.3.3: Chạy BiSeNet inference
+### 3.3.3: Chạy SegFormer inference
 ```python
 # Dòng 81-83: Forward pass
 with torch.no_grad():
@@ -470,7 +469,7 @@ if task_result.status == 'SUCCESS':
 | 1 | 1.2 | `main.py` | `generate_hair()` | API nhận + lưu file |
 | 2 | 2.1 | `tasks.py` | `get_services()` | Load AI models |
 | 2 | 2.1.1 | `face.py` | `FaceInfoService.__init__()` | Load InsightFace |
-| 2 | 2.1.2 | `mask.py` | `SegmentationService.__init__()` | Load BiSeNet |
+| 2 | 2.1.2 | `mask.py` | `SegmentationService.__init__()` | Load SegFormer |
 | 2 | 2.1.3 | `diffusion.py` | `_load_sdxl_pipeline()` | Load SDXL |
 | 3 | 3.1 | `tasks.py` | `process_hair_transfer()` | Load ảnh |
 | 3 | 3.2 | `face.py` | `analyze()` | Detect face |
