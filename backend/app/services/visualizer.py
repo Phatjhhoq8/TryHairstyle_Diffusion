@@ -120,16 +120,9 @@ class TrainingVisualizer:
         if parsing is not None and allBboxes is not None and len(allBboxes) > 1:
             parsing = self._filterParsingForFace(parsing, bbox, allBboxes)
         
-        # Mở rộng face mask bằng 3D mesh khi có dữ liệu 3D
-        if vertices3D is not None and parsing is not None:
-            parsing = self._enhanceFaceMaskWith3D(parsing, vertices3D)
-            self.logger.info(f"  Face mask enhanced bằng 3D mesh projection")
-        
-        # Mở rộng hair mask về phía sau ót khi profile lớn
-        if poseInfo is not None and parsing is not None:
-            yaw = poseInfo.get("yaw", 0)
-            if abs(yaw) >= 45:
-                parsing = self._dilateHairByYaw(parsing, yaw)
+        # Face mask enhanced bằng 3D mesh projection đã thực hiện ở trên.
+        # Lưu ý: Phần code mở rộng hair mask (_dilateHairByYaw) gây rác mask (artifact)
+        # đã bị cắt bỏ theo yêu cầu của user.
         
         # Tạo 4 ảnh con
         img1 = self._createBboxImage(imageCv2, bbox, faceId, poseInfo)
@@ -582,77 +575,7 @@ class TrainingVisualizer:
         
         return vis
     
-    # ============================================================
-    # 5. DIRECTIONAL HAIR DILATION THEO YAW
-    # ============================================================
-    def _dilateHairByYaw(self, parsing, yaw):
-        """
-        Mở rộng hair mask về phía sau ót dựa trên hướng yaw.
-        
-        Khi mặt quay phải (yaw>0) → tóc sau ót nằm bên trái → dilate sang trái.
-        Khi mặt quay trái (yaw<0) → tóc sau ót nằm bên phải → dilate sang phải.
-        Lượng dilation tỉ lệ với |yaw|.
-        
-        Chỉ fill vào vùng background, KHÔNG ghi đè face/skin.
-        
-        Args:
-            parsing: numpy (H, W) — parsing map (full-image resolution)
-            yaw: float — góc yaw (độ)
-        
-        Returns:
-            numpy (H, W) — parsing map đã dilate hair
-        """
-        try:
-            absYaw = abs(yaw)
-            pH, pW = parsing.shape[:2]
-            
-            # Tính kernel width tỉ lệ với yaw, scale theo parsing size
-            scaleFactor = pW / 512.0
-            kernelW = int(np.interp(absYaw, [45, 90], [10, 40]) * scaleFactor)
-            kernelH = max(3, kernelW // 4)  # Chiều dọc nhỏ hơn để không lan quá nhiều
-            
-            if kernelW < 3:
-                return parsing
-            
-            # Tạo asymmetric kernel — chỉ dilate 1 hướng
-            kernel = np.zeros((kernelH, kernelW), dtype=np.uint8)
-            
-            if yaw > 0:
-                # Mặt quay phải → dilate sang TRÁI (cột 0 → giữa)
-                kernel[:, :kernelW // 2 + 1] = 1
-            else:
-                # Mặt quay trái → dilate sang PHẢI (giữa → cột cuối)
-                kernel[:, kernelW // 2:] = 1
-            
-            # Tách hair mask từ parsing
-            hairMask = np.zeros((pH, pW), dtype=np.uint8)
-            for cls in HAIR_CLASSES:
-                hairMask[parsing == cls] = 255
-            
-            # Dilate
-            dilatedHair = cv2.dilate(hairMask, kernel, iterations=1)
-            
-            # Vùng mới = dilated - original
-            newHairPixels = (dilatedHair > 0) & (hairMask == 0)
-            
-            # Chỉ fill vào vùng background (class 0), KHÔNG ghi đè face/skin/hat
-            enhancedParsing = parsing.copy()
-            fillMask = newHairPixels & (parsing == 0)
-            enhancedParsing[fillMask] = 13  # hair class (SegFormer)
-            
-            filledPixels = np.sum(fillMask)
-            direction = "trái" if yaw > 0 else "phải"
-            self.logger.info(
-                f"  Hair dilated về {direction}: "
-                f"{filledPixels} pixels (kernel={kernelW}x{kernelH}, yaw={yaw:.0f}°)"
-            )
-            
-            return enhancedParsing
-            
-        except Exception as e:
-            self.logger.warning(f"  Lỗi dilate hair: {e}")
-            return parsing
-    
+
     # ============================================================
     # 6. ENHANCE FACE MASK VỚI 3D MESH
     # ============================================================
