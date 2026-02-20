@@ -117,11 +117,11 @@ def extract_korean_dictionary(labels_dir, output_dict_path):
         logger.info("Vui lòng mở file mapping_dict.json và cập nhật nghĩa tiếng Anh.")
 
 if __name__ == "__main__":
-    current_dir = Path(__file__).resolve().parent.parent.parent
+    current_dir = Path(__file__).resolve().parent.parent.parent.parent
     default_labels_dir = current_dir / "backend" / "data" / "dataset" / "khairstyle" / "training" / "labels"
     # default_labels_dir = current_dir / "backend" / "data" / "dataset" / "khairstyle" / "validation" / "labels"
 
-    default_output_dict = current_dir / "backend" / "training" / "mapping_dict.json"
+    default_output_dict = Path(__file__).resolve().parent / "mapping_dict.json"
     
     import argparse
     parser = argparse.ArgumentParser(description="Tool trích xuất từ điển tiếng Hàn từ dataset K-Hairstyle")

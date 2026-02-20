@@ -12,8 +12,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("AutoTranslate")
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
-DICT_PATH = PROJECT_DIR / "backend" / "training" / "mapping_dict.json"
+PROJECT_DIR = Path(__file__).resolve().parent.parent.parent.parent
+DICT_PATH = Path(__file__).resolve().parent / "mapping_dict.json"
 
 def load_dict():
     if not DICT_PATH.exists():
