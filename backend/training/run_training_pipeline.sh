@@ -31,6 +31,10 @@ echo ""
 echo "----------------------------------------------------------"
 echo " STAGE 0: CHUẨN BỊ DỮ LIỆU ĐẦU VÀO (PREPARE DATASET)"
 echo "----------------------------------------------------------"
+# Tạo thư mục cần thiết
+mkdir -p "${PROJECT_DIR}/backend/training/checkpoints"
+mkdir -p "${PROJECT_DIR}/backend/training/processed"
+
 # Lệnh này sẽ quét K-Hairstyle, bóc tách Polygon và nạp vào thư mục processed/
 python "${PROJECT_DIR}/backend/training/prepare_dataset_deephair.py"
 
