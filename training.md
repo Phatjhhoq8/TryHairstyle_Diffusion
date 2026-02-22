@@ -225,16 +225,23 @@ flowchart TD
     class SAVE save;
 ```
 
-### VRAM Budget (GPU 24GB)
+### VRAM Budget (GPU 12GB — RTX 3060)
 
 | Component | VRAM | Ghi chú |
 |---|---|---|
-| UNet (fp16) | ~5 GB | Gradient checkpointing ON |
-| VAE (fp16, frozen) | ~0.5 GB | Chỉ encode, không train |
+| UNet (fp16) | ~5 GB | Gradient checkpointing + xformers ON |
+| VAE (fp16, frozen) | ~0.5 GB | Chỉ encode, enable_slicing() |
 | Text Encoders | **0 GB** | Encode xong → giải phóng |
-| Optimizer states | ~5 GB | AdamW moments |
-| Activations + Gradients | ~8 GB | AMP fp16 giảm 50% |
-| **Tổng ước tính** | **~18-20 GB** | Fit trong 24GB ✅ |
+| Optimizer states | ~2.5 GB | 8-bit AdamW (bitsandbytes) |
+| Activations + Gradients | ~3-4 GB | AMP fp16 + xformers + grad accumulation |
+| **Tổng ước tính** | **~10-11 GB** | Fit trong 12GB ✅ |
+
+> **Kỹ thuật tối ưu đã áp dụng:**
+> - xformers memory-efficient attention
+> - 8-bit AdamW optimizer (bitsandbytes)
+> - VAE slicing (encode/decode từng slice)
+> - Gradient Accumulation (4 steps)
+> - Texture Loss giảm tần suất (mỗi 50 steps)
 
 ### Pre-encode Workflow (Text Prompts)
 
@@ -359,7 +366,7 @@ python backend/training/export_model.py                # Stage 3
 | Dataset K-Hairstyle (images) | `backend/data/dataset/khairstyle/training/images/` |
 | Dataset K-Hairstyle (labels) | `backend/data/dataset/khairstyle/training/labels/` |
 | SDXL Inpainting Model | `backend/models/stable-diffusion/sd_xl_inpainting/` |
-| GPU VRAM | ≥ 24 GB (RTX 3090/4090) |
+| GPU VRAM | ≥ 12 GB (RTX 3060 trở lên, đã tối ưu) |
 
 ---
 

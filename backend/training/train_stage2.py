@@ -234,7 +234,7 @@ class Stage2Trainer:
     """
     Kịch bản huấn luyện Stage 2: Mask-Conditioned Hair Inpainting
     Kết hợp 9-channel UNet, Custom Identity Loss, và Mask-aware Gradient Locking.
-    Sử dụng AMP Mixed Precision cho GPU 24GB.
+    Tối ưu cho GPU 12GB (RTX 3060): AMP + xformers + 8-bit optimizer + gradient accumulation.
     """
     def __init__(self):
         from diffusers import AutoencoderKL, DDPMScheduler
@@ -248,6 +248,9 @@ class Stage2Trainer:
         ).to(DEVICE).eval()
         self.vae.requires_grad_(False)
         self.vae_scale_factor = self.vae.config.scaling_factor  # 0.13025 cho SDXL
+        
+        # VAE slicing để giảm peak VRAM khi encode/decode ảnh 1024×1024
+        self.vae.enable_slicing()
         
         # 2. Load Noise Scheduler
         logger.info("  → Loading DDPMScheduler...")
@@ -265,12 +268,23 @@ class Stage2Trainer:
         self.identity_loss = IdentityCosineLoss().to(DEVICE)
         self.texture_loss = TextureConsistencyLoss().to(DEVICE)
         
-        # 5. Optimizer (chỉ train UNet + Injector)
-        self.optimizer = torch.optim.AdamW(
-            list(self.unet.parameters()) + list(self.injector.parameters()),
-            lr=1e-5,   # Learning rate thấp hơn cho fine-tuning SDXL
-            weight_decay=1e-2
-        )
+        # 5. Optimizer — 8-bit AdamW để tiết kiệm ~2.5GB VRAM
+        train_params = list(self.unet.parameters()) + list(self.injector.parameters())
+        try:
+            import bitsandbytes as bnb
+            self.optimizer = bnb.optim.AdamW8bit(
+                train_params,
+                lr=1e-5,
+                weight_decay=1e-2
+            )
+            logger.info("  → Sử dụng 8-bit AdamW (bitsandbytes) — tiết kiệm ~2.5GB VRAM")
+        except ImportError:
+            self.optimizer = torch.optim.AdamW(
+                train_params,
+                lr=1e-5,
+                weight_decay=1e-2
+            )
+            logger.warning("  → bitsandbytes chưa cài, dùng AdamW 32-bit (tốn VRAM hơn). Chạy: pip install bitsandbytes")
         
         # 6. AMP Mixed Precision Scaler
         self.scaler = torch.amp.GradScaler('cuda')
@@ -300,7 +314,7 @@ class Stage2Trainer:
         decoded = self.vae.decode(latents_input).sample
         return decoded.float()
         
-    def train_step(self, batch, global_step: int):
+    def train_step(self, batch, global_step: int, accumulation_steps: int = 4):
         """
         Bước lặp huấn luyện duy nhất.
         batch bao gồm:
@@ -315,7 +329,10 @@ class Stage2Trainer:
         """
         self.unet.train()
         self.injector.train()
-        self.optimizer.zero_grad()
+        
+        # Gradient Accumulation: chỉ zero_grad mỗi N steps
+        if global_step % accumulation_steps == 0:
+            self.optimizer.zero_grad()
         
         # Giải nén Batch
         gt_images = batch['image'].to(DEVICE)
@@ -386,7 +403,7 @@ class Stage2Trainer:
         loss_id_val = 0.0
         loss_tex_val = 0.0
         
-        if global_step % 10 == 0 and global_step > 0:
+        if global_step % 50 == 0 and global_step > 0:
             try:
                 with torch.amp.autocast('cuda', dtype=torch.float16):
                     # Ước tính denoised output (x0 prediction)
@@ -412,16 +429,21 @@ class Stage2Trainer:
                     raise
         
         # ==========================================
-        # BACKPROP (AMP)
+        # BACKPROP (AMP + Gradient Accumulation)
         # ==========================================
-        self.scaler.scale(total_loss).backward()
-        self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(
-            list(self.unet.parameters()) + list(self.injector.parameters()),
-            max_norm=1.0
-        )
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
+        # Chia loss cho accumulation_steps để trung bình gradient
+        scaled_loss = total_loss / accumulation_steps
+        self.scaler.scale(scaled_loss).backward()
+        
+        # Chỉ cập nhật weights mỗi accumulation_steps
+        if (global_step + 1) % accumulation_steps == 0:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                list(self.unet.parameters()) + list(self.injector.parameters()),
+                max_norm=1.0
+            )
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
         
         return {
             "total_loss": total_loss.item(),

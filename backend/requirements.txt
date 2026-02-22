@@ -44,6 +44,10 @@ onnxruntime>=1.23.0
 # Perceptual Loss
 lpips>=0.1.4
 
+# VRAM Optimization (cho GPU 12GB)
+xformers==0.0.28.post1
+bitsandbytes>=0.43.0
+
 # Segmentation
 mobile_sam>=1.0
 
