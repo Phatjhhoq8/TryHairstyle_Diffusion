@@ -19,15 +19,19 @@ class CheckpointManager:
     def __init__(self):
         self.project_dir = Path(__file__).resolve().parent.parent.parent
         self.checkpoints_dir = self.project_dir / "backend" / "training" / "checkpoints"
-        self.production_models_dir = self.project_dir / "backend" / "models"
+        self.production_models_dir = self.project_dir / "backend" / "training" / "models"
         
         # Tạo thư mục checkpoints nếu chưa có
         os.makedirs(self.checkpoints_dir, exist_ok=True)
         
     def find_latest_checkpoint(self, stage="stage2"):
         """ Tìm checkpoint mới nhất của quá trình Train. """
-        pattern = self.checkpoints_dir / f"checkpoint_{stage}_*.safetensors"
-        files = glob.glob(str(pattern))
+        pattern1 = self.checkpoints_dir / f"*{stage}*.safetensors"
+        pattern2 = self.checkpoints_dir / f"deep_hair_v1_*.safetensors"
+        
+        files = glob.glob(str(pattern1)) + glob.glob(str(pattern2))
+        files = list(set(files)) # Loại bỏ trùng lặp nếu pattern trùng
+        
         if not files:
             return None
             
@@ -71,9 +75,8 @@ class CheckpointManager:
         
         try:
             logger.info(f"Tiến hành Deploy Model ra Production: {dest_path}")
-            # Trong thực tế phải convert, merge LoRA, compile, v.v.
-            # Ở đây dùng lệnh shutil copy làm ví dụ deploy
-            # shutil.copy2(checkpoint_path, dest_path) 
+            # Thực thi Copy file SafeTensors hoàn chỉnh từ Training Logs ra thư mục Production Backend
+            shutil.copy2(checkpoint_path, dest_path) 
             logger.info(f"  -> Deploy THÀNH CÔNG! Web App đã có thể load Model mới.")
             return True
         except Exception as e:
@@ -83,11 +86,6 @@ class CheckpointManager:
 if __name__ == "__main__":
     print("[Testing] Workflow Triển Khai Model...")
     manager = CheckpointManager()
-    
-    # Tạo 1 file Checkpoint ảo để Test quá trình
-    dummy_ckpt = manager.checkpoints_dir / "checkpoint_stage2_ep10_step5000.safetensors"
-    with open(str(dummy_ckpt), "w") as f:
-        f.write("dummy weights")
         
     # Test Workflow
     latest = manager.find_latest_checkpoint()
@@ -98,4 +96,4 @@ if __name__ == "__main__":
         else:
             print("Model chưa đủ chất lượng để Deploy.")
     else:
-        print("Không tìm thấy checkpoint nào trong thư mục train.")
+        print("Không tìm thấy checkpoint nào trong thư mục train. Pipeline huấn luyện chưa chạy xong.")

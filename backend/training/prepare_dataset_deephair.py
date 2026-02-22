@@ -228,7 +228,7 @@ def process_dataset():
     
     logger.info(f"Bắt đầu xử lý Pipeline tạo Dataset (ĐA LUỒNG) từ: {INPUT_DIR}")
     
-    dict_path = PROJECT_DIR / "backend" / "training" / "mapping_dict.json"
+    dict_path = PROJECT_DIR / "backend" / "training" / "data_processing" / "mapping_dict.json"
     if dict_path.exists():
         with open(str(dict_path), 'r', encoding='utf-8') as f:
             mapping_dict_global = json.load(f)
@@ -246,16 +246,15 @@ def process_dataset():
         # Tqdm để theo dõi tiến độ Multiprocessing
         futures = {executor.submit(process_single_image, img_path): img_path for img_path in image_files}
         
+        # Ghi trực tiếp ra file jsonl để tránh mất data nếu crash giữa chừng
+        meta_file_path = str(PROCESSED_DIR / "metadata.jsonl")
+        
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(image_files), desc="Tạo Dữ Liệu Đa Luồng"):
             result_meta = future.result()
             if result_meta:
-                metadata_lines.append(json.dumps(result_meta, ensure_ascii=False) + "\n")
+                with open(meta_file_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(result_meta, ensure_ascii=False) + "\n")
                 successful += 1
-
-    # Ghi Lịch Sử Metadata Label an toàn ở luồng chính
-    if metadata_lines:
-        with open(str(PROCESSED_DIR / "metadata.jsonl"), "a", encoding="utf-8") as f:
-            f.writelines(metadata_lines)
 
     logger.info(f"Hoàn tất tạo Pipeline Dữ liệu! Thành công: {successful}/{len(image_files)}.")
 
