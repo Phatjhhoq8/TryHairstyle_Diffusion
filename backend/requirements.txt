@@ -7,44 +7,57 @@ fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.9
 pydantic>=2.6.0
-pydantic-settings>=2.2.0
 python-dotenv>=1.0.1
 
 # Task Queue & Async
 celery>=5.3.6
 redis>=5.0.1
-asyncio
 
 # PyTorch Ecosystem (CUDA 12.1)
-# Note: For CPU only, remove --index-url and these specific versions might vary
 torch==2.4.1
 torchvision==0.19.1
 torchaudio==2.4.1
 
 # Generative AI & Diffusers
-diffusers>=0.30.0
-transformers>=4.46.0
-accelerate>=0.33.0
-peft>=0.12.0
-safetensors>=0.4.4
-huggingface_hub>=0.24.0
+diffusers>=0.36.0
+transformers>=5.0.0
+accelerate>=1.0.0
+peft>=0.18.0
+safetensors>=0.7.0
+huggingface_hub>=1.0.0
 
 # Computer Vision
 opencv-python-headless>=4.9.0
 pillow>=10.2.0
-numpy>=1.26.0
-scikit-image>=0.22.0
+numpy>=2.0.0
+scikit-image>=0.26.0
 insightface>=0.7.3
+ultralytics>=8.0.0
+
+# Face Recognition & Embedding
+facenet-pytorch>=2.6.0
 
 # ONNX Runtime
-# Recommended onnxruntime-gpu for Linux/Windows with CUDA
 onnx>=1.16.0
-onnxruntime-gpu>=1.18.0
+onnxruntime>=1.23.0
+
+# Perceptual Loss
+lpips>=0.1.4
+
+# Segmentation
+mobile_sam>=1.0
+
+# Translation
+deep-translator>=1.11.0
 
 # Utilities
 tqdm>=4.66.0
 scipy>=1.12.0
-ftfy>=6.2.0
+matplotlib>=3.10.0
 regex>=2024.0.0
 filelock>=3.13.0
 typing-extensions>=4.10.0
+PyYAML>=6.0.0
+Cython>=3.0.0
+easydict>=1.0
+gdown>=5.0.0
