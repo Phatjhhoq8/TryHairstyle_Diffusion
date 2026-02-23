@@ -243,6 +243,19 @@ flowchart TD
 > - Gradient Accumulation (4 steps)
 > - Texture Loss giảm tần suất (mỗi 50 steps)
 
+### Best Model Tracking
+
+Sau mỗi epoch, hệ thống **tự so sánh avg loss** và lưu model tốt nhất:
+
+| File | Ý nghĩa |
+|---|---|
+| `deep_hair_v1_best.safetensors` | ⭐ Model có **avg epoch loss thấp nhất** — dùng để deploy |
+| `deep_hair_v1_latest.safetensors` | Model epoch cuối cùng (có thể overfit) |
+| `stage2_step_N.safetensors` | Checkpoint mỗi 500 steps |
+| `stage2_epoch_N.safetensors` | Checkpoint cuối mỗi epoch |
+
+> **Export (`export_model.py`) ưu tiên:** best → latest → mới nhất theo thời gian
+
 ### Pre-encode Workflow (Text Prompts)
 
 ```mermaid
@@ -313,9 +326,10 @@ flowchart TD
 backend/training/
 ├── run_training_pipeline.sh      ← Script chạy toàn bộ 4 stages
 ├── prepare_dataset_deephair.py   ← Stage 0: Tạo dataset
-├── train_stage2.py               ← Stage 2: Training UNet chính
+├── train_stage2.py               ← Stage 2: Training UNet chính (best model tracking)
 ├── evaluate.py                   ← Metrics (LPIPS, PSNR)
-├── export_model.py               ← Stage 3: Validate + Deploy
+├── export_model.py               ← Stage 3: Validate + Deploy (ưu tiên best)
+├── test_cli.py                   ← 🆕 Test inference từ CLI (--random)
 ├── training_face.py              ← Face processing pipeline
 ├── models/
 │   ├── texture_encoder.py        ← Stage 1: ResNet50 Texture Encoder
@@ -323,21 +337,24 @@ backend/training/
 │   └── losses.py                 ← Loss functions (SupCon, MaskAware, Identity, Texture)
 ├── data_processing/
 │   ├── mapping_dict.json         ← Bảng dịch Hàn → Anh (K-Hairstyle)
-│   ├── auto_translate.py         ← Tool dịch tự động
 │   └── normalize_khairstyle.py   ← Chuẩn hóa dataset
 ├── processed/                    ← Output của Stage 0 (tự tạo khi chạy)
-│   ├── bald_images/
-│   ├── hair_only_images/
-│   ├── hair_patches/
-│   ├── style_vectors/
-│   ├── identity_embeddings/
-│   ├── prompt_embeddings/        ← Cache CLIP embeddings
-│   └── metadata.jsonl
-└── checkpoints/                  ← Weights lưu trong quá trình training
-    ├── stage1_step_500.safetensors
-    ├── stage2_step_500.safetensors
-    ├── stage2_epoch_1.safetensors
-    └── deep_hair_v1_latest.safetensors
+│   ├── bald_images/              (89,509 ảnh)
+│   ├── hair_only_images/         (89,509 ảnh)
+│   ├── hair_patches/             (38,192 ảnh)
+│   ├── style_vectors/            (89,509 ảnh)
+│   ├── identity_embeddings/      (89,509 file .npy)
+│   ├── prompt_embeddings/        ← Cache CLIP embeddings (.pt)
+│   └── metadata.jsonl            (29MB)
+├── checkpoints/                  ← Weights lưu trong quá trình training
+│   ├── stage1_step_*.safetensors (46 checkpoints — Stage 1 xong)
+│   ├── stage2_step_*.safetensors (mỗi 500 steps)
+│   ├── stage2_epoch_*.safetensors (mỗi epoch)
+│   ├── deep_hair_v1_best.safetensors  ← ⭐ MODEL TỐT NHẤT
+│   └── deep_hair_v1_latest.safetensors
+└── results/                      ← Output của test_cli.py
+    ├── output_*.png
+    └── debug/                    (comparison, mask, bald, target, reference)
 ```
 
 ---
@@ -359,12 +376,30 @@ python backend/training/train_stage2.py                # Stage 2
 python backend/training/export_model.py                # Stage 3
 ```
 
+### Test Inference (sau khi train)
+
+```bash
+# Random ảnh từ FFHQ (target) + K-Hairstyle (reference):
+python backend/training/test_cli.py --random
+
+# Chỉ định ảnh cụ thể:
+python backend/training/test_cli.py --target face.jpg --reference hair.jpg
+
+# Tuỳ chỉnh:
+python backend/training/test_cli.py --random \
+    --prompt "curly blonde hair" --steps 50 \
+    --checkpoint backend/training/checkpoints/stage2_epoch_10.safetensors
+```
+
+Output lưu tại `backend/training/results/` kèm ảnh debug (comparison 4 cột: Target | Reference | Bald | Result).
+
 ### Yêu cầu trước khi chạy
 
 | Yêu cầu | Đường dẫn |
 |---|---|
 | Dataset K-Hairstyle (images) | `backend/data/dataset/khairstyle/training/images/` |
 | Dataset K-Hairstyle (labels) | `backend/data/dataset/khairstyle/training/labels/` |
+| Dataset FFHQ (cho test_cli) | `backend/data/dataset/ffhq/` (~26,000 ảnh) |
 | SDXL Inpainting Model | `backend/models/stable-diffusion/sd_xl_inpainting/` |
 | GPU VRAM | ≥ 12 GB (RTX 3060 trở lên, đã tối ưu) |
 
@@ -379,6 +414,7 @@ flowchart LR
         T0["prepare_dataset"] --> T1["texture_encoder"]
         T1 --> T2["train_stage2"]
         T2 --> T3["export_model"]
+        T3 --> TEST["test_cli.py\n(Random FFHQ + K-Hairstyle)"]
     end
 
     subgraph PRODUCTION["🚀 Production Pipeline"]
@@ -393,12 +429,14 @@ flowchart LR
         P4 --> P5
     end
 
-    T3 -->|"deep_hair_v1.safetensors\n(Weights đã train)"| P4
+    T3 -->|"deep_hair_v1_best.safetensors\n(Model tốt nhất)"| P4
 
     classDef training fill:#74b9ff,color:white,stroke:#0984e3;
     classDef prod fill:#55efc4,stroke:#00b894;
+    classDef test fill:#fdcb6e,stroke:#f39c12;
     class T0,T1,T2,T3 training;
     class P1,P2,P3,P4,P5 prod;
+    class TEST test;
 ```
 
-Model sau khi train xong được copy vào thư mục `backend/training/models/` và Web App (FastAPI) sẽ load weights mới khi khởi động lại server.
+Model sau khi train xong, `export_model.py` ưu tiên file `deep_hair_v1_best.safetensors` (model có avg loss thấp nhất) và copy vào `backend/training/models/`. Web App (FastAPI) sẽ load weights mới khi khởi động lại server.
