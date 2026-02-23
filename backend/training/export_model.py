@@ -25,18 +25,34 @@ class CheckpointManager:
         os.makedirs(self.checkpoints_dir, exist_ok=True)
         
     def find_latest_checkpoint(self, stage="stage2"):
-        """ Tìm checkpoint mới nhất của quá trình Train. """
+        """ 
+        Tìm checkpoint tốt nhất để deploy.
+        Ưu tiên: best > latest > checkpoint mới nhất theo thời gian.
+        """
+        # 1. Ưu tiên file BEST (đã được chọn dựa trên avg loss thấp nhất)
+        best_path = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
+        if best_path.exists():
+            logger.info(f"Tìm thấy BEST model: {best_path}")
+            return str(best_path)
+        
+        # 2. Fallback: file latest (epoch cuối cùng)
+        latest_path = self.checkpoints_dir / "deep_hair_v1_latest.safetensors"
+        if latest_path.exists():
+            logger.warning(f"Không tìm thấy BEST model, dùng LATEST: {latest_path}")
+            return str(latest_path)
+        
+        # 3. Fallback cuối: tìm checkpoint mới nhất theo thời gian
         pattern1 = self.checkpoints_dir / f"*{stage}*.safetensors"
         pattern2 = self.checkpoints_dir / f"deep_hair_v1_*.safetensors"
         
         files = glob.glob(str(pattern1)) + glob.glob(str(pattern2))
-        files = list(set(files)) # Loại bỏ trùng lặp nếu pattern trùng
+        files = list(set(files))
         
         if not files:
             return None
             
-        # Sắp xếp theo thời gian sửa đổi (Mới nhất)
         files.sort(key=os.path.getmtime, reverse=True)
+        logger.warning(f"Không có BEST/LATEST, dùng checkpoint mới nhất: {files[0]}")
         return files[0]
         
     def test_checkpoint(self, checkpoint_path, test_dataset_path=None):

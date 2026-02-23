@@ -451,6 +451,22 @@ class Stage2Trainer:
             "texture_loss": loss_tex_val,
         }
         
+    def _save_checkpoint(self, suffix: str, is_best: bool = False):
+        """Lưu checkpoint UNet + Injector với suffix cho trước."""
+        ckpt_path = self.checkpoints_dir / f"stage2_{suffix}.safetensors"
+        save_file(self.unet.state_dict(), str(ckpt_path))
+        inj_path = self.checkpoints_dir / f"injector_{suffix}.safetensors"
+        save_file(self.injector.state_dict(), str(inj_path))
+        
+        if is_best:
+            # Copy sang file best riêng — luôn giữ model tốt nhất
+            best_unet = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
+            best_inj = self.checkpoints_dir / "injector_best.safetensors"
+            save_file(self.unet.state_dict(), str(best_unet))
+            save_file(self.injector.state_dict(), str(best_inj))
+        
+        return ckpt_path
+
     def train_loop(self, num_epochs=1, batch_size=1):
         """ Vòng lặp PyTorch Training Thực Kế """
         logger.info(f"Khởi động vòng lặp Training Stage 2 - {num_epochs} Epochs")
@@ -491,41 +507,63 @@ class Stage2Trainer:
             
         dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True)
         
+        # =============================================
+        # BEST MODEL TRACKING — theo dõi loss tốt nhất
+        # =============================================
+        best_epoch_loss = float('inf')
+        best_epoch = -1
+        
         global_step = 0
         for epoch in range(num_epochs):
+            epoch_losses = []  # Thu thập loss mỗi step để tính trung bình
+            
             pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
             for step, batch in enumerate(pbar):
                 losses = self.train_step(batch, global_step)
+                epoch_losses.append(losses['total_loss'])
                 
                 pbar.set_postfix({
                     "Loss": f"{losses['total_loss']:.4f}",
                     "Diff": f"{losses['diffusion_loss']:.4f}",
                     "Tex": f"{losses['texture_loss']:.4f}",
+                    "Best": f"{best_epoch_loss:.4f}" if best_epoch_loss < float('inf') else "N/A",
                 })
                 global_step += 1
                 
                 # Checkpointing (mỗi 500 steps)
                 if global_step % 500 == 0:
-                    ckpt_path = self.checkpoints_dir / f"stage2_step_{global_step}.safetensors"
-                    save_file(self.unet.state_dict(), str(ckpt_path))
-                    # Lưu thêm injector
-                    inj_path = self.checkpoints_dir / f"injector_step_{global_step}.safetensors"
-                    save_file(self.injector.state_dict(), str(inj_path))
+                    self._save_checkpoint(f"step_{global_step}")
                     logger.info(f"Đã lưu Checkpoint tại step {global_step}")
+            
+            # Tính average loss cho epoch này
+            avg_epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('inf')
+            
+            # Kiểm tra xem epoch này có tốt hơn best không
+            is_new_best = avg_epoch_loss < best_epoch_loss
+            
+            if is_new_best:
+                best_epoch_loss = avg_epoch_loss
+                best_epoch = epoch + 1
+                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Avg Loss: {avg_epoch_loss:.6f} (cải thiện!)")
+            else:
+                logger.info(f"Epoch {epoch+1} — Avg Loss: {avg_epoch_loss:.6f} (Best vẫn là Epoch {best_epoch}: {best_epoch_loss:.6f})")
+            
+            # Checkpoint cuối epoch (đánh dấu best nếu đạt)
+            self._save_checkpoint(f"epoch_{epoch+1}", is_best=is_new_best)
+            logger.info(f"Đã lưu Checkpoint cuối Epoch {epoch+1}{' ⭐ (BEST)' if is_new_best else ''}")
                     
-            # Checkpoint cuối epoch
-            ckpt_path = self.checkpoints_dir / f"stage2_epoch_{epoch+1}.safetensors"
-            save_file(self.unet.state_dict(), str(ckpt_path))
-            logger.info(f"Đã lưu Checkpoint cuối Epoch {epoch+1}")
-                    
-        # Lưu Final Model sau khi xong vòng lặp
+        # Lưu Final Model (latest = epoch cuối cùng)
         final_ckpt_path = self.checkpoints_dir / "deep_hair_v1_latest.safetensors"
         save_file(self.unet.state_dict(), str(final_ckpt_path))
-        
         final_inj_path = self.checkpoints_dir / "injector_latest.safetensors"
         save_file(self.injector.state_dict(), str(final_inj_path))
         
-        logger.info(f"Hoàn thành toàn bộ Training Stage 2! Lưu model cuối: {final_ckpt_path}")
+        logger.info(f"="*60)
+        logger.info(f"✅ Hoàn thành Training Stage 2!")
+        logger.info(f"  📁 Model cuối cùng: {final_ckpt_path}")
+        logger.info(f"  🏆 Model tốt nhất: deep_hair_v1_best.safetensors (Epoch {best_epoch}, Loss: {best_epoch_loss:.6f})")
+        logger.info(f"  💡 Dùng file BEST để deploy, không dùng file latest!")
+        logger.info(f"="*60)
 
 if __name__ == "__main__":
     trainer = Stage2Trainer()

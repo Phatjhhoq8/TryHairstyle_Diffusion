@@ -13,7 +13,7 @@ PROJECT_DIR=$(cd $(dirname "${BASH_SOURCE[0]}")/../.. && pwd)
 VENV_ACTIVATE="${PROJECT_DIR}/venv_wsl/bin/activate"
 
 echo "=========================================================="
-echo " KHỞI ĐỘNG PIPELINE HUẤN LUYỆN Y AI (THỬ NGHIỆM)"
+echo " KHỞI ĐỘNG PIPELINE HUẤN LUYỆN MODEL"
 echo " PROJECT ROOT: ${PROJECT_DIR}"
 echo "=========================================================="
 
@@ -36,7 +36,7 @@ mkdir -p "${PROJECT_DIR}/backend/training/checkpoints"
 mkdir -p "${PROJECT_DIR}/backend/training/processed"
 
 # Lệnh này sẽ quét K-Hairstyle, bóc tách Polygon và nạp vào thư mục processed/
-python "${PROJECT_DIR}/backend/training/prepare_dataset_deephair.py"
+# python "${PROJECT_DIR}/backend/training/prepare_dataset_deephair.py"
 
 echo ""
 echo "----------------------------------------------------------"
