@@ -23,17 +23,19 @@ from backend.app.config import settings, OUTPUT_DIR
 from backend.app.services.face import FaceInfoService
 from backend.app.services.mask import SegmentationService
 from backend.app.services.diffusion import HairDiffusionService
+from backend.app.services.hair_color_service import HairColorService, PRESET_COLORS
 
 # Global Services (lazy loaded)
 face_service = None
 mask_service = None
 diffusion_service = None
 depth_estimator = None
+color_service = None
 
 
 def load_services():
     """Load tất cả AI services (1 lần duy nhất)."""
-    global face_service, mask_service, diffusion_service, depth_estimator
+    global face_service, mask_service, diffusion_service, depth_estimator, color_service
     
     if face_service is not None and diffusion_service is not None and depth_estimator is not None:
         return "✅ Services Already Loaded"
@@ -60,6 +62,9 @@ def load_services():
         depth_estimator = pipeline("depth-estimation", model="Intel/dpt-large")
         print("  ✅ Depth Estimator loaded (Intel/dpt-large)", flush=True)
         
+        color_service = HairColorService()
+        print("  ✅ Hair Color Service loaded", flush=True)
+        
         print(">>> All Services Loaded Successfully!", flush=True)
         return "✅ Services Loaded — Ready to Run"
     except Exception as e:
@@ -70,6 +75,7 @@ def load_services():
         mask_service = None
         diffusion_service = None
         depth_estimator = None
+        color_service = None
         return f"❌ Error: {e}"
 
 
@@ -182,6 +188,47 @@ def process_pipeline(user_image, hair_image, prompt):
             torch.cuda.empty_cache()
         return None, f"❌ Error: {str(e)}"
 
+def process_colorize_pipeline(user_image, color_name, intensity):
+    """Chạy pipeline đổi màu tóc (không cần Diffusion)."""
+    if user_image is None:
+        return None, "⚠️ Vui lòng upload ảnh khuôn mặt."
+    
+    global mask_service, color_service
+    # Chỉ cần mask + color service
+    if mask_service is None:
+        try:
+            mask_service = SegmentationService()
+        except Exception as e:
+            return None, f"❌ Mask Service Load Failed: {e}"
+    if color_service is None:
+        color_service = HairColorService()
+    
+    try:
+        session_name = f"color_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        session_dir = os.path.join(str(OUTPUT_DIR), session_name)
+        os.makedirs(session_dir, exist_ok=True)
+        
+        # 1. Tạo hair mask
+        print("  → Creating Hair Mask...", flush=True)
+        masks = mask_service.get_hair_and_face_mask(user_image)
+        hair_mask = masks["hair_mask"]
+        hair_mask.save(os.path.join(session_dir, "hair_mask.png"))
+        
+        # 2. Colorize
+        print(f"  → Colorizing: {color_name} (intensity: {intensity})", flush=True)
+        result = color_service.colorize(user_image, hair_mask, color_name, intensity)
+        
+        # 3. Save
+        result.save(os.path.join(session_dir, "result.png"))
+        print(f"  ✅ Saved color result → {session_dir}", flush=True)
+        
+        return result, f"✅ Đổi màu thành công: {color_name}\n📁 Session: {session_name}"
+    
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"❌ Error: {str(e)}"
+
 
 # ======================= GRADIO UI =======================
 
@@ -193,28 +240,70 @@ with gr.Blocks(title="TryHairStyle - FFHQ Test", theme=gr.themes.Soft()) as demo
         status_box = gr.Textbox(label="System Status", value="⏳ Not Loaded", interactive=False)
         load_btn = gr.Button("🔧 Initialize System Services", variant="secondary")
     
-    with gr.Row():
-        with gr.Column():
-            gr.Markdown("### 📸 Inputs")
-            user_input = gr.Image(label="User Face", type="pil")
-            hair_input = gr.Image(label="Hair Reference", type="pil")
-            random_btn = gr.Button("🎲 Load Random FFHQ Pair")
+    with gr.Tabs():
+        # ===== Tab 1: Hair Transfer (original) =====
+        with gr.TabItem("💇 Hair Transfer"):
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### 📸 Inputs")
+                    user_input = gr.Image(label="User Face", type="pil")
+                    hair_input = gr.Image(label="Hair Reference", type="pil")
+                    random_btn = gr.Button("🎲 Load Random FFHQ Pair")
+                
+                with gr.Column():
+                    gr.Markdown("### ⚙️ Settings")
+                    prompt_input = gr.Textbox(
+                        label="Prompt", 
+                        value="high quality, realistic hairstyle",
+                        placeholder="Describe the hairstyle..."
+                    )
+                    run_btn = gr.Button("🚀 Run Transfer", variant="primary")
+                
+                with gr.Column():
+                    gr.Markdown("### 🖼️ Result")
+                    output_image = gr.Image(label="Result", type="pil")
+                    log_output = gr.Textbox(label="Log", lines=3)
         
-        with gr.Column():
-            gr.Markdown("### ⚙️ Settings")
-            prompt_input = gr.Textbox(
-                label="Prompt", 
-                value="high quality, realistic hairstyle",
-                placeholder="Describe the hairstyle..."
-            )
-            run_btn = gr.Button("🚀 Run Transfer", variant="primary")
-        
-        with gr.Column():
-            gr.Markdown("### 🖼️ Result")
-            output_image = gr.Image(label="Result", type="pil")
-            log_output = gr.Textbox(label="Log", lines=3)
+        # ===== Tab 2: Hair Color =====
+        with gr.TabItem("🎨 Hair Color"):
+            gr.Markdown("### 🎨 Đổi Màu Tóc")
+            gr.Markdown("*Chỉ đổi màu tóc — không thay đổi kiểu tóc. Nhanh hơn Hair Transfer.*")
+            
+            with gr.Row():
+                with gr.Column():
+                    gr.Markdown("### 📸 Input")
+                    color_user_input = gr.Image(label="User Face", type="pil")
+                    color_random_btn = gr.Button("🎲 Load Random FFHQ")
+                
+                with gr.Column():
+                    gr.Markdown("### ⚙️ Chọn Màu")
+                    # Tạo danh sách tên preset cho dropdown
+                    preset_labels = [f"{info['label']} ({name})" for name, info in PRESET_COLORS.items()]
+                    preset_names = list(PRESET_COLORS.keys())
+                    color_dropdown = gr.Dropdown(
+                        label="Preset Color",
+                        choices=preset_names,
+                        value="blonde",
+                        info="Chọn màu preset hoặc nhập hex bên dưới"
+                    )
+                    color_hex_input = gr.Textbox(
+                        label="Custom Hex (tuỳ chọn)",
+                        placeholder="#FF0000",
+                        info="Để trống nếu dùng preset"
+                    )
+                    color_intensity_slider = gr.Slider(
+                        label="Intensity", minimum=0.0, maximum=1.0,
+                        value=0.7, step=0.05,
+                        info="0 = giữ nguyên, 1 = 100% màu mới"
+                    )
+                    color_run_btn = gr.Button("🎨 Colorize", variant="primary")
+                
+                with gr.Column():
+                    gr.Markdown("### 🖼️ Result")
+                    color_output_image = gr.Image(label="Result", type="pil")
+                    color_log_output = gr.Textbox(label="Log", lines=3)
     
-    # Events
+    # ===== Events =====
     load_btn.click(fn=load_services, outputs=status_box)
     
     def random_pair():
@@ -228,6 +317,23 @@ with gr.Blocks(title="TryHairStyle - FFHQ Test", theme=gr.themes.Soft()) as demo
         fn=process_pipeline,
         inputs=[user_input, hair_input, prompt_input],
         outputs=[output_image, log_output]
+    )
+    
+    # Hair Color events
+    def random_single():
+        return get_random_ffhq_image()
+    
+    color_random_btn.click(fn=random_single, outputs=[color_user_input])
+    
+    def run_colorize(image, preset, hex_input, intensity):
+        # Ưu tiên hex input nếu có
+        color = hex_input.strip() if hex_input and hex_input.strip() else preset
+        return process_colorize_pipeline(image, color, intensity)
+    
+    color_run_btn.click(
+        fn=run_colorize,
+        inputs=[color_user_input, color_dropdown, color_hex_input, color_intensity_slider],
+        outputs=[color_output_image, color_log_output]
     )
 
 if __name__ == "__main__":

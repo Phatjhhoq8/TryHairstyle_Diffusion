@@ -8,8 +8,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from backend.app.config import settings, OUTPUT_DIR, UPLOAD_DIR, BACKEND_DIR
 from pathlib import Path
-from backend.app.schemas import HairTransferResponse, TaskStatusResponse
-from backend.app.tasks import process_hair_transfer, celery_app
+from backend.app.schemas import HairTransferResponse, TaskStatusResponse, HairColorResponse
+from backend.app.tasks import process_hair_transfer, process_hair_colorize, celery_app
+from backend.app.services.hair_color_service import HairColorService
 from celery.result import AsyncResult
 
 app = FastAPI(title="TryHairStyle API")
@@ -56,11 +57,14 @@ async def upload_image(file: UploadFile = File(...)):
 async def generate_hair(
     face_image: UploadFile = File(...),
     hair_image: UploadFile = File(...),
-    description: str = Form("high quality realistic hair")
+    description: str = Form("high quality realistic hair"),
+    hair_color: str = Form(None),
+    color_intensity: float = Form(0.7)
 ):
     """
     Endpoint tương thích với React Frontend.
     Nhận 2 file ảnh và prompt, tự động upload rồi gửi task.
+    Hỗ trợ thêm hair_color (tên preset hoặc hex) và color_intensity (0.0–1.0).
     """
     # Validate file type
     ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "bmp"}
@@ -82,8 +86,11 @@ async def generate_hair(
     with open(hair_path, "wb") as f:
         shutil.copyfileobj(hair_image.file, f)
         
-    # 2. Trigger Celery Task
-    task = process_hair_transfer.delay(str(face_path), str(hair_path), description)
+    # 2. Trigger Celery Task (truyền thêm hair_color nếu có)
+    task = process_hair_transfer.delay(
+        str(face_path), str(hair_path), description,
+        hair_color=hair_color, color_intensity=color_intensity
+    )
     
     return {
         "task_id": task.id,
@@ -188,6 +195,46 @@ async def get_random_pair():
     return {
         "target_url": target_url,
         "hair_url": hair_url
+    }
+
+@app.get("/colors", tags=["Hair Color"])
+async def get_colors():
+    """
+    Trả về danh sách preset màu tóc.
+    """
+    return HairColorService.getPresetColors()
+
+@app.post("/colorize", response_model=HairColorResponse, tags=["Hair Color"])
+async def colorize_hair(
+    face_image: UploadFile = File(...),
+    hair_color: str = Form(...),
+    intensity: float = Form(0.7)
+):
+    """
+    Chỉ đổi màu tóc trên ảnh gốc (KHÔNG thay kiểu tóc).
+    Nhanh hơn /generate vì không cần Diffusion Model.
+    """
+    # Validate file type
+    ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "bmp"}
+    face_ext = face_image.filename.split('.')[-1].lower()
+    if face_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {ALLOWED_EXTENSIONS}")
+    
+    # Save uploaded file
+    face_filename = f"{uuid.uuid4()}_face.{face_ext}"
+    face_path = UPLOAD_DIR / face_filename
+    with open(face_path, "wb") as f:
+        shutil.copyfileobj(face_image.file, f)
+    
+    # Trigger Celery Task
+    task = process_hair_colorize.delay(
+        str(face_path), hair_color, intensity
+    )
+    
+    return {
+        "task_id": task.id,
+        "status": "QUEUED",
+        "message": "Hair color task started"
     }
 
 @app.get("/", tags=["General"])

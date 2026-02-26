@@ -9,6 +9,7 @@ from backend.app.config import settings, OUTPUT_DIR
 from backend.app.services.face import FaceInfoService
 from backend.app.services.mask import SegmentationService
 from backend.app.services.diffusion import HairDiffusionService
+from backend.app.services.hair_color_service import HairColorService
 
 celery_app = Celery(
     "hair_tasks",
@@ -21,13 +22,14 @@ _SERVICES = {
     "mask": None,
     "diffusion": None,
     "depth": None,
+    "color": None,
     "loaded": False
 }
 
 def get_services():
     """Lazy load services to ensure they run in the worker process (safe for CUDA/Celery)"""
     if _SERVICES["loaded"]:
-        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"], _SERVICES["depth"]
+        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"], _SERVICES["depth"], _SERVICES["color"]
         
     print(">>> Initializing AI Models in Worker Process...")
     try:
@@ -41,10 +43,13 @@ def get_services():
              from transformers import pipeline
              _SERVICES["depth"] = pipeline("depth-estimation", model="Intel/dpt-large")
              print(">>> Depth Estimator loaded (Intel/dpt-large)")
+        if not _SERVICES["color"]:
+             _SERVICES["color"] = HairColorService()
+             print(">>> HairColorService loaded")
              
         _SERVICES["loaded"] = True
         print(">>> AI Models Loaded Successfully!")
-        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"], _SERVICES["depth"]
+        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"], _SERVICES["depth"], _SERVICES["color"]
     except Exception as e:
         print(f"Critical Error loading models: {e}")
         import traceback
@@ -52,9 +57,9 @@ def get_services():
         raise e
 
 @celery_app.task(bind=True)
-def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str):
+def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7):
     try:
-        face_service, mask_service, diffusion_service, depth_estimator = get_services()
+        face_service, mask_service, diffusion_service, depth_estimator, color_service = get_services()
     except Exception as e:
         return {"status": "FAILURE", "error": f"Model Load Failed: {str(e)}"}
 
@@ -121,18 +126,41 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         
         # 5. Diffusion Inference
         self.update_state(state='PROCESSING', meta={'step': 'Generating Hair'})
+        
+        # Nếu có hair_color → thêm mô tả màu vào prompt
+        finalPrompt = prompt
+        if hair_color:
+            from backend.app.services.hair_color_service import PRESET_COLORS
+            colorLabel = hair_color
+            if hair_color.lower() in PRESET_COLORS:
+                colorLabel = PRESET_COLORS[hair_color.lower()]["label"]
+            finalPrompt = f"{colorLabel} colored hair, {prompt}"
+            print(f"  🎨 Hair color requested: {hair_color} → prompt: '{finalPrompt}'")
+        
         original_size = user_pil.size  # (w, h) — lưu kích thước gốc
         result_image = diffusion_service.generate(
             base_image=user_pil,
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_pil,
-            prompt=prompt
+            prompt=finalPrompt
         )
         
         # Resize kết quả về kích thước gốc để không bị méo
         if result_image.size != original_size:
             result_image = result_image.resize(original_size, Image.LANCZOS)
+        
+        # 5b. Post-process: đổi màu tóc nếu có yêu cầu
+        if hair_color:
+            self.update_state(state='PROCESSING', meta={'step': 'Applying Hair Color'})
+            print(f"  🎨 Applying hair color: {hair_color} (intensity: {color_intensity})")
+            # Tạo mask từ ảnh kết quả (vì kiểu tóc đã thay đổi)
+            resultMasks = mask_service.get_hair_and_face_mask(result_image)
+            resultHairMask = resultMasks["hair_mask"]
+            result_image = color_service.colorize(
+                result_image, resultHairMask, hair_color, color_intensity
+            )
+            print(f"  ✅ Hair color applied successfully")
         
         # 6. Save Output vào session folder
         save_path = os.path.join(session_dir, "result.png")
@@ -154,4 +182,59 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         # Cleanup GPU memory ngay cả khi lỗi
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+        return {"status": "FAILURE", "error": str(e)}
+
+
+@celery_app.task(bind=True)
+def process_hair_colorize(self, face_img_path: str, hair_color: str, intensity: float = 0.7):
+    """
+    Task chỉ đổi màu tóc (KHÔNG thay kiểu tóc).
+    Nhanh hơn process_hair_transfer vì không cần Diffusion Model.
+    """
+    try:
+        # Chỉ cần mask service và color service
+        if not _SERVICES["mask"]:
+            _SERVICES["mask"] = SegmentationService()
+        if not _SERVICES["color"]:
+            _SERVICES["color"] = HairColorService()
+        mask_service = _SERVICES["mask"]
+        color_service = _SERVICES["color"]
+    except Exception as e:
+        return {"status": "FAILURE", "error": f"Service Load Failed: {str(e)}"}
+
+    try:
+        # Tạo session folder
+        session_name = f"color_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.request.id[:8]}"
+        session_dir = os.path.join(str(OUTPUT_DIR), session_name)
+        os.makedirs(session_dir, exist_ok=True)
+        print(f">>> Color session: {session_dir}")
+        
+        # 1. Load ảnh
+        self.update_state(state='PROCESSING', meta={'step': 'Loading Image'})
+        face_pil = Image.open(face_img_path).convert("RGB")
+        
+        # 2. Segmentation — tạo hair mask
+        self.update_state(state='PROCESSING', meta={'step': 'Creating Hair Mask'})
+        masks = mask_service.get_hair_and_face_mask(face_pil)
+        hair_mask = masks["hair_mask"]
+        hair_mask.save(os.path.join(session_dir, "hair_mask.png"))
+        
+        # 3. Colorize
+        self.update_state(state='PROCESSING', meta={'step': f'Applying Color: {hair_color}'})
+        print(f"  🎨 Colorizing: {hair_color} (intensity: {intensity})")
+        result_image = color_service.colorize(face_pil, hair_mask, hair_color, intensity)
+        
+        # 4. Save output
+        save_path = os.path.join(session_dir, "result.png")
+        result_image.save(save_path)
+        print(f"  ✅ Color result saved → {save_path}")
+        
+        return {
+            "status": "SUCCESS",
+            "result_path": str(save_path),
+            "session_dir": str(session_dir),
+            "url": f"/static/output/{session_name}/result.png"
+        }
+
+    except Exception as e:
         return {"status": "FAILURE", "error": str(e)}
