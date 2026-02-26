@@ -17,12 +17,10 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 class ModelPaths:
     # Stable Diffusion XL
     SDXL_BASE = str(MODELS_DIR / "stable-diffusion" / "sd_xl_inpainting")
-    # SDXL_BASE = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1" # Fallback repo id if local missing
-    SDXL_REFINER = str(MODELS_DIR / "sd_xl_refiner_1.0_0.9vae.safetensors")
-
-    # SDXL_REPO = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
+    SDXL_REPO = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"  # Fallback HuggingFace repo
     
-
+    # Custom Training Checkpoints
+    CUSTOM_INPAINTING_MODEL = str(BACKEND_DIR / "training" / "models" / "deep_hair_v1_best.safetensors")
     
     # Adapters (Local Paths from download_models.py structure)
     INSIGHTFACE_ROOT = str(BACKEND_DIR)
@@ -30,23 +28,9 @@ class ModelPaths:
     # ControlNet (SDXL)
     CONTROLNET_DEPTH = str(MODELS_DIR / "controlnet_depth")
     
-    # Adapters
-    INSTANTID_ADAPTER = str(MODELS_DIR / "instantid" / "ip-adapter.bin")
-    IP_ADAPTER_PLUS_HAIR = str(MODELS_DIR / "ip_adapter_hair") # Folder
-    
-
-    # Specific file for SDXL IP Adapter
-    IP_ADAPTER_SDXL_PATH = str(MODELS_DIR / "ip_adapter_hair" / "ip-adapter-plus_sdxl_vit-h.bin")
+    # IP-Adapter SDXL
+    IP_ADAPTER_PLUS_HAIR = str(MODELS_DIR / "ip_adapter_hair")  # Folder chứa weights
     IMAGE_ENCODER_PATH = str(MODELS_DIR / "image_encoder")
-
-    # Face Packing (cho InsightFace)
-    ANTELOPEV2_PACK = str(MODELS_DIR / "antelopev2")
-    
-    # YOLOv8-Face (cho partial face detection)
-    YOLO_FACE_MODEL = str(MODELS_DIR / "yolov8n-face.pt")
-    
-    # AdaFace (cho profile face embedding)
-    ADAFACE_MODEL = str(MODELS_DIR / "adaface_ir101_webface4m.ckpt")
 
 # App Settings
 class Settings:

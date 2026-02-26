@@ -13,6 +13,7 @@ import os
 from backend.app.config import model_paths, settings
 from backend.app.services.face_detector import TrainingFaceDetector
 from backend.app.services.embedder import TrainingEmbedder
+from backend.app.services.training_utils import computeIoU
 
 
 class PartialFaceInfo:
@@ -76,25 +77,7 @@ class FaceInfoService:
             self.embedder = None
             return False
     
-    def _compute_iou(self, box1, box2):
-        """Tính IoU giữa 2 bbox."""
-        x1 = max(box1[0], box2[0])
-        y1 = max(box1[1], box2[1])
-        x2 = min(box1[2], box2[2])
-        y2 = min(box1[3], box2[3])
-        
-        inter_area = max(0, x2 - x1) * max(0, y2 - y1)
-        
-        box1_area = (box1[2] - box1[0]) * (box1[3] - box1[1])
-        box2_area = (box2[2] - box2[0]) * (box2[3] - box2[1])
-        
-        union_area = box1_area + box2_area - inter_area
-        
-        if union_area == 0:
-            return 0
-        
-        return inter_area / union_area
-    
+
     def _match_yolo_to_insight(self, yolo_faces, insight_faces, iou_threshold=0.5):
         """Tìm YOLO faces không match với InsightFace (partial/profile)."""
         if len(insight_faces) == 0:
@@ -109,7 +92,7 @@ class FaceInfoService:
             for insight_face in insight_faces:
                 insight_bbox = insight_face.bbox.tolist()
                 
-                iou = self._compute_iou(yolo_bbox, insight_bbox)
+                iou = computeIoU(yolo_bbox, insight_bbox)
                 if iou > iou_threshold:
                     matched = True
                     break

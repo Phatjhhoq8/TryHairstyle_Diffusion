@@ -1,8 +1,9 @@
 
 import os
 import cv2
-import numpy as np
+import torch
 from PIL import Image
+from datetime import datetime
 from celery import Celery
 from backend.app.config import settings, OUTPUT_DIR
 from backend.app.services.face import FaceInfoService
@@ -19,13 +20,14 @@ _SERVICES = {
     "face": None,
     "mask": None,
     "diffusion": None,
+    "depth": None,
     "loaded": False
 }
 
 def get_services():
     """Lazy load services to ensure they run in the worker process (safe for CUDA/Celery)"""
     if _SERVICES["loaded"]:
-        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"]
+        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"], _SERVICES["depth"]
         
     print(">>> Initializing AI Models in Worker Process...")
     try:
@@ -35,10 +37,14 @@ def get_services():
              _SERVICES["mask"] = SegmentationService()
         if not _SERVICES["diffusion"]:
              _SERVICES["diffusion"] = HairDiffusionService()
+        if not _SERVICES["depth"]:
+             from transformers import pipeline
+             _SERVICES["depth"] = pipeline("depth-estimation", model="Intel/dpt-large")
+             print(">>> Depth Estimator loaded (Intel/dpt-large)")
              
         _SERVICES["loaded"] = True
         print(">>> AI Models Loaded Successfully!")
-        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"]
+        return _SERVICES["face"], _SERVICES["mask"], _SERVICES["diffusion"], _SERVICES["depth"]
     except Exception as e:
         print(f"Critical Error loading models: {e}")
         import traceback
@@ -46,18 +52,26 @@ def get_services():
         raise e
 
 @celery_app.task(bind=True)
-def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, use_refiner: bool = False):
+def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str):
     try:
-        face_service, mask_service, diffusion_service = get_services()
+        face_service, mask_service, diffusion_service, depth_estimator = get_services()
     except Exception as e:
         return {"status": "FAILURE", "error": f"Model Load Failed: {str(e)}"}
 
     try:
+        # Tạo session folder cho lần inference này
+        session_name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.request.id[:8]}"
+        session_dir = os.path.join(str(OUTPUT_DIR), session_name)
+        os.makedirs(session_dir, exist_ok=True)
+        print(f">>> Session folder: {session_dir}")
+        
         # Update state
         self.update_state(state='PROCESSING', meta={'step': 'Loading Images'})
         
         # 1. Load Images
         user_cv2 = cv2.imread(user_img_path)
+        if user_cv2 is None:
+            return {"status": "FAILURE", "error": f"Cannot read user image: {user_img_path}"}
         user_pil = Image.fromarray(cv2.cvtColor(user_cv2, cv2.COLOR_BGR2RGB))
         hair_pil = Image.open(hair_img_path).convert("RGB")
         
@@ -65,12 +79,13 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         self.update_state(state='PROCESSING', meta={'step': 'Face Analysis'})
         
         # Auto-rotate logic: Try 0, 90, 180, 270 degrees
+        # Lưu ảnh gốc để xoay từ đó (tránh xoay tích lũy)
+        original_cv2 = user_cv2.copy()
         faces = []
         for angle in [None, cv2.ROTATE_90_CLOCKWISE, cv2.ROTATE_180, cv2.ROTATE_90_COUNTERCLOCKWISE]:
             if angle is not None:
                 print(f"No face found. Rotating image {angle}...")
-                user_cv2 = cv2.rotate(user_cv2, angle)
-                # Update user_pil as well to match user_cv2 for later steps
+                user_cv2 = cv2.rotate(original_cv2, angle)
                 user_pil = Image.fromarray(cv2.cvtColor(user_cv2, cv2.COLOR_BGR2RGB))
             
             faces = face_service.analyze_all(user_cv2)
@@ -81,50 +96,62 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         if not faces:
             return {"status": "FAILURE", "error": "No face detected in user image (tried multiple orientations)"}
         
-        # 3. Segmentation (Create Mask)
-        self.update_state(state='PROCESSING', meta={'step': 'Creating Hair Mask'})
-        # Mask tóc từ SegFormer
-        hair_mask = mask_service.get_mask(user_pil, target_class=17) # 17 is hair
+        # 3. Segmentation (Create Mask — lấy cả hair + face mask)
+        self.update_state(state='PROCESSING', meta={'step': 'Creating Hair & Face Mask'})
+        masks = mask_service.get_hair_and_face_mask(user_pil)
+        hair_mask = masks["hair_mask"]
+        face_mask = masks["face_mask"]
+        
+        # Mask tóc từ ảnh reference
+        ref_masks = mask_service.get_hair_and_face_mask(hair_pil)
+        ref_hair_mask = ref_masks["hair_mask"]
+        
+        # Lưu mask trung gian vào session folder
+        hair_mask.save(os.path.join(session_dir, "hair_mask.png"))
+        face_mask.save(os.path.join(session_dir, "face_mask.png"))
+        ref_hair_mask.save(os.path.join(session_dir, "ref_hair_mask.png"))
+        print(f"  ✅ Saved hair_mask, face_mask, ref_hair_mask → {session_dir}")
         
         # 4. Depth Map (ControlNet Input)
-        # Simple depth estimation (or use helper if available, for now using simple grayscale as placeholder or dedicated DepthEstimator)
-        # Note: In real implementation, we should use Midas or similar. 
-        # ControlNet requires a proper depth map.
-        # Temp solution: Use ImageOps.invert(grayscale) if real depth not avail, OR better: use transformers pipeline.
-        # But to avoid adding more deps/files now, let's assume we pass the User Image itself if Preprocessor is integrated in Pipe?
-        # Standard ControlNet expects pre-processed depth map.
-        # Let's create a dummy depth or better: assume user provides good lighting.
-        # Actually, let's skip Depth estimation integration code to keep it simple, passing the GS image implies Canny/Depth depending on model.
-        # ControlNet Depth expects normalized depth.
-        # Important: For quality, we SHOULD run depth estimation.
-        # Since 'transformers' is installed, let's use it quickly here inside task or service.
-        from transformers import pipeline
-        depth_estimator = pipeline("depth-estimation", model="Intel/dpt-large") # Will download if not localized
-        
+        # Dùng depth estimator đã cache trong _SERVICES (tránh reload mỗi task)
         self.update_state(state='PROCESSING', meta={'step': 'Estimating Depth'})
         depth_map = depth_estimator(user_pil)['depth']
+        depth_map.save(os.path.join(session_dir, "depth_map.png"))
+        print(f"  ✅ Saved depth_map → {session_dir}")
         
         # 5. Diffusion Inference
         self.update_state(state='PROCESSING', meta={'step': 'Generating Hair'})
+        original_size = user_pil.size  # (w, h) — lưu kích thước gốc
         result_image = diffusion_service.generate(
             base_image=user_pil,
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_pil,
-            prompt=prompt,
-            use_refiner=use_refiner
+            prompt=prompt
         )
         
-        # 6. Save Output
-        filename = f"result_{self.request.id}.png"
-        save_path = os.path.join(OUTPUT_DIR, filename)
+        # Resize kết quả về kích thước gốc để không bị méo
+        if result_image.size != original_size:
+            result_image = result_image.resize(original_size, Image.LANCZOS)
+        
+        # 6. Save Output vào session folder
+        save_path = os.path.join(session_dir, "result.png")
         result_image.save(save_path)
+        print(f"  ✅ Saved result ({original_size}) → {session_dir}")
+        
+        # Cleanup GPU memory sau inference
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         return {
             "status": "SUCCESS", 
             "result_path": str(save_path),
-            "url": f"/static/output/{filename}"
+            "session_dir": str(session_dir),
+            "url": f"/static/output/{session_name}/result.png"
         }
 
     except Exception as e:
+        # Cleanup GPU memory ngay cả khi lỗi
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return {"status": "FAILURE", "error": str(e)}

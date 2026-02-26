@@ -9,7 +9,7 @@ import os
 import numpy as np
 from pathlib import Path
 
-from backend.app.services.training_utils import setupLogger, getDevice
+from backend.app.services.training_utils import setupLogger, getDevice, computeIoU
 
 
 # Đường dẫn model
@@ -142,7 +142,7 @@ class TrainingFaceDetector:
                     continue
                 bB = faces[j]["bbox"]
                 
-                iou = self._computeIoU(bA, bB)
+                iou = computeIoU(bA, bB)
                 if iou > iouThreshold:
                     suppressed.add(j)
                     self.logger.info(
@@ -151,26 +151,7 @@ class TrainingFaceDetector:
         
         return keep
     
-    def _computeIoU(self, boxA, boxB):
-        """Tính IoU giữa 2 bbox [x1, y1, x2, y2]."""
-        x1 = max(boxA[0], boxB[0])
-        y1 = max(boxA[1], boxB[1])
-        x2 = min(boxA[2], boxB[2])
-        y2 = min(boxA[3], boxB[3])
-        
-        interW = max(0, x2 - x1)
-        interH = max(0, y2 - y1)
-        interArea = interW * interH
-        
-        areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
-        areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
-        
-        union = areaA + areaB - interArea
-        if union <= 0:
-            return 0.0
-        
-        return interArea / union
-    
+
     def detectBatch(self, images, confThreshold=None):
         """
         Batch detection cho nhiều ảnh cùng lúc.

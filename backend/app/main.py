@@ -2,10 +2,12 @@
 import os
 import shutil
 import uuid
+import random
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from backend.app.config import settings, OUTPUT_DIR, UPLOAD_DIR, BACKEND_DIR
+from pathlib import Path
 from backend.app.schemas import HairTransferResponse, TaskStatusResponse
 from backend.app.tasks import process_hair_transfer, celery_app
 from celery.result import AsyncResult
@@ -28,37 +30,48 @@ app.add_middleware(
 app.mount("/static/output", StaticFiles(directory=OUTPUT_DIR), name="static_output")
 # Specific mount for Uploads (data/uploads) - Needed if we want to serve uploaded images back
 app.mount("/static/uploads", StaticFiles(directory=UPLOAD_DIR), name="static_uploads")
-# General mount for other backend files (like default uploads/dataset if in backend)
-app.mount("/static", StaticFiles(directory=BACKEND_DIR), name="static")
+
+# Mount dataset riêng cho /random-pair (CHỈ dataset, KHÔNG expose toàn bộ backend)
+DATASET_DIR = BACKEND_DIR / "data" / "dataset"
+if DATASET_DIR.exists():
+    app.mount("/static/dataset", StaticFiles(directory=str(DATASET_DIR)), name="static_dataset")
+
+# BẢO MẬT: KHÔNG mount toàn bộ BACKEND_DIR — sẽ expose .env, config.py, source code
 
 @app.post("/upload", tags=["Upload"])
 async def upload_image(file: UploadFile = File(...)):
     """
     Upload ảnh (người dùng hoặc mẫu tóc) lên server.
     """
-    file_ext = file.filename.split(".")[-1]
+    file_ext = file.filename.split(".")[-1].lower()
     filename = f"{uuid.uuid4()}.{file_ext}"
     file_path = UPLOAD_DIR / filename
     
     with open(file_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
         
-    return {"filename": filename, "path": str(file_path)}
+    return {"filename": filename}
 
 @app.post("/generate", response_model=HairTransferResponse, tags=["Core"])
 async def generate_hair(
     face_image: UploadFile = File(...),
     hair_image: UploadFile = File(...),
-    description: str = Form("high quality realistic hair"),
-    use_refiner: bool = Form(False)
+    description: str = Form("high quality realistic hair")
 ):
     """
     Endpoint tương thích với React Frontend.
     Nhận 2 file ảnh và prompt, tự động upload rồi gửi task.
     """
+    # Validate file type
+    ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "bmp"}
+    face_ext = face_image.filename.split('.')[-1].lower()
+    hair_ext = hair_image.filename.split('.')[-1].lower()
+    if face_ext not in ALLOWED_EXTENSIONS or hair_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {ALLOWED_EXTENSIONS}")
+    
     # 1. Save uploaded files
-    face_filename = f"{uuid.uuid4()}_face.{face_image.filename.split('.')[-1]}"
-    hair_filename = f"{uuid.uuid4()}_hair.{hair_image.filename.split('.')[-1]}"
+    face_filename = f"{uuid.uuid4()}_face.{face_ext}"
+    hair_filename = f"{uuid.uuid4()}_hair.{hair_ext}"
     
     face_path = UPLOAD_DIR / face_filename
     hair_path = UPLOAD_DIR / hair_filename
@@ -70,7 +83,7 @@ async def generate_hair(
         shutil.copyfileobj(hair_image.file, f)
         
     # 2. Trigger Celery Task
-    task = process_hair_transfer.delay(str(face_path), str(hair_path), description, use_refiner)
+    task = process_hair_transfer.delay(str(face_path), str(hair_path), description)
     
     return {
         "task_id": task.id,
@@ -79,7 +92,7 @@ async def generate_hair(
     }
 
 @app.post("/transfer", response_model=HairTransferResponse, tags=["Core"])
-async def transfer_hair(user_img: str, hair_img: str, prompt: str = "high quality realistic hair", use_refiner: bool = False):
+async def transfer_hair(user_img: str, hair_img: str, prompt: str = "high quality realistic hair"):
     """
     API cũ (giữ lại để tương thích CLI cũ).
     """
@@ -89,7 +102,7 @@ async def transfer_hair(user_img: str, hair_img: str, prompt: str = "high qualit
     if not os.path.exists(user_path) or not os.path.exists(hair_path):
         raise HTTPException(status_code=404, detail="Image file not found")
     
-    task = process_hair_transfer.delay(user_path, hair_path, prompt, use_refiner)
+    task = process_hair_transfer.delay(user_path, hair_path, prompt)
     
     return {
         "task_id": task.id,
@@ -140,12 +153,6 @@ async def get_random_pair():
     Lấy 2 ảnh ngẫu nhiên từ dataset FFHQ để test.
     Trả về URL tĩnh của ảnh.
     """
-    import random
-    from backend.app.config import BASE_DIR
-    
-    # Path to dataset (Adjust based on actual structure)
-    # Expected: backend/data/dataset/ffhq
-    dataset_rel_path = "data/dataset/ffhq"
     dataset_full_path = BACKEND_DIR / "data" / "dataset" / "ffhq"
     
     if not dataset_full_path.exists():
@@ -155,7 +162,6 @@ async def get_random_pair():
     try:
         subfolders = [f for f in dataset_full_path.iterdir() if f.is_dir()]
         if not subfolders:
-             # Maybe flat structure?
              pass 
     except Exception as e:
         return {"error": str(e)}
@@ -173,12 +179,7 @@ async def get_random_pair():
                 
             if images:
                 img = random.choice(images)
-                # Convert to static URL: /static/data/dataset/ffhq/...
-                # BACKEND_DIR is mounted at /static
-                # img path: .../backend/data/dataset/ffhq/00000/12345.png
-                # rel path to backend: data/dataset/ffhq/00000/12345.png
-                rel_path = img.relative_to(BACKEND_DIR)
-                return f"/static/{rel_path.as_posix()}"
+                return f"/static/dataset/{img.relative_to(DATASET_DIR).as_posix()}"
         return None
 
     target_url = pick_random_image()

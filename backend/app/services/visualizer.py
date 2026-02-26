@@ -36,10 +36,10 @@ SEGFORMER_LOCAL_PATH = str(BASE_DIR / "backend" / "models" / "segformer_face_par
 # Nhóm face (skin + features)
 FACE_CLASSES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 15, 17}
 
-# Nhóm hair
-HAIR_CLASSES = {13}
+# Nhóm hair (bao gồm cả nón/hat — class 14)
+HAIR_CLASSES = {13, 14}
 
-# Background = tất cả còn lại (0, 14, 16, 18)
+# Background = tất cả còn lại (0, 16, 18)
 
 
 class TrainingVisualizer:

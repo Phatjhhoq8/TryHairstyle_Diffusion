@@ -18,13 +18,6 @@ MODELS = {
         "type": "model",
         "path": MODELS_DIR / "stable-diffusion" / "sd_xl_inpainting"
     },
-
-    "sdxl_refiner": {
-        "repo_id": "stabilityai/stable-diffusion-xl-refiner-1.0",
-        "type": "file",
-        "filename": "sd_xl_refiner_1.0_0.9vae.safetensors",
-        "path": MODELS_DIR
-    },
     
     "controlnet_depth": {
         "repo_id": "diffusers/controlnet-depth-sdxl-1.0",

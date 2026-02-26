@@ -43,14 +43,14 @@ echo "----------------------------------------------------------"
 echo " STAGE 1: HỌC CHẤT LIỆU TÓC (TEXTURE ENCODER)"
 echo "----------------------------------------------------------"
 # Lệnh này chạy mạng Autoencoder để thấu hiểu không gian sợi tóc bằng SupCon Loss
-python "${PROJECT_DIR}/backend/training/models/texture_encoder.py"
+python "${PROJECT_DIR}/backend/training/models/texture_encoder.py" --resume
 
 echo ""
 echo "----------------------------------------------------------"
 echo " STAGE 2: MASK-CONDITIONED INPAINTING (UNET MAIN MODEL)"
 echo "----------------------------------------------------------"
 # Lệnh này gọi mạng SDXL nới rộng 9-Channels, áp dụng IdentityLoss để khóa mặt
-python "${PROJECT_DIR}/backend/training/train_stage2.py"
+python "${PROJECT_DIR}/backend/training/train_stage2.py" --resume
 
 echo ""
 echo "----------------------------------------------------------"

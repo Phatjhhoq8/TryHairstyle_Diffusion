@@ -1,65 +1,80 @@
 
 import sys
 import os
-print("Importing random/cv2/numpy...", flush=True)
-import random
-import cv2
-import numpy as np
 
-print("Importing gradio...", flush=True)
-import gradio as gr
-print("Importing PIL...", flush=True)
-from PIL import Image, ImageOps
-
-# Add project root to path
+# Add project root to path — MUST be before any backend imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
-print("Importing backend config...", flush=True)
-from backend.app.config import settings
-
-# Apply patches for diffusers compatibility
+# CRITICAL: Import torch patch BEFORE any diffusers/transformers imports!
 print("Applying torch/diffusers/transformers patches...", flush=True)
-from backend.app.utils import torch_patch
+from backend.app.utils import torch_patch  # noqa: F401
 
-print("Importing face service...", flush=True)
+print("Importing libraries...", flush=True)
+import random
+import cv2
+import torch
+import numpy as np
+import gradio as gr
+from PIL import Image, ImageOps
+
+print("Importing backend services...", flush=True)
+from datetime import datetime
+from backend.app.config import settings, OUTPUT_DIR
 from backend.app.services.face import FaceInfoService
-print("Importing mask service...", flush=True)
 from backend.app.services.mask import SegmentationService
-print("Importing diffusion service...", flush=True)
 from backend.app.services.diffusion import HairDiffusionService
 
-# Global Services
+# Global Services (lazy loaded)
 face_service = None
 mask_service = None
 diffusion_service = None
+depth_estimator = None
+
 
 def load_services():
-    global face_service, mask_service, diffusion_service
-    # Reload if any service is missing
-    if face_service is None or diffusion_service is None:
-        print("Loading Services...", flush=True)
-        try:
-            # Reset first to ensure clean state
-            face_service = None 
-            mask_service = None 
-            diffusion_service = None
-            
-            face_service = FaceInfoService()
-            mask_service = SegmentationService()
-            diffusion_service = HairDiffusionService()
-            print("Services Loaded Successfully!", flush=True)
-            return "Services Loaded Ready to Run"
-        except Exception as e:
-            print(f"Error loading services: {e}")
-            # Ensure we don't leave partial state
-            face_service = None 
-            mask_service = None 
-            diffusion_service = None
-            return f"Error: {e}"
-    return "Services Already Loaded"
+    """Load tất cả AI services (1 lần duy nhất)."""
+    global face_service, mask_service, diffusion_service, depth_estimator
+    
+    if face_service is not None and diffusion_service is not None and depth_estimator is not None:
+        return "✅ Services Already Loaded"
+    
+    print(">>> Loading Services...", flush=True)
+    try:
+        # Reset first to ensure clean state
+        face_service = None
+        mask_service = None
+        diffusion_service = None
+        depth_estimator = None
+        
+        face_service = FaceInfoService()
+        print("  ✅ Face Service loaded", flush=True)
+        
+        mask_service = SegmentationService()
+        print("  ✅ Mask Service loaded", flush=True)
+        
+        diffusion_service = HairDiffusionService()
+        print("  ✅ Diffusion Service loaded", flush=True)
+        
+        # Depth estimator — load 1 lần, cache global (tránh reload mỗi inference)
+        from transformers import pipeline
+        depth_estimator = pipeline("depth-estimation", model="Intel/dpt-large")
+        print("  ✅ Depth Estimator loaded (Intel/dpt-large)", flush=True)
+        
+        print(">>> All Services Loaded Successfully!", flush=True)
+        return "✅ Services Loaded — Ready to Run"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        # Ensure we don't leave partial state
+        face_service = None
+        mask_service = None
+        diffusion_service = None
+        depth_estimator = None
+        return f"❌ Error: {e}"
+
 
 def get_random_ffhq_image():
-    # Use relative paths from project root
+    """Lấy 1 ảnh ngẫu nhiên từ dataset FFHQ."""
     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     dataset_root = os.path.join(base_dir, "backend", "data", "dataset", "ffhq")
     
@@ -67,108 +82,154 @@ def get_random_ffhq_image():
         return None
     
     folders = [f for f in os.listdir(dataset_root) if os.path.isdir(os.path.join(dataset_root, f))]
-    if not folders: return None
+    if not folders:
+        return None
     
     folder = random.choice(folders)
     folder_path = os.path.join(dataset_root, folder)
     files = [f for f in os.listdir(folder_path) if f.endswith(('.png', '.jpg', '.jpeg'))]
-    if not files: return None
+    if not files:
+        return None
     
     img_path = os.path.join(folder_path, random.choice(files))
     return Image.open(img_path).convert("RGB")
 
-def process_pipeline(user_image, hair_image, prompt, use_refiner):
+
+def process_pipeline(user_image, hair_image, prompt):
+    """Chạy full pipeline: Face → Mask → Depth → Diffusion."""
     if user_image is None or hair_image is None:
-        return None, "Please select both images."
+        return None, "⚠️ Please select both images."
     
-    # Check if services are actually loaded
-    global diffusion_service
-    if face_service is None or diffusion_service is None:
-        load_result = load_services() # Auto load if not ready
+    # Auto-load services nếu chưa load
+    global face_service, mask_service, diffusion_service, depth_estimator
+    if face_service is None or diffusion_service is None or depth_estimator is None:
+        load_result = load_services()
         if "Error" in load_result:
-             return None, f"Service Load Failed: {load_result}"
+            return None, f"❌ Service Load Failed: {load_result}"
         if diffusion_service is None:
-             return None, "Critical: HairDiffusionService failed to load."
-        
+            return None, "❌ Critical: HairDiffusionService failed to load."
+    
     try:
+        # Tạo session folder cho lần inference này
+        session_name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        session_dir = os.path.join(str(OUTPUT_DIR), session_name)
+        os.makedirs(session_dir, exist_ok=True)
+        print(f">>> Session folder: {session_dir}", flush=True)
+        
         # Convert to CV2 for Face Analysis
         user_cv2 = cv2.cvtColor(np.array(user_image), cv2.COLOR_RGB2BGR)
         
         # 1. Face Analysis
+        print("  → Face Analysis...", flush=True)
         face_info = face_service.analyze(user_cv2)
-        status_msg = "Success"
+        status_msg = "✅ Success"
         if not face_info:
-            print("Warning: No face detected. Proceeding anyway...", flush=True)
-            status_msg = "Warning: No face detected by InsightFace, result accuracy may vary."
-            # return None, "No face detected in User Image." # OLD BLOCKER
-            
-        # 2. Mask
-        hair_mask = mask_service.get_mask(user_image, target_class=17)
+            print("  ⚠️ No face detected. Proceeding anyway...", flush=True)
+            status_msg = "⚠️ No face detected — result may vary."
         
-        # 3. Depth (Dummy for now to avoid crash if transformers issues persist, 
-        # or use simple grayscale as fallback which works for S1.5 Inpaint pipe)
-        depth_map = ImageOps.grayscale(user_image)
+        # 2. Hair + Face Mask (lấy cả 2 mask trong 1 lần inference)
+        print("  → Creating Hair & Face Mask...", flush=True)
+        masks = mask_service.get_hair_and_face_mask(user_image)
+        hair_mask = masks["hair_mask"]
+        face_mask = masks["face_mask"]
+        
+        # Mask tóc từ ảnh reference
+        ref_masks = mask_service.get_hair_and_face_mask(hair_image)
+        ref_hair_mask = ref_masks["hair_mask"]
+        
+        # Lưu mask trung gian vào session folder
+        hair_mask.save(os.path.join(session_dir, "hair_mask.png"))
+        face_mask.save(os.path.join(session_dir, "face_mask.png"))
+        ref_hair_mask.save(os.path.join(session_dir, "ref_hair_mask.png"))
+        print(f"  ✅ Saved hair_mask, face_mask, ref_hair_mask → {session_dir}", flush=True)
+        
+        # 3. Depth Estimation (dùng cached depth_estimator)
+        print("  → Estimating Depth...", flush=True)
+        depth_map = depth_estimator(user_image)['depth']
+        depth_map.save(os.path.join(session_dir, "depth_map.png"))
+        print(f"  ✅ Saved depth_map → {session_dir}", flush=True)
         
         # 4. Diffusion
-        print(f"Running Generation (Refiner: {use_refiner})...", flush=True)
+        original_size = user_image.size  # (w, h) — lưu kích thước gốc
+        print(f"  → Running Generation (original: {original_size})...", flush=True)
         result = diffusion_service.generate(
             base_image=user_image,
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_image,
-            prompt=prompt,
-            use_refiner=use_refiner
+            prompt=prompt
         )
         
-        return result, status_msg
+        # Resize kết quả về kích thước gốc để không bị méo
+        if result.size != original_size:
+            result = result.resize(original_size, Image.LANCZOS)
         
+        # Lưu kết quả vào session folder
+        result.save(os.path.join(session_dir, "result.png"))
+        print(f"  ✅ Saved result ({original_size}) → {session_dir}", flush=True)
+        
+        # Cleanup GPU memory sau mỗi inference
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        return result, f"{status_msg}\n📁 Session: {session_name}"
+    
     except Exception as e:
         import traceback
         traceback.print_exc()
-        return None, f"Error: {str(e)}"
+        # Cleanup GPU memory ngay cả khi lỗi
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return None, f"❌ Error: {str(e)}"
 
-# UI Construction
-with gr.Blocks(title="TryHairStyle - FFHQ Test") as demo:
-    gr.Markdown("# TryHairStyle Review Tool (FFHQ)")
+
+# ======================= GRADIO UI =======================
+
+with gr.Blocks(title="TryHairStyle - FFHQ Test", theme=gr.themes.Soft()) as demo:
+    gr.Markdown("# 💇 TryHairStyle Review Tool (FFHQ)")
+    gr.Markdown("*Pipeline: Face Detection → Hair+Hat Mask → Depth Estimation → SDXL Inpainting*")
     
     with gr.Row():
-        status_box = gr.Textbox(label="System Status", value="Not Loaded", interactive=False)
-        load_btn = gr.Button("Initialize System Services")
+        status_box = gr.Textbox(label="System Status", value="⏳ Not Loaded", interactive=False)
+        load_btn = gr.Button("🔧 Initialize System Services", variant="secondary")
     
     with gr.Row():
         with gr.Column():
-            gr.Markdown("### 1. Inputs")
+            gr.Markdown("### 📸 Inputs")
             user_input = gr.Image(label="User Face", type="pil")
             hair_input = gr.Image(label="Hair Reference", type="pil")
             random_btn = gr.Button("🎲 Load Random FFHQ Pair")
-            
+        
         with gr.Column():
-            gr.Markdown("### 2. Settings")
-            prompt_input = gr.Textbox(label="Prompt", value="high quality, realistic hairstyle")
-            refiner_chk = gr.Checkbox(label="Use SDXL Refiner (High Quality)", value=False)
+            gr.Markdown("### ⚙️ Settings")
+            prompt_input = gr.Textbox(
+                label="Prompt", 
+                value="high quality, realistic hairstyle",
+                placeholder="Describe the hairstyle..."
+            )
             run_btn = gr.Button("🚀 Run Transfer", variant="primary")
-            
+        
         with gr.Column():
-            gr.Markdown("### 3. Result")
+            gr.Markdown("### 🖼️ Result")
             output_image = gr.Image(label="Result", type="pil")
-            log_output = gr.Textbox(label="Log")
-
+            log_output = gr.Textbox(label="Log", lines=3)
+    
     # Events
     load_btn.click(fn=load_services, outputs=status_box)
     
     def random_pair():
-        return get_random_ffhq_image(), get_random_ffhq_image()
-        
+        img1 = get_random_ffhq_image()
+        img2 = get_random_ffhq_image()
+        return img1, img2
+    
     random_btn.click(fn=random_pair, outputs=[user_input, hair_input])
     
     run_btn.click(
         fn=process_pipeline,
-        inputs=[user_input, hair_input, prompt_input, refiner_chk],
+        inputs=[user_input, hair_input, prompt_input],
         outputs=[output_image, log_output]
     )
 
 if __name__ == "__main__":
-    # Launch on localhost
-    print("Launching Gradio UI...", flush=True)
-    # Using port 7862 to avoid conflict with stuck process
+    print(">>> Launching Gradio UI...", flush=True)
     demo.launch(server_name="127.0.0.1", server_port=7862, share=False)

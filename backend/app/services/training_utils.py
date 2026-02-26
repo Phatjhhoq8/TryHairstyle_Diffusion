@@ -200,3 +200,33 @@ def cropFaceFromImage(image, bbox, margin=0.2):
     y2 = min(h, y2 + my)
     
     return image[y1:y2, x1:x2].copy()
+
+
+def computeIoU(boxA, boxB):
+    """
+    Tính IoU (Intersection over Union) giữa 2 bounding boxes.
+    
+    Args:
+        boxA: [x1, y1, x2, y2]
+        boxB: [x1, y1, x2, y2]
+    
+    Returns:
+        float — IoU value (0.0 - 1.0)
+    """
+    x1 = max(boxA[0], boxB[0])
+    y1 = max(boxA[1], boxB[1])
+    x2 = min(boxA[2], boxB[2])
+    y2 = min(boxA[3], boxB[3])
+    
+    interW = max(0, x2 - x1)
+    interH = max(0, y2 - y1)
+    interArea = interW * interH
+    
+    areaA = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    areaB = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    
+    union = areaA + areaB - interArea
+    if union <= 0:
+        return 0.0
+    
+    return interArea / union

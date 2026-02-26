@@ -29,8 +29,14 @@ SEGFORMER_LOCAL_PATH = str(BASE_DIR / "backend" / "models" / "segformer_face_par
 # Hair class trong SegFormer = 13
 SEGFORMER_HAIR_CLASS = 13
 
-# Face classes (skin, nose, eyes, brows, mouth, lips)
-SEGFORMER_FACE_CLASSES = {1, 2, 3, 4, 5, 6, 7, 10, 11, 12}
+# Hat class = 14 — gộp vào hair để inpainting thay cả nón lẫn tóc
+SEGFORMER_HAT_CLASS = 14
+
+# Tất cả classes được coi là "hair" cho mask (tóc + nón)
+SEGFORMER_HAIR_CLASSES = {SEGFORMER_HAIR_CLASS, SEGFORMER_HAT_CLASS}
+
+# Face classes (skin, nose, eyes, brows, ears, mouth, lips)
+SEGFORMER_FACE_CLASSES = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 
 
 class SegmentationService:
@@ -133,16 +139,16 @@ class SegmentationService:
             # Fallback: trả về mask trống
             return Image.fromarray(np.zeros((h, w), dtype=np.uint8))
         
-        # Map legacy class → SegFormer class
-        if target_class == 17:
-            # Legacy hair class 17 → SegFormer hair class 13
-            segformer_class = SEGFORMER_HAIR_CLASS
-        else:
-            segformer_class = target_class
-        
         # Tạo binary mask
         mask = np.zeros_like(parsing, dtype=np.uint8)
-        mask[parsing == segformer_class] = 255
+        
+        if target_class == 17:
+            # Legacy hair class 17 → SegFormer hair classes {13, 14}
+            # Bao gồm cả nón (hat) để inpainting thay toàn bộ vùng tóc + nón
+            for cls in SEGFORMER_HAIR_CLASSES:
+                mask[parsing == cls] = 255
+        else:
+            mask[parsing == target_class] = 255
         
         # Resize nếu cần
         if mask.shape[:2] != (h, w):
@@ -176,9 +182,10 @@ class SegmentationService:
             empty = Image.fromarray(np.zeros((h, w), dtype=np.uint8))
             return {"hair_mask": empty, "face_mask": empty, "parsing": None}
         
-        # Hair mask
+        # Hair mask (bao gồm cả nón/hat)
         hair_mask = np.zeros_like(parsing, dtype=np.uint8)
-        hair_mask[parsing == SEGFORMER_HAIR_CLASS] = 255
+        for cls in SEGFORMER_HAIR_CLASSES:
+            hair_mask[parsing == cls] = 255
         
         # Face mask (tổng hợp tất cả face classes)
         face_mask = np.zeros_like(parsing, dtype=np.uint8)
