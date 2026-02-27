@@ -12,7 +12,7 @@ matplotlib.use('Agg')  # Non-interactive backend (tương thích server/Colab)
 import matplotlib.pyplot as plt
 from pathlib import Path
 from tqdm import tqdm
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from safetensors.torch import save_file
 
@@ -128,9 +128,10 @@ class HairInpaintingDataset(Dataset):
         
         # Giới hạn dataset size nếu cần
         if max_samples > 0 and len(self.metadata) > max_samples:
+            original_count = len(self.metadata)
             random.seed(42)  # Reproducible subset
             self.metadata = random.sample(self.metadata, max_samples)
-            logger.info(f"📉 Dataset giảm xuống {max_samples} samples (từ {len(self.metadata)} gốc)")
+            logger.info(f"📉 Dataset giảm xuống {max_samples} samples (từ {original_count} gốc)")
         
         # Pre-encode text prompts nếu Text Encoder được cung cấp
         if text_encoder is not None and len(self.metadata) > 0:
@@ -563,6 +564,125 @@ class Stage2Trainer:
             "identity_loss": loss_id_val,
         }
         
+    @torch.no_grad()
+    def validate_epoch(self, val_dataloader, global_step: int):
+        """
+        Đánh giá model trên validation set.
+        Tính Validation Diffusion Loss (noise prediction MSE) — KHÔNG backprop.
+        Tùy chọn: tính LPIPS trên vài samples đầu tiên.
+        
+        Returns:
+            dict: {
+                'val_loss': float — trung bình diffusion loss trên val set,
+                'val_lpips': float — trung bình LPIPS (nếu có), -1.0 nếu không
+            }
+        """
+        self.unet.eval()
+        self.injector.eval()
+        
+        val_losses = []
+        lpips_scores = []
+        
+        # Khởi tạo LPIPS evaluator (lazy, chỉ lần đầu)
+        lpips_evaluator = None
+        try:
+            from backend.training.evaluate import HairEvaluator
+            lpips_evaluator = HairEvaluator(device=str(DEVICE))
+            if lpips_evaluator.loss_fn_vgg is None:
+                lpips_evaluator = None
+        except Exception:
+            pass  # LPIPS không bắt buộc
+        
+        max_lpips_samples = 4  # Chỉ tính LPIPS trên vài samples để tiết kiệm VRAM
+        lpips_count = 0
+        
+        for batch in tqdm(val_dataloader, desc="Validation", leave=False):
+            gt_images = batch['image'].to(DEVICE)
+            masks = batch['mask'].to(DEVICE)
+            
+            # VAE Encode
+            latents = self._encode_to_latents(gt_images)
+            masks_pixel = F.interpolate(masks, size=gt_images.shape[-2:], mode='nearest')
+            masked_images = gt_images * (1.0 - masks_pixel)
+            masked_latents = self._encode_to_latents(masked_images)
+            masks_latent = F.interpolate(masks, size=latents.shape[-2:], mode='nearest')
+            
+            # Noise
+            noise = torch.randn_like(latents)
+            bsz = latents.shape[0]
+            timesteps = torch.randint(
+                0, self.noise_scheduler.config.num_train_timesteps,
+                (bsz,), device=DEVICE
+            ).long()
+            noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+            
+            # Conditioning
+            style_embeds = batch['style_embed'].to(DEVICE)
+            id_embeds = batch['identity_embed'].to(DEVICE)
+            text_embeds = batch['text_embeds'].to(DEVICE)
+            pooled_text_embeds = batch['pooled_text_embeds'].to(DEVICE)
+            time_ids = batch['time_ids'].to(DEVICE)
+            
+            injected_conds = self.injector.inject_conditioning(style_embeds, id_embeds)
+            encoder_hidden_states = torch.cat([text_embeds, injected_conds], dim=1)
+            
+            added_cond_kwargs = {
+                "text_embeds": pooled_text_embeds,
+                "time_ids": time_ids
+            }
+            
+            # Forward (no grad, AMP)
+            with torch.amp.autocast('cuda', dtype=torch.float16):
+                noise_pred = self.unet(
+                    noisy_latents=noisy_latents,
+                    masked_latents=masked_latents,
+                    mask=masks_latent,
+                    timestep=timesteps,
+                    encoder_hidden_states=encoder_hidden_states,
+                    added_cond_kwargs=added_cond_kwargs
+                )
+                
+                val_diff_loss = self.mask_aware_loss(noise_pred, noise, masks_latent)
+                val_losses.append(val_diff_loss.item())
+            
+            # LPIPS trên vài samples đầu (tùy chọn, tốn VRAM)
+            if lpips_evaluator is not None and lpips_count < max_lpips_samples:
+                try:
+                    with torch.amp.autocast('cuda', dtype=torch.float16):
+                        # Ước tính denoised output (x0 prediction)
+                        alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(DEVICE)
+                        alpha_prod_t = alphas_cumprod[timesteps]
+                        sqrt_alpha = (alpha_prod_t ** 0.5).view(-1, 1, 1, 1)
+                        sqrt_one_minus_alpha = ((1 - alpha_prod_t) ** 0.5).view(-1, 1, 1, 1)
+                        pred_original = (noisy_latents - sqrt_one_minus_alpha * noise_pred) / (sqrt_alpha + 1e-8)
+                        
+                        decoded_img = self._decode_latents(pred_original)
+                    
+                    # LPIPS cần input [-1, 1] — cả decoded_img và gt_images đều ở range này
+                    lpips_val = lpips_evaluator.evaluate_lpips(
+                        decoded_img[:1], gt_images[:1], masks[:1]  # Chỉ lấy 1 sample
+                    )
+                    if lpips_val >= 0:
+                        lpips_scores.append(lpips_val)
+                    lpips_count += 1
+                except RuntimeError as e:
+                    if "out of memory" in str(e):
+                        torch.cuda.empty_cache()
+                    lpips_evaluator = None  # Tắt LPIPS nếu OOM
+        
+        # Tổng hợp
+        avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('inf')
+        avg_lpips = sum(lpips_scores) / len(lpips_scores) if lpips_scores else -1.0
+        
+        # Trả UNet về train mode
+        self.unet.train()
+        self.injector.train()
+        
+        return {
+            'val_loss': avg_val_loss,
+            'val_lpips': avg_lpips
+        }
+
     def _save_safetensors_safe(self, state_dict, path: str):
         """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt."""
         import tempfile, shutil
@@ -595,7 +715,7 @@ class Stage2Trainer:
         charts_dir = self.checkpoints_dir / "charts"
         charts_dir.mkdir(parents=True, exist_ok=True)
         
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        fig, axes = plt.subplots(3, 2, figsize=(16, 18))
         fig.suptitle(f"Training Stage 2 — After Epoch {epoch}", fontsize=16, fontweight='bold')
         
         steps = range(1, len(history['total_loss']) + 1)
@@ -603,7 +723,6 @@ class Stage2Trainer:
         # --- 1. Total Loss (mỗi step) ---
         ax1 = axes[0, 0]
         ax1.plot(steps, history['total_loss'], alpha=0.3, color='#2196F3', linewidth=0.5, label='Per step')
-        # Đường trung bình trượt (window = 100 steps)
         if len(history['total_loss']) > 100:
             window = 100
             smoothed = np.convolve(history['total_loss'], np.ones(window)/window, mode='valid')
@@ -651,23 +770,74 @@ class Stage2Trainer:
         ax3.legend(loc='upper left')
         ax3.grid(True, alpha=0.3)
         
-        # --- 4. Epoch Average Loss ---
+        # --- 4. Train vs Validation Loss (mỗi epoch) ---
         ax4 = axes[1, 1]
         if history['epoch_avg_loss']:
             epochs = range(1, len(history['epoch_avg_loss']) + 1)
-            ax4.plot(epochs, history['epoch_avg_loss'], color='#E91E63', linewidth=2.5, marker='o', markersize=8, label='Avg Loss')
-            # Đánh dấu best epoch
-            bestIdx = np.argmin(history['epoch_avg_loss'])
-            ax4.scatter([bestIdx + 1], [history['epoch_avg_loss'][bestIdx]], color='#FFD700', s=200, zorder=5, marker='★', label=f'Best (Epoch {bestIdx+1})')
-            ax4.set_title('Epoch Average Loss', fontsize=13)
+            ax4.plot(epochs, history['epoch_avg_loss'], color='#E91E63', linewidth=2.5, marker='o', markersize=8, label='Train Loss')
+            
+            # Vẽ Validation Loss nếu có
+            val_losses = history.get('val_loss', [])
+            if val_losses:
+                ax4.plot(epochs, val_losses, color='#2196F3', linewidth=2.5, marker='s', markersize=8, label='Val Loss')
+                # Đánh dấu best epoch (dựa trên val loss)
+                bestIdx = np.argmin(val_losses)
+                ax4.scatter([bestIdx + 1], [val_losses[bestIdx]], color='#FFD700', s=200, zorder=5, marker='★', label=f'Best Val (Epoch {bestIdx+1})')
+            else:
+                # Fallback: đánh dấu best trên train loss
+                bestIdx = np.argmin(history['epoch_avg_loss'])
+                ax4.scatter([bestIdx + 1], [history['epoch_avg_loss'][bestIdx]], color='#FFD700', s=200, zorder=5, marker='★', label=f'Best (Epoch {bestIdx+1})')
+            
+            ax4.set_title('Train vs Validation Loss', fontsize=13)
             ax4.set_xticks(list(epochs))
         else:
             ax4.text(0.5, 0.5, 'Chưa có dữ liệu', ha='center', va='center', fontsize=12, transform=ax4.transAxes)
-            ax4.set_title('Epoch Average Loss', fontsize=13)
+            ax4.set_title('Train vs Validation Loss', fontsize=13)
         ax4.set_xlabel('Epoch')
-        ax4.set_ylabel('Avg Loss')
+        ax4.set_ylabel('Loss')
         ax4.legend()
         ax4.grid(True, alpha=0.3)
+        
+        # --- 5. Validation LPIPS (mỗi epoch) ---
+        ax5 = axes[2, 0]
+        val_lpips = history.get('val_lpips', [])
+        if val_lpips and any(v > 0 for v in val_lpips):
+            epochs = range(1, len(val_lpips) + 1)
+            ax5.plot(epochs, val_lpips, color='#00BCD4', linewidth=2.5, marker='D', markersize=8, label='Val LPIPS')
+            # LPIPS thấp hơn = tốt hơn
+            bestIdx = np.argmin([v if v > 0 else float('inf') for v in val_lpips])
+            ax5.scatter([bestIdx + 1], [val_lpips[bestIdx]], color='#FFD700', s=200, zorder=5, marker='★', label=f'Best LPIPS (Epoch {bestIdx+1})')
+            ax5.set_title('Validation LPIPS (↓ thấp = tốt)', fontsize=13)
+            ax5.set_xticks(list(epochs))
+        else:
+            ax5.text(0.5, 0.5, 'LPIPS chưa có\n(cần pip install lpips)', ha='center', va='center', fontsize=12, transform=ax5.transAxes)
+            ax5.set_title('Validation LPIPS', fontsize=13)
+        ax5.set_xlabel('Epoch')
+        ax5.set_ylabel('LPIPS Score')
+        ax5.legend()
+        ax5.grid(True, alpha=0.3)
+        
+        # --- 6. Epoch Summary Table ---
+        ax6 = axes[2, 1]
+        ax6.axis('off')
+        if history['epoch_avg_loss']:
+            table_data = []
+            for i in range(len(history['epoch_avg_loss'])):
+                train_l = f"{history['epoch_avg_loss'][i]:.5f}"
+                val_l = f"{history.get('val_loss', [0])[i]:.5f}" if i < len(history.get('val_loss', [])) else "N/A"
+                lpips_l = f"{history.get('val_lpips', [0])[i]:.4f}" if i < len(history.get('val_lpips', [])) and history.get('val_lpips', [0])[i] > 0 else "N/A"
+                table_data.append([f"Epoch {i+1}", train_l, val_l, lpips_l])
+            
+            table = ax6.table(
+                cellText=table_data,
+                colLabels=['Epoch', 'Train Loss', 'Val Loss', 'LPIPS'],
+                cellLoc='center',
+                loc='center'
+            )
+            table.auto_set_font_size(False)
+            table.set_fontsize(11)
+            table.scale(1.0, 1.5)
+            ax6.set_title('Epoch Summary', fontsize=13, pad=20)
         
         plt.tight_layout()
         
@@ -835,13 +1005,26 @@ class Stage2Trainer:
         if len(dataset) == 0:
             logger.error("Dataset trống! Hãy chạy prepare_dataset_deephair.py trước.")
             return
-            
-        dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=2, pin_memory=True)
         
         # =============================================
-        # BEST MODEL TRACKING — theo dõi loss tốt nhất
+        # TRAIN/VAL SPLIT — 80% train, 20% validation
         # =============================================
-        best_epoch_loss = float('inf')
+        val_ratio = 0.2
+        val_size = max(1, int(len(dataset) * val_ratio))
+        train_size = len(dataset) - val_size
+        train_dataset, val_dataset = random_split(
+            dataset, [train_size, val_size],
+            generator=torch.Generator().manual_seed(42)  # Reproducible split
+        )
+        logger.info(f"  📊 Dataset split: {train_size} train + {val_size} val ({val_ratio*100:.0f}%)")
+        
+        dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=2, pin_memory=True)
+        val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0, pin_memory=True)
+        
+        # =============================================
+        # BEST MODEL TRACKING — theo dõi VAL LOSS tốt nhất
+        # =============================================
+        best_val_loss = float('inf')
         best_epoch = -1
         
         global_step = 0
@@ -854,6 +1037,8 @@ class Stage2Trainer:
             'texture_loss': [],
             'identity_loss': [],
             'epoch_avg_loss': [],
+            'val_loss': [],       # Validation loss mỗi epoch
+            'val_lpips': [],      # Validation LPIPS mỗi epoch
         }
         
         for epoch in range(num_epochs):
@@ -891,25 +1076,37 @@ class Stage2Trainer:
                 })
                 global_step += 1
             
-            # Tính average loss cho epoch này
+            # Tính average TRAIN loss cho epoch này
             epoch_time = time.time() - epoch_start
             avg_epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('inf')
             
-            # Kiểm tra xem epoch này có tốt hơn best không
-            is_new_best = avg_epoch_loss < best_epoch_loss
+            # =============================================
+            # VALIDATION — đánh giá trên val set
+            # =============================================
+            logger.info(f"Đang đánh giá Validation (Epoch {epoch+1})...")
+            val_metrics = self.validate_epoch(val_dataloader, global_step)
+            val_loss = val_metrics['val_loss']
+            val_lpips = val_metrics['val_lpips']
+            
+            # Kiểm tra xem epoch này có tốt hơn best không (dựa trên VAL LOSS)
+            is_new_best = val_loss < best_val_loss
+            
+            val_lpips_str = f"{val_lpips:.4f}" if val_lpips >= 0 else "N/A"
             
             if is_new_best:
-                best_epoch_loss = avg_epoch_loss
+                best_val_loss = val_loss
                 best_epoch = epoch + 1
-                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Avg Loss: {avg_epoch_loss:.6f} — Time: {epoch_time/60:.1f}min")
+                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Train Loss: {avg_epoch_loss:.6f} — Val Loss: {val_loss:.6f} — Val LPIPS: {val_lpips_str} — Time: {epoch_time/60:.1f}min")
             else:
-                logger.info(f"Epoch {epoch+1} — Avg Loss: {avg_epoch_loss:.6f} (Best vẫn là Epoch {best_epoch}: {best_epoch_loss:.6f}) — Time: {epoch_time/60:.1f}min")
+                logger.info(f"Epoch {epoch+1} — Train Loss: {avg_epoch_loss:.6f} — Val Loss: {val_loss:.6f} — Val LPIPS: {val_lpips_str} (Best: Epoch {best_epoch}, Val: {best_val_loss:.6f}) — Time: {epoch_time/60:.1f}min")
             
             # Lưu checkpoint: best nếu đạt, backup nếu không
             self._save_checkpoint(f"epoch_{epoch+1}", is_best=is_new_best)
             
-            # Ghi epoch avg loss và vẽ chart
+            # Ghi epoch loss và vẽ chart
             loss_history['epoch_avg_loss'].append(avg_epoch_loss)
+            loss_history['val_loss'].append(val_loss)
+            loss_history['val_lpips'].append(val_lpips if val_lpips >= 0 else 0.0)
             self._plot_training_charts(loss_history, epoch + 1)
                     
         # Lưu Final Model (latest = epoch cuối cùng)
@@ -933,7 +1130,7 @@ class Stage2Trainer:
         logger.info(f"{'='*60}")
         logger.info(f"✅ Hoàn thành Training Stage 2!")
         logger.info(f"  📁 Model cuối cùng: {final_ckpt_path}")
-        logger.info(f"  🏆 Model tốt nhất: deep_hair_v1_best.safetensors (Epoch {best_epoch}, Loss: {best_epoch_loss:.6f})")
+        logger.info(f"  🏆 Model tốt nhất: deep_hair_v1_best.safetensors (Epoch {best_epoch}, Val Loss: {best_val_loss:.6f})")
         logger.info(f"  💾 Tổng dung lượng checkpoints: {total_size / (1024**3):.2f} GB")
         logger.info(f"  💡 Dùng file BEST để deploy, không dùng file latest!")
         logger.info(f"{'='*60}")

@@ -20,7 +20,7 @@ class ModelPaths:
     SDXL_REPO = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"  # Fallback HuggingFace repo
     
     # Custom Training Checkpoints
-    CUSTOM_INPAINTING_MODEL = str(BACKEND_DIR / "training" / "models" / "deep_hair_v1_best.safetensors")
+    CUSTOM_INPAINTING_MODEL = str(BACKEND_DIR / "training" / "models" / "deep_hair_v1.safetensors")
     
     # Adapters (Local Paths from download_models.py structure)
     INSIGHTFACE_ROOT = str(BACKEND_DIR)
