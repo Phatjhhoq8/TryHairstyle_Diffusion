@@ -21,7 +21,7 @@ sys.path.append(str(PROJECT_DIR))
 
 from backend.app.services.training_utils import setupLogger, getDevice, ensureDir
 from backend.training.models.stage2_unet import HairInpaintingUNet, CrossAttentionInjector
-from backend.training.models.losses import MaskAwareLoss, IdentityCosineLoss, TextureConsistencyLoss
+from backend.training.models.losses import MaskAwareLoss, IdentityCosineLoss, TextureConsistencyLoss, FaceFeatureExtractor
 
 logger = setupLogger("TrainStage2_Inpainting")
 DEVICE = getDevice()
@@ -356,6 +356,13 @@ class Stage2Trainer:
         self.identity_loss = IdentityCosineLoss().to(DEVICE)
         self.texture_loss = TextureConsistencyLoss().to(DEVICE)
         
+        # 5a. Face Feature Extractor (frozen) — dùng cho Identity Cosine Loss thực
+        # Trích xuất face embedding từ decoded image để so sánh với GT
+        logger.info("  → Loading Face Feature Extractor (frozen, cho Identity Loss)...")
+        self.face_extractor = FaceFeatureExtractor(device=str(DEVICE)).to(DEVICE)
+        self.face_extractor.eval()
+        self.face_extractor.requires_grad_(False)
+        
         # 5. Optimizer — 8-bit AdamW để tiết kiệm ~2.5GB VRAM
         train_params = list(self.unet.parameters()) + list(self.injector.parameters())
         try:
@@ -517,18 +524,20 @@ class Stage2Trainer:
                     loss_tex = self.texture_loss(decoded_img, gt_images)
                     loss_tex_val = loss_tex.item()
                     
-                    # Identity Loss — pixel-level face consistency
-                    # Ép model giữ nguyên vùng khuôn mặt khi vẽ tóc
-                    # Dùng MSE trên face region thay vì chạy InsightFace (tiết kiệm VRAM)
-                    face_region_mask = (1.0 - masks_pixel)  # Vùng face (inverse hair mask)
-                    face_region_mask_decoded = F.interpolate(face_region_mask[:, :1], size=decoded_img.shape[-2:], mode='nearest')
-                    face_diff = (decoded_img - F.interpolate(gt_images, size=decoded_img.shape[-2:], mode='bilinear', align_corners=False)) * face_region_mask_decoded
-                    loss_id = (face_diff ** 2).mean()
+                    # Identity Loss — Cosine Embedding thực trên face embeddings
+                    # Trích xuất face embedding từ ảnh decoded và ảnh gốc
+                    # FaceFeatureExtractor crop vùng mặt (inverse mask) → backbone → 512-dim embedding
+                    gt_images_resized = F.interpolate(gt_images, size=decoded_img.shape[-2:], mode='bilinear', align_corners=False) if gt_images.shape[-2:] != decoded_img.shape[-2:] else gt_images
+                    masks_for_face = F.interpolate(masks_pixel[:, :1], size=decoded_img.shape[-2:], mode='nearest') if masks_pixel.shape[-2:] != decoded_img.shape[-2:] else masks_pixel[:, :1]
+                    
+                    gen_face_embeds = self.face_extractor(decoded_img, masks_for_face)
+                    target_face_embeds = self.face_extractor(gt_images_resized, masks_for_face)
+                    loss_id = self.identity_loss(gen_face_embeds.float(), target_face_embeds.float())
                     loss_id_val = loss_id.item()
                 
                 # Cộng auxiliary losses NGOÀI autocast (đã ở fp32)
                 total_loss = total_loss + 0.01 * loss_tex.float()
-                total_loss = total_loss + 0.01 * loss_id.float()
+                total_loss = total_loss + 0.05 * loss_id.float()  # Weight cao hơn texture vì bảo vệ danh tính quan trọng
                     
             except RuntimeError as e:
                 if "out of memory" in str(e):
@@ -979,8 +988,10 @@ class Stage2Trainer:
             
             texture_encoder = HairTextureEncoder(pretrained=False).to(DEVICE).eval()
             
-            # Load checkpoint tốt nhất của Stage 1
-            tex_ckpt = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_latest.safetensors"
+            # Load checkpoint tốt nhất của Stage 1 (ưu tiên best > latest)
+            tex_ckpt_best = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_best.safetensors"
+            tex_ckpt_latest = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_latest.safetensors"
+            tex_ckpt = tex_ckpt_best if tex_ckpt_best.exists() else tex_ckpt_latest
             if tex_ckpt.exists():
                 state_dict = load_safetensors(str(tex_ckpt))
                 texture_encoder.load_state_dict(state_dict, strict=False)
