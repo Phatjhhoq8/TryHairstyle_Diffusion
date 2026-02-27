@@ -423,15 +423,19 @@ class Stage2Trainer:
         
         # Giải nén Batch
         gt_images = batch['image'].to(DEVICE)
-        bald_images = batch['bald_image'].to(DEVICE)
         masks = batch['mask'].to(DEVICE)
         
         # ==========================================
         # VAE ENCODE (thực)
         # ==========================================
         latents = self._encode_to_latents(gt_images)
-        bald_latents = self._encode_to_latents(bald_images)
-        masks_downsampled = F.interpolate(masks, size=latents.shape[-2:], mode='nearest')
+        
+        # Tạo masked_image = ảnh gốc × (1 - mask) → vùng tóc bị zero, phần còn lại giữ nguyên
+        # Đây là convention chuẩn của SDXL Inpainting (channel 5-8 = masked_image_latents)
+        masks_pixel = F.interpolate(masks, size=gt_images.shape[-2:], mode='nearest')
+        masked_images = gt_images * (1.0 - masks_pixel)
+        masked_latents = self._encode_to_latents(masked_images)
+        masks_latent = F.interpolate(masks, size=latents.shape[-2:], mode='nearest')
         
         # ==========================================
         # NOISE SCHEDULING (thực)
@@ -470,8 +474,8 @@ class Stage2Trainer:
         with torch.amp.autocast('cuda', dtype=torch.float16):
             noise_pred = self.unet(
                 noisy_latents=noisy_latents,
-                bald_latents=bald_latents,
-                mask=masks_downsampled,
+                masked_latents=masked_latents,
+                mask=masks_latent,
                 timestep=timesteps,
                 encoder_hidden_states=encoder_hidden_states,
                 added_cond_kwargs=added_cond_kwargs
@@ -482,7 +486,7 @@ class Stage2Trainer:
             # ==========================================
             
             # 1. Mask-Aware Diffusion Loss (Core — mọi step)
-            loss_diffusion = self.mask_aware_loss(noise_pred, noise, masks_downsampled)
+            loss_diffusion = self.mask_aware_loss(noise_pred, noise, masks_latent)
             total_loss = loss_diffusion
         
         # 2. Identity & Texture Loss (mỗi N steps để tiết kiệm VRAM)

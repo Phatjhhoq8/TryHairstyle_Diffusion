@@ -342,11 +342,9 @@ class TrainingFacePipeline:
         for i, imgPath in enumerate(imagePaths):
             self.logger.info(f"\n[{i+1}/{len(imagePaths)}] {os.path.basename(imgPath)}")
             
-            # Tạo sub-folder cho mỗi ảnh
-            imgName = os.path.splitext(os.path.basename(imgPath))[0]
-            imgOutputDir = os.path.join(outputDir, imgName)
-            
-            results = self.processImage(imgPath, imgOutputDir)
+            # processImage tự tạo sub-folder theo tên ảnh bên trong
+            # KHÔNG tạo sub-folder ở đây để tránh double nesting
+            results = self.processImage(imgPath, outputDir)
             allResults.append(results)
             totalFaces += len(results)
         

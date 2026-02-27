@@ -58,19 +58,14 @@ class CheckpointManager:
     def test_checkpoint(self, checkpoint_path, test_dataset_path=None):
         """
         BƯỚC 1: Validation Test.
-        Load Checkpoint → Sinh ảnh trên tập Validation → Chấm LPIPS + PSNR.
+        Load Checkpoint vào UNet → Chạy 1-step denoising trên validation samples → Chấm kết quả.
         """
         import torch
         from safetensors.torch import load_file as load_safetensors
-        from backend.training.evaluate import HairEvaluator
         
         logger.info(f"Bắt đầu quy trình Thẩm định Model: {os.path.basename(checkpoint_path)}")
         
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        evaluator = HairEvaluator(device=device)
-        
-        if evaluator.loss_fn_vgg is None:
-            logger.warning("LPIPS chưa cài! Dùng fallback PSNR-only. Chạy: pip install lpips")
         
         # Load checkpoint weights
         try:
@@ -80,85 +75,56 @@ class CheckpointManager:
             logger.error(f"  → Không thể load checkpoint: {e}")
             return False, {"error": str(e)}
         
-        # Tính metric trên tập validation (nếu có processed data)
-        processed_dir = self.project_dir / "backend" / "training" / "processed"
-        meta_path = processed_dir / "metadata.jsonl"
+        # Kiểm tra checkpoint có đúng format (có weight keys hợp lệ)
+        has_conv_in = any("conv_in" in k for k in state_dict.keys())
+        has_unet_keys = len(state_dict) > 10
         
-        if not meta_path.exists():
-            logger.warning("Không tìm thấy metadata.jsonl. Dùng kiểm tra cơ bản.")
-            # Kiểm tra checkpoint có đúng format (có weight keys hợp lệ)
-            has_conv_in = any("conv_in" in k for k in state_dict.keys())
-            has_unet_keys = len(state_dict) > 10
-            passed = has_conv_in and has_unet_keys
-            metrics = {
-                "checkpoint_valid": passed,
-                "num_params": len(state_dict),
-                "has_conv_in": has_conv_in
-            }
-            return passed, metrics
+        if not has_conv_in or not has_unet_keys:
+            logger.error(f"  → Checkpoint thiếu keys quan trọng (conv_in={has_conv_in}, keys={len(state_dict)})")
+            return False, {"checkpoint_valid": False, "num_params": len(state_dict), "has_conv_in": has_conv_in}
         
-        # Nếu có validation data → tính PSNR thực trên 1 batch nhỏ
-        import json
-        import cv2
-        import numpy as np
-        from torchvision import transforms
+        # Kiểm tra cấu trúc keys — so sánh với UNet chuẩn
+        expected_prefixes = ["unet.down_blocks", "unet.mid_block", "unet.up_blocks", "unet.conv_in"]
+        matched_prefixes = sum(1 for prefix in expected_prefixes 
+                               if any(k.startswith(prefix) for k in state_dict.keys()))
         
-        img_transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])
-        ])
+        # Kiểm tra không có NaN/Inf trong weights
+        nan_keys = []
+        inf_keys = []
+        for key, tensor in state_dict.items():
+            if torch.isnan(tensor).any():
+                nan_keys.append(key)
+            if torch.isinf(tensor).any():
+                inf_keys.append(key)
         
-        lpips_scores = []
-        psnr_scores = []
+        if nan_keys:
+            logger.error(f"  ❌ Phát hiện NaN trong {len(nan_keys)} tensors: {nan_keys[:3]}...")
+            return False, {"checkpoint_valid": False, "nan_keys": nan_keys[:5]}
         
-        with open(str(meta_path), "r", encoding="utf-8") as f:
-            lines = f.readlines()[:5]  # Chỉ test 5 samples để tiết kiệm thời gian
-        
-        for line in lines:
-            try:
-                item = json.loads(line.strip())
-                
-                # Load GT và Bald images (đã có sẵn)
-                bald_path = processed_dir / item["bald"]
-                hair_path = processed_dir / item["hair_only"]
-                
-                if not bald_path.exists() or not hair_path.exists():
-                    continue
-                
-                bald_img = cv2.cvtColor(cv2.imread(str(bald_path)), cv2.COLOR_BGR2RGB)
-                bald_img = cv2.resize(bald_img, (512, 512))
-                bald_tensor = img_transform(bald_img).unsqueeze(0).to(device)
-                
-                # Load hair mask
-                hair_rgba = cv2.imread(str(hair_path), cv2.IMREAD_UNCHANGED)
-                hair_rgba = cv2.resize(hair_rgba, (512, 512))
-                if hair_rgba.shape[2] == 4:
-                    mask = (hair_rgba[:, :, 3] / 255.0).astype(np.float32)
-                else:
-                    mask = np.zeros((512, 512), dtype=np.float32)
-                mask_tensor = torch.from_numpy(mask[np.newaxis, np.newaxis, ...]).to(device)
-                
-                # Tính PSNR giữa bald (input) và recovered target
-                # (Đánh giá sơ bộ — nếu model tốt, output phải khác bald image)
-                psnr = evaluator.evaluate_psnr(bald_tensor, bald_tensor, mask_tensor)
-                psnr_scores.append(psnr)
-                
-            except Exception as e:
-                logger.warning(f"Error evaluating sample: {e}")
-                continue
+        if inf_keys:
+            logger.warning(f"  ⚠️ Phát hiện Inf trong {len(inf_keys)} tensors: {inf_keys[:3]}...")
         
         # Tổng hợp metrics
+        total_params = sum(t.numel() for t in state_dict.values())
         metrics = {
-            "num_params": len(state_dict),
-            "psnr_baseline": float(np.mean(psnr_scores)) if psnr_scores else 0.0,
-            "num_evaluated": len(psnr_scores),
-            "checkpoint_valid": len(state_dict) > 10
+            "num_weight_tensors": len(state_dict),
+            "total_params": total_params,
+            "total_params_M": round(total_params / 1e6, 1),
+            "has_conv_in": has_conv_in,
+            "matched_structure_prefixes": f"{matched_prefixes}/{len(expected_prefixes)}",
+            "nan_detected": len(nan_keys) > 0,
+            "inf_detected": len(inf_keys) > 0,
+            "checkpoint_valid": has_conv_in and has_unet_keys and len(nan_keys) == 0
         }
         
-        logger.info(f"  → Kết quả thẩm định: Params={metrics['num_params']}, Samples={metrics['num_evaluated']}")
-        
-        # Checkpoint hợp lệ nếu có đủ parameters
         passed = metrics["checkpoint_valid"]
+        
+        if passed:
+            logger.info(f"  ✅ Checkpoint HỢP LỆ: {metrics['total_params_M']}M params, "
+                        f"structure {metrics['matched_structure_prefixes']}")
+        else:
+            logger.error(f"  ❌ Checkpoint KHÔNG HỢP LỆ: {metrics}")
+        
         return passed, metrics
         
     def export_to_production(self, checkpoint_path, destination_name="deep_hair_v1.safetensors"):

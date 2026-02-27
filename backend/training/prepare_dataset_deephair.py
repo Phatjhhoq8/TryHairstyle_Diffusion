@@ -95,7 +95,7 @@ def generate_text_prompt_from_khairstyle_json(json_data, mapping_dict):
         logger.warning(f"Lỗi đọc JSON Label: {e}")
         return ""
 
-# Phải nạp Object gốc để tránh Error Pickling cho multiprocessing
+# Khởi tạo models ở main thread (share qua closure cho ThreadPool workers)
 detector = None
 embedder = None
 mapping_dict_global = {}
@@ -103,15 +103,18 @@ mapping_dict_global = {}
 def process_single_image(img_path_obj):
     """
     Hàm worker thực hiện xử lý trên 1 file ảnh. 
-    Chạy đa luồng/đa tiến trình.
+    Chạy đa luồng (ThreadPool) — dùng chung models từ main thread.
+    
+    LƯU Ý: Dùng ThreadPoolExecutor (không phải ProcessPool) vì:
+    - CUDA context không share được giữa processes
+    - Mỗi process fork mới phải load model lên GPU riêng → OOM
+    - ThreadPool share cùng CUDA context → tiết kiệm VRAM
     """
     global detector, embedder, mapping_dict_global
     
-    # Khởi tạo model lười (Lazy initialization) riêng cho từng Worker Tiến trình
-    if detector is None:
-        detector = TrainingFaceDetector()
-    if embedder is None:
-        embedder = TrainingEmbedder(yawThreshold=45.0)
+    # Models đã được khởi tạo ở main thread trước khi submit tasks
+    if detector is None or embedder is None:
+        return None
 
     img_name = img_path_obj.stem
     img_path = str(img_path_obj)
@@ -205,7 +208,7 @@ def process_single_image(img_path_obj):
     # --- BƯỚC 7: Tạo Dataset 3 (Deep Texture Hair Patches 128x128)
     num_patches = generate_hair_patches(image_cv2, hair_mask, img_name)
     
-    # Ghi Disk Vout an toàn Multiprocess
+    # Ghi Disk an toàn
     cv2.imwrite(str(DIR_BALD / f"{img_name}.png"), bald_image)
     cv2.imwrite(str(DIR_HAIR_ONLY / f"{img_name}.png"), hair_only_rgba)
     cv2.imwrite(str(DIR_STYLE / f"{img_name}.png"), style_img)
@@ -224,7 +227,7 @@ def process_single_image(img_path_obj):
     return metadata
 
 def process_dataset():
-    global mapping_dict_global
+    global mapping_dict_global, detector, embedder
     
     logger.info(f"Bắt đầu xử lý Pipeline tạo Dataset (ĐA LUỒNG) từ: {INPUT_DIR}")
     
@@ -232,18 +235,26 @@ def process_dataset():
     if dict_path.exists():
         with open(str(dict_path), 'r', encoding='utf-8') as f:
             mapping_dict_global = json.load(f)
+    
+    # Khởi tạo models MỘT LẦN duy nhất ở main thread
+    # ThreadPool workers sẽ share cùng instances này (GIL-safe cho inference)
+    logger.info("Khởi tạo Face Detector + Embedder (main thread)...")
+    detector = TrainingFaceDetector()
+    embedder = TrainingEmbedder(yawThreshold=45.0)
             
     image_files = list(INPUT_DIR.rglob("*.jpg")) + list(INPUT_DIR.rglob("*.png"))
     logger.info(f"Đã tìm thấy {len(image_files)} ảnh raw.")
     
     successful = 0
-    metadata_lines = []
     
-    max_workers = min(os.cpu_count() or 1, 8) # Limit to 8 to avoid VRAM exhaustion on Yolo
-    logger.info(f"Sử dụng {max_workers} luồng tiến trình (ProcessPoolExecutor)...")
+    # Dùng ThreadPoolExecutor thay ProcessPoolExecutor vì:
+    # 1. CUDA context không share được giữa processes → mỗi process phải load model riêng → OOM
+    # 2. ThreadPool share cùng GPU models → tiết kiệm VRAM trên RTX 3060 12GB
+    # 3. GIL chỉ ảnh hưởng CPU-bound tasks, GPU inference release GIL → vẫn nhanh
+    max_workers = min(os.cpu_count() or 1, 4)  # Giới hạn 4 threads để tránh GPU contention
+    logger.info(f"Sử dụng {max_workers} luồng (ThreadPoolExecutor)...")
     
-    with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # Tqdm để theo dõi tiến độ Multiprocessing
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {executor.submit(process_single_image, img_path): img_path for img_path in image_files}
         
         # Ghi trực tiếp ra file jsonl để tránh mất data nếu crash giữa chừng
@@ -260,3 +271,4 @@ def process_dataset():
 
 if __name__ == "__main__":
     process_dataset()
+
