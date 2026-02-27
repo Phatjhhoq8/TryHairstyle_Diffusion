@@ -278,7 +278,7 @@ class TrainingFacePipeline:
                 "confidence": round(float(confidence), 4),
                 "embedding_model": modelName,
                 "embedding_path": os.path.basename(embeddingPath),
-                "visualization_path": os.path.basename(visPaths) if visPaths else "",
+                "visualization_path": os.path.basename(str(visPaths)) if visPaths else "",
                 "embedding_dim": int(embedding.shape[0]),
                 "pose_method": poseResult.get("method", "unknown"),
                 "yaw_threshold": self.yawThreshold,

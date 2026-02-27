@@ -38,6 +38,9 @@ mkdir -p "${PROJECT_DIR}/backend/training/processed"
 # Lệnh này sẽ quét K-Hairstyle, bóc tách Polygon và nạp vào thư mục processed/
 # python "${PROJECT_DIR}/backend/training/prepare_dataset_deephair.py"
 
+# Trích xuất Ground Truth images từ dataset (cần cho Stage 2 training)
+python "${PROJECT_DIR}/backend/training/extract_eval_images.py"
+
 echo ""
 echo "----------------------------------------------------------"
 echo " STAGE 1: HỌC CHẤT LIỆU TÓC (TEXTURE ENCODER)"

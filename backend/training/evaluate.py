@@ -6,7 +6,7 @@ from torchvision import transforms
 try:
     import lpips
 except ImportError:
-    pass # Sẽ yêu cầu user cài đặt sau nếu dùng
+    lpips = None  # Fallback — HairEvaluator sẽ tắt LPIPS nếu chưa cài
 
 class HairEvaluator:
     """

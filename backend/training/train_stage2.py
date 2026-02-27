@@ -511,7 +511,7 @@ class Stage2Trainer:
                     
                     # Texture Loss — so sánh gram matrices giữa ảnh gốc và ảnh tái tạo
                     loss_tex = self.texture_loss(decoded_img, gt_images)
-                    total_loss = total_loss + 0.01 * loss_tex
+                    total_loss = total_loss + 0.01 * loss_tex.float()
                     loss_tex_val = loss_tex.item()
                     
                     # Identity Loss — so sánh cosine similarity của face embeddings
@@ -530,7 +530,7 @@ class Stage2Trainer:
                     gt_face_padded = F.pad(gt_face, (0, id_embeds.shape[1] - gt_face.shape[1]))
                     
                     loss_id = self.identity_loss(gen_face_padded, gt_face_padded)
-                    total_loss = total_loss + 0.005 * loss_id
+                    total_loss = total_loss + 0.005 * loss_id.float()
                     loss_id_val = loss_id.item()
                     
             except RuntimeError as e:
@@ -1070,7 +1070,7 @@ class Stage2Trainer:
                     "Diff": f"{losses['diffusion_loss']:.4f}",
                     "Tex": f"{losses['texture_loss']:.4f}",
                     "ID": f"{losses.get('identity_loss', 0.0):.4f}",
-                    "Best": f"{best_epoch_loss:.4f}" if best_epoch_loss < float('inf') else "N/A",
+                    "Best": f"{best_val_loss:.4f}" if best_val_loss < float('inf') else "N/A",
                     "s/it": f"{step_time:.1f}s",
                     "ETA": eta_str,
                 })

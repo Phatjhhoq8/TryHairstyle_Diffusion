@@ -21,7 +21,7 @@ from backend.app.services.embedder import TrainingEmbedder
 
 logger = setupLogger("PrepareDatasetDeepHair")
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
+# PROJECT_DIR đã khai báo ở dòng 15
 INPUT_DIR = PROJECT_DIR / "backend" / "data" / "dataset" / "khairstyle" / "training" / "images"
 LABEL_DIR = PROJECT_DIR / "backend" / "data" / "dataset" / "khairstyle" / "training" / "labels"
 PROCESSED_DIR = PROJECT_DIR / "backend" / "training" / "processed"
@@ -259,6 +259,11 @@ def process_dataset():
         
         # Ghi trực tiếp ra file jsonl để tránh mất data nếu crash giữa chừng
         meta_file_path = str(PROCESSED_DIR / "metadata.jsonl")
+        
+        # Xóa metadata cũ để tránh duplicate khi chạy lại
+        if os.path.exists(meta_file_path):
+            os.remove(meta_file_path)
+            logger.info("🗑️ Đã xóa metadata.jsonl cũ để tránh duplicate.")
         
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(image_files), desc="Tạo Dữ Liệu Đa Luồng"):
             result_meta = future.result()
