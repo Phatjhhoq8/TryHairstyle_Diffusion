@@ -275,14 +275,12 @@ class HairDiffusionService:
         except Exception as e:
             print(f"Warning: Failed to extract ID embedding for Custom Pipeline: {e}")
             
-        print("  → Tạo bald image (inpaint)...")
+        # Tạo masked_image = gt × (1 - mask) — CÙNG convention với training
+        # KHÔNG dùng cv2.inpaint (bald image) vì training dùng masked_image
         img = np.array(target_pil)
         mask = np.array(mask_pil)
         if len(mask.shape) == 3:
              mask = mask[:, :, 0]
-        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        bald_bgr = cv2.inpaint(img_bgr, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
-        bald_pil = Image.fromarray(cv2.cvtColor(bald_bgr, cv2.COLOR_BGR2RGB))
 
         # Transform
         img_transform = transforms.Compose([
@@ -291,13 +289,17 @@ class HairDiffusionService:
         ])
 
         gt_tensor = img_transform(target_pil).unsqueeze(0).to(self.device)
-        bald_tensor = img_transform(bald_pil).unsqueeze(0).to(self.device)
 
         # Mask tensor
         mask_np = np.array(mask_pil)
         if len(mask_np.shape) == 3: mask_np = mask_np[:, :, 0]
         mask_float = (mask_np / 255.0).astype(np.float32)
         mask_tensor = torch.from_numpy(mask_float[np.newaxis, np.newaxis, ...]).to(self.device)
+
+        # Tạo masked_image = gt × (1 - mask) — vùng tóc = 0, phần còn lại giữ nguyên
+        # Đây là convention chuẩn SDXL Inpainting, khớp với training pipeline
+        masks_pixel = mask_tensor.expand_as(gt_tensor)  # (1, 3, H, W)
+        masked_tensor = gt_tensor * (1.0 - masks_pixel)
 
         # Encode text prompt
         print(f"  → Encoding text prompt: '{prompt}'")
@@ -318,21 +320,26 @@ class HairDiffusionService:
         print("  → VAE encoding images...")
         with torch.no_grad():
             gt_latents = self.vae.encode(gt_tensor.to(self.vae.dtype)).latent_dist.sample() * self.vae_scale_factor
-            bald_latents = self.vae.encode(bald_tensor.to(self.vae.dtype)).latent_dist.sample() * self.vae_scale_factor
+            masked_latents = self.vae.encode(masked_tensor.to(self.vae.dtype)).latent_dist.sample() * self.vae_scale_factor
             gt_latents = gt_latents.float()
-            bald_latents = bald_latents.float()
+            masked_latents = masked_latents.float()
 
         mask_down = F.interpolate(mask_tensor, size=gt_latents.shape[-2:], mode='nearest')
         
         # Identity + Style embeddings
         id_embed_t = torch.from_numpy(id_embed).unsqueeze(0).float().to(self.device)
-        style_embed_t = torch.zeros(1, 1024).to(self.device)  
+        style_embed_t = torch.zeros(1, 2048).to(self.device)  # 2048-d khớp Stage 1 Texture Encoder
         
         try:
              if self.clip_model is not None and self.clip_preprocess is not None:
                  img_ref = self.clip_preprocess(ref_pil).unsqueeze(0).to(self.device)
                  with torch.no_grad():
-                     style_embed_t = self.clip_model.encode_image(img_ref).float()
+                     clip_embed = self.clip_model.encode_image(img_ref).float()  # (1, 768) cho ViT-L/14
+                     # Pad CLIP embed (768-d) → 2048-d để khớp CrossAttentionInjector.style_dim
+                     if clip_embed.shape[1] < 2048:
+                         style_embed_t = F.pad(clip_embed, (0, 2048 - clip_embed.shape[1]))
+                     else:
+                         style_embed_t = clip_embed[:, :2048]
         except Exception as e:
              print(f"Warning: CLIP style encoding failed: {e}")
 
@@ -356,7 +363,7 @@ class HairDiffusionService:
                 with torch.no_grad():
                     noise_pred = self.unet(
                         noisy_latents=latents,
-                        bald_latents=bald_latents,
+                        masked_latents=masked_latents,
                         mask=mask_down,
                         timestep=t.unsqueeze(0),
                         encoder_hidden_states=encoder_hidden_states,
@@ -364,7 +371,7 @@ class HairDiffusionService:
                     )
 
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
-            latents = latents * mask_down + bald_latents * (1 - mask_down)
+            latents = latents * mask_down + masked_latents * (1 - mask_down)
 
         print("  → VAE decoding...")
         with torch.no_grad():

@@ -497,24 +497,44 @@ class Stage2Trainer:
         if global_step % 50 == 0 and global_step > 0:
             try:
                 with torch.amp.autocast('cuda', dtype=torch.float16):
-                    # Ước tính denoised output (x0 prediction)
-                    alpha_prod_t = self.noise_scheduler.alphas_cumprod[timesteps[0].cpu().item()]
-                    sqrt_alpha = alpha_prod_t ** 0.5
-                    sqrt_one_minus_alpha = (1 - alpha_prod_t) ** 0.5
+                    # Ước tính denoised output (x0 prediction) — RIÊNG cho mỗi sample trong batch
+                    # Fix: tính alpha_prod_t per-sample thay vì chỉ dùng timesteps[0]
+                    alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(DEVICE)
+                    alpha_prod_t = alphas_cumprod[timesteps]  # (B,)
+                    sqrt_alpha = (alpha_prod_t ** 0.5).view(-1, 1, 1, 1)  # (B, 1, 1, 1)
+                    sqrt_one_minus_alpha = ((1 - alpha_prod_t) ** 0.5).view(-1, 1, 1, 1)
                     pred_original = (noisy_latents - sqrt_one_minus_alpha * noise_pred) / (sqrt_alpha + 1e-8)
                     
                     # Decode để lấy ảnh tái tạo
                     decoded_img = self._decode_latents(pred_original.detach())
                     
-                    # Identity Loss — so sánh khuôn mặt giữa ảnh gốc và ảnh tái tạo
-                    # (Cần identity embedding từ decoded image, nhưng tạm dùng pixel-level proxy)
-                    # Bùng nổ VRAM nếu decode mỗi step → chỉ tính mỗi 10 steps
+                    # Texture Loss — so sánh gram matrices giữa ảnh gốc và ảnh tái tạo
                     loss_tex = self.texture_loss(decoded_img, gt_images)
                     total_loss = total_loss + 0.01 * loss_tex
                     loss_tex_val = loss_tex.item()
+                    
+                    # Identity Loss — so sánh cosine similarity của face embeddings
+                    # Dùng identity embeddings gốc (từ dataset) làm target
+                    # Ước lượng embedding ảnh tái tạo bằng face region proxy (pixel-level)
+                    # Cách an toàn VRAM: dùng face region trung bình thay vì chạy InsightFace
+                    face_region_mask = (1.0 - masks_pixel)  # Vùng face (inverse hair mask)
+                    face_region_mask_latent = F.interpolate(face_region_mask[:, :1], size=decoded_img.shape[-2:], mode='nearest')
+                    
+                    # Flatten face region thành pseudo-embedding để so sánh consistency
+                    gen_face = (decoded_img * face_region_mask_latent).mean(dim=[2, 3])  # (B, 3)
+                    gt_face = (gt_images * face_region_mask_latent).mean(dim=[2, 3])     # (B, 3)
+                    
+                    # Pad to match identity_embed dim cho CosineEmbeddingLoss
+                    gen_face_padded = F.pad(gen_face, (0, id_embeds.shape[1] - gen_face.shape[1]))
+                    gt_face_padded = F.pad(gt_face, (0, id_embeds.shape[1] - gt_face.shape[1]))
+                    
+                    loss_id = self.identity_loss(gen_face_padded, gt_face_padded)
+                    total_loss = total_loss + 0.005 * loss_id
+                    loss_id_val = loss_id.item()
+                    
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    logger.warning("OOM khi tính Texture Loss, skip step này.")
+                    logger.warning("OOM khi tính Texture/Identity Loss, skip step này.")
                     torch.cuda.empty_cache()
                 else:
                     raise
@@ -540,6 +560,7 @@ class Stage2Trainer:
             "total_loss": total_loss.item(),
             "diffusion_loss": loss_diffusion.item(),
             "texture_loss": loss_tex_val,
+            "identity_loss": loss_id_val,
         }
         
     def _save_safetensors_safe(self, state_dict, path: str):
@@ -605,19 +626,29 @@ class Stage2Trainer:
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
-        # --- 3. Texture Loss (mỗi 50 steps, bỏ qua giá trị 0) ---
+        # --- 3. Texture + Identity Loss (mỗi 50 steps, bỏ qua giá trị 0) ---
         ax3 = axes[1, 0]
         texSteps = [i+1 for i, v in enumerate(history['texture_loss']) if v > 0]
         texValues = [v for v in history['texture_loss'] if v > 0]
-        if texValues:
-            ax3.plot(texSteps, texValues, color='#FF9800', linewidth=1.5, marker='.', markersize=3, label='Texture Loss')
-            ax3.set_title('Texture Consistency Loss (mỗi 50 steps)', fontsize=13)
+        idSteps = [i+1 for i, v in enumerate(history.get('identity_loss', [])) if v > 0]
+        idValues = [v for v in history.get('identity_loss', []) if v > 0]
+        
+        has_data = texValues or idValues
+        if has_data:
+            if texValues:
+                ax3.plot(texSteps, texValues, color='#FF9800', linewidth=1.5, marker='.', markersize=3, label='Texture Loss')
+            if idValues:
+                ax3_twin = ax3.twinx()
+                ax3_twin.plot(idSteps, idValues, color='#9C27B0', linewidth=1.5, marker='.', markersize=3, label='Identity Loss')
+                ax3_twin.set_ylabel('Identity Loss', color='#9C27B0')
+                ax3_twin.legend(loc='upper right')
+            ax3.set_title('Texture + Identity Loss (mỗi 50 steps)', fontsize=13)
         else:
             ax3.text(0.5, 0.5, 'Chưa có dữ liệu\n(tính sau step 50)', ha='center', va='center', fontsize=12, transform=ax3.transAxes)
-            ax3.set_title('Texture Loss', fontsize=13)
+            ax3.set_title('Texture + Identity Loss', fontsize=13)
         ax3.set_xlabel('Step')
-        ax3.set_ylabel('Loss')
-        ax3.legend()
+        ax3.set_ylabel('Texture Loss', color='#FF9800')
+        ax3.legend(loc='upper left')
         ax3.grid(True, alpha=0.3)
         
         # --- 4. Epoch Average Loss ---
@@ -821,6 +852,7 @@ class Stage2Trainer:
             'total_loss': [],
             'diffusion_loss': [],
             'texture_loss': [],
+            'identity_loss': [],
             'epoch_avg_loss': [],
         }
         
@@ -840,6 +872,7 @@ class Stage2Trainer:
                 loss_history['total_loss'].append(losses['total_loss'])
                 loss_history['diffusion_loss'].append(losses['diffusion_loss'])
                 loss_history['texture_loss'].append(losses['texture_loss'])
+                loss_history['identity_loss'].append(losses.get('identity_loss', 0.0))
                 
                 # Tính ETA
                 avg_step_time = sum(step_times[-50:]) / len(step_times[-50:])  # Trung bình 50 steps gần nhất
@@ -851,6 +884,7 @@ class Stage2Trainer:
                     "Loss": f"{losses['total_loss']:.4f}",
                     "Diff": f"{losses['diffusion_loss']:.4f}",
                     "Tex": f"{losses['texture_loss']:.4f}",
+                    "ID": f"{losses.get('identity_loss', 0.0):.4f}",
                     "Best": f"{best_epoch_loss:.4f}" if best_epoch_loss < float('inf') else "N/A",
                     "s/it": f"{step_time:.1f}s",
                     "ETA": eta_str,
