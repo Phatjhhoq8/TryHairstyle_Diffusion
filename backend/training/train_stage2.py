@@ -490,6 +490,10 @@ class Stage2Trainer:
             loss_diffusion = self.mask_aware_loss(noise_pred, noise, masks_latent)
             total_loss = loss_diffusion
         
+        # Cast sang fp32 TRƯỚC khi cộng thêm auxiliary losses
+        # Tránh mixed precision mismatch giữa fp16 (autocast) và fp32 auxiliary losses
+        total_loss = total_loss.float()
+        
         # 2. Identity & Texture Loss (mỗi N steps để tiết kiệm VRAM)
         # Decode latents → ảnh RGB → tính perceptual losses
         loss_id_val = 0.0
@@ -511,27 +515,20 @@ class Stage2Trainer:
                     
                     # Texture Loss — so sánh gram matrices giữa ảnh gốc và ảnh tái tạo
                     loss_tex = self.texture_loss(decoded_img, gt_images)
-                    total_loss = total_loss + 0.01 * loss_tex.float()
                     loss_tex_val = loss_tex.item()
                     
-                    # Identity Loss — so sánh cosine similarity của face embeddings
-                    # Dùng identity embeddings gốc (từ dataset) làm target
-                    # Ước lượng embedding ảnh tái tạo bằng face region proxy (pixel-level)
-                    # Cách an toàn VRAM: dùng face region trung bình thay vì chạy InsightFace
+                    # Identity Loss — pixel-level face consistency
+                    # Ép model giữ nguyên vùng khuôn mặt khi vẽ tóc
+                    # Dùng MSE trên face region thay vì chạy InsightFace (tiết kiệm VRAM)
                     face_region_mask = (1.0 - masks_pixel)  # Vùng face (inverse hair mask)
-                    face_region_mask_latent = F.interpolate(face_region_mask[:, :1], size=decoded_img.shape[-2:], mode='nearest')
-                    
-                    # Flatten face region thành pseudo-embedding để so sánh consistency
-                    gen_face = (decoded_img * face_region_mask_latent).mean(dim=[2, 3])  # (B, 3)
-                    gt_face = (gt_images * face_region_mask_latent).mean(dim=[2, 3])     # (B, 3)
-                    
-                    # Pad to match identity_embed dim cho CosineEmbeddingLoss
-                    gen_face_padded = F.pad(gen_face, (0, id_embeds.shape[1] - gen_face.shape[1]))
-                    gt_face_padded = F.pad(gt_face, (0, id_embeds.shape[1] - gt_face.shape[1]))
-                    
-                    loss_id = self.identity_loss(gen_face_padded, gt_face_padded)
-                    total_loss = total_loss + 0.005 * loss_id.float()
+                    face_region_mask_decoded = F.interpolate(face_region_mask[:, :1], size=decoded_img.shape[-2:], mode='nearest')
+                    face_diff = (decoded_img - F.interpolate(gt_images, size=decoded_img.shape[-2:], mode='bilinear', align_corners=False)) * face_region_mask_decoded
+                    loss_id = (face_diff ** 2).mean()
                     loss_id_val = loss_id.item()
+                
+                # Cộng auxiliary losses NGOÀI autocast (đã ở fp32)
+                total_loss = total_loss + 0.01 * loss_tex.float()
+                total_loss = total_loss + 0.01 * loss_id.float()
                     
             except RuntimeError as e:
                 if "out of memory" in str(e):

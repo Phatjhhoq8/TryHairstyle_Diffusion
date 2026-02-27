@@ -127,19 +127,60 @@ class CheckpointManager:
         
         return passed, metrics
         
+    def _find_matching_injector(self, unet_checkpoint_path):
+        """
+        Tìm file Injector checkpoint tương ứng với UNet checkpoint.
+        Ưu tiên: best > backup > latest.
+        """
+        # Thử tìm dựa trên tên file UNet
+        unet_name = os.path.basename(unet_checkpoint_path)
+        
+        # Mapping: UNet name → Injector name
+        injector_candidates = []
+        if "best" in unet_name:
+            injector_candidates.append(self.checkpoints_dir / "injector_best.safetensors")
+        if "latest" in unet_name:
+            injector_candidates.append(self.checkpoints_dir / "injector_latest.safetensors")
+        if "backup" in unet_name:
+            injector_candidates.append(self.checkpoints_dir / "injector_backup.safetensors")
+        
+        # Fallback: thử tất cả theo thứ tự ưu tiên
+        injector_candidates.extend([
+            self.checkpoints_dir / "injector_best.safetensors",
+            self.checkpoints_dir / "injector_latest.safetensors",
+            self.checkpoints_dir / "injector_backup.safetensors",
+        ])
+        
+        for candidate in injector_candidates:
+            if candidate.exists():
+                return str(candidate)
+        
+        return None
+
     def export_to_production(self, checkpoint_path, destination_name="deep_hair_v1.safetensors"):
         """
         BƯỚC 2: Export Model.
-        Copy trọng số đạt chuẩn sang thư mục Production `backend/models`
+        Copy trọng số UNet + Injector đạt chuẩn sang thư mục Production `backend/models`
         để Web App sử dụng.
         """
         dest_path = self.production_models_dir / destination_name
         
         try:
-            logger.info(f"Tiến hành Deploy Model ra Production: {dest_path}")
-            # Thực thi Copy file SafeTensors hoàn chỉnh từ Training Logs ra thư mục Production Backend
+            # 1. Export UNet
+            logger.info(f"Tiến hành Deploy UNet ra Production: {dest_path}")
             shutil.copy2(checkpoint_path, dest_path) 
-            logger.info(f"  -> Deploy THÀNH CÔNG! Web App đã có thể load Model mới.")
+            logger.info(f"  -> Deploy UNet THÀNH CÔNG!")
+            
+            # 2. Export Injector (CrossAttentionInjector weights)
+            injector_path = self._find_matching_injector(checkpoint_path)
+            if injector_path:
+                inj_dest = self.production_models_dir / "injector.safetensors"
+                shutil.copy2(injector_path, str(inj_dest))
+                logger.info(f"  -> Deploy Injector THÀNH CÔNG: {inj_dest.name}")
+            else:
+                logger.warning("  ⚠️ Không tìm thấy Injector checkpoint! Model deploy sẽ thiếu style/identity conditioning.")
+            
+            logger.info(f"  -> Deploy hoàn tất! Web App đã có thể load Model mới.")
             return True
         except Exception as e:
             logger.error(f"  -> Lỗi Deploy Model: {e}")
