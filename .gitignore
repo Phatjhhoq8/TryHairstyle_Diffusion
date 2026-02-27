@@ -52,7 +52,6 @@ Thumbs.db
 .idea/
 
 # ===== Jupyter =====
-*.ipynb
 
 # ===== Temporary =====
 tmp/
