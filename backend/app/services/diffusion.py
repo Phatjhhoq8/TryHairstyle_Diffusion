@@ -110,13 +110,24 @@ class HairDiffusionService:
         
         # Injector
         self.injector = CrossAttentionInjector(self.unet.unet).to(self.device)
-        inj_path = checkpoint_path.replace("deep_hair_v1_best", "injector_best") \
-                                  .replace("deep_hair_v1_latest", "injector_latest") \
-                                  .replace("stage2_", "injector_")
-        if os.path.exists(inj_path):
+        
+        # Tìm file injector cùng thư mục với UNet checkpoint
+        # Ưu tiên: injector.safetensors (production) > injector_best > injector_latest > injector_backup
+        ckpt_dir = os.path.dirname(checkpoint_path)
+        inj_candidates = [
+            os.path.join(ckpt_dir, "injector.safetensors"),
+            os.path.join(ckpt_dir, "injector_best.safetensors"),
+            os.path.join(ckpt_dir, "injector_latest.safetensors"),
+            os.path.join(ckpt_dir, "injector_backup.safetensors"),
+        ]
+        inj_path = next((p for p in inj_candidates if os.path.exists(p)), None)
+        
+        if inj_path:
             print(f"  → Loading injector: {inj_path}")
             inj_dict = load_file(inj_path)
             self.injector.load_state_dict(inj_dict, strict=False)
+        else:
+            print(f"  ⚠️ Không tìm thấy injector trong {ckpt_dir}! Style/Identity conditioning sẽ không hoạt động.")
         self.injector.eval()
         
         print("  ✅ Custom Model loaded successfully!")
