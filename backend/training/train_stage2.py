@@ -505,6 +505,8 @@ class Stage2Trainer:
         # Decode latents → ảnh RGB → tính perceptual losses
         loss_id_val = 0.0
         loss_tex_val = 0.0
+        loss_tex = None  # Guard: khởi tạo trước try block để tránh NameError
+        loss_id = None
         
         if global_step % 50 == 0 and global_step > 0:
             try:
@@ -536,8 +538,11 @@ class Stage2Trainer:
                     loss_id_val = loss_id.item()
                 
                 # Cộng auxiliary losses NGOÀI autocast (đã ở fp32)
-                total_loss = total_loss + 0.01 * loss_tex.float()
-                total_loss = total_loss + 0.05 * loss_id.float()  # Weight cao hơn texture vì bảo vệ danh tính quan trọng
+                # Chỉ cộng nếu loss đã được tính thành công (không None)
+                if loss_tex is not None:
+                    total_loss = total_loss + 0.01 * loss_tex.float()
+                if loss_id is not None:
+                    total_loss = total_loss + 0.05 * loss_id.float()  # Weight cao hơn texture vì bảo vệ danh tính quan trọng
                     
             except RuntimeError as e:
                 if "out of memory" in str(e):

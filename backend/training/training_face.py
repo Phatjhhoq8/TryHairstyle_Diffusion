@@ -269,6 +269,16 @@ class TrainingFacePipeline:
             # STEP 7: METADATA
             # ==========================================
             self.logger.info("  [Step 6] Saving Metadata...")
+            
+            # Xử lý visualization_path: visPaths có thể là str, dict, hoặc None
+            if isinstance(visPaths, dict):
+                # Lấy path đầu tiên từ dict (e.g. {'bald': '...', 'mask': '...'})
+                vis_path_str = list(visPaths.values())[0] if visPaths else ""
+            elif visPaths:
+                vis_path_str = str(visPaths)
+            else:
+                vis_path_str = ""
+            
             metadata = {
                 "face_id": faceId,
                 "yaw": round(float(yaw), 2),
@@ -278,7 +288,7 @@ class TrainingFacePipeline:
                 "confidence": round(float(confidence), 4),
                 "embedding_model": modelName,
                 "embedding_path": os.path.basename(embeddingPath),
-                "visualization_path": os.path.basename(str(visPaths)) if visPaths else "",
+                "visualization_path": os.path.basename(vis_path_str),
                 "embedding_dim": int(embedding.shape[0]),
                 "pose_method": poseResult.get("method", "unknown"),
                 "yaw_threshold": self.yawThreshold,

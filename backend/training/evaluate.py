@@ -123,9 +123,10 @@ class HairEvaluator:
             lpips_scores.append(l)
             psnr_scores.append(p)
             
+        valid_lpips = [x for x in lpips_scores if x >= 0]
         return {
-            "lpips_mean": np.mean([x for x in lpips_scores if x >= 0]),
-            "psnr_mean": np.mean(psnr_scores)
+            "lpips_mean": np.mean(valid_lpips) if valid_lpips else -1.0,
+            "psnr_mean": np.mean(psnr_scores) if psnr_scores else 0.0
         }
 
 if __name__ == "__main__":

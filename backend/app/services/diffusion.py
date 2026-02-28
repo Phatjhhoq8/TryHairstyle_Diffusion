@@ -132,16 +132,38 @@ class HairDiffusionService:
         
         print("  ✅ Custom Model loaded successfully!")
         
-        # CLIP model cho style embedding (cache 1 lần, không load mỗi lần generate)
-        self.clip_model = None
-        self.clip_preprocess = None
+        # HairTextureEncoder (Stage 1) cho style embedding — CÙNG model đã dùng lúc training
+        # Tránh dùng CLIP vì distribution khác hoàn toàn với ResNet50 2048-d đã train
+        self.texture_encoder = None
+        self.style_transform = None
         try:
-            import clip
-            self.clip_model, self.clip_preprocess = clip.load("ViT-L/14", device=self.device)
-            self.clip_model.eval()
-            print("  ✅ CLIP ViT-L/14 loaded cho style embedding")
+            from backend.training.models.texture_encoder import HairTextureEncoder
+            from torchvision import transforms as T
+            
+            self.texture_encoder = HairTextureEncoder(pretrained=False).to(self.device).eval()
+            
+            # Tìm checkpoint Stage 1 (ưu tiên best > latest)
+            ckpt_dir = os.path.join(str(BACKEND_DIR), "training", "checkpoints")
+            tex_best = os.path.join(ckpt_dir, "texture_encoder_best.safetensors")
+            tex_latest = os.path.join(ckpt_dir, "texture_encoder_latest.safetensors")
+            tex_ckpt = tex_best if os.path.exists(tex_best) else tex_latest
+            
+            if os.path.exists(tex_ckpt):
+                tex_state = load_file(tex_ckpt)
+                self.texture_encoder.load_state_dict(tex_state, strict=False)
+                self.texture_encoder.requires_grad_(False)
+                print(f"  ✅ HairTextureEncoder loaded từ {os.path.basename(tex_ckpt)}")
+            else:
+                print(f"  ⚠️ Không tìm thấy checkpoint Stage 1, style embedding sẽ dùng zeros fallback")
+                self.texture_encoder = None
+            
+            # Transform chuẩn ImageNet (khớp với training Stage 1)
+            self.style_transform = T.Compose([
+                T.ToTensor(),
+                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
         except Exception as e:
-            print(f"  ⚠️ CLIP load failed (style embedding sẽ dùng zeros fallback): {e}")
+            print(f"  ⚠️ HairTextureEncoder load failed (style embedding sẽ dùng zeros fallback): {e}")
 
     def _load_sdxl_pipeline(self):
         print(">>> Loading SDXL Inpaint Pipeline (with ControlNet)...")
@@ -286,13 +308,6 @@ class HairDiffusionService:
         except Exception as e:
             print(f"Warning: Failed to extract ID embedding for Custom Pipeline: {e}")
             
-        # Tạo masked_image = gt × (1 - mask) — CÙNG convention với training
-        # KHÔNG dùng cv2.inpaint (bald image) vì training dùng masked_image
-        img = np.array(target_pil)
-        mask = np.array(mask_pil)
-        if len(mask.shape) == 3:
-             mask = mask[:, :, 0]
-
         # Transform
         img_transform = transforms.Compose([
             transforms.ToTensor(),
@@ -301,7 +316,7 @@ class HairDiffusionService:
 
         gt_tensor = img_transform(target_pil).unsqueeze(0).to(self.device)
 
-        # Mask tensor
+        # Mask tensor — chỉ khai báo 1 lần, tránh biến shadow
         mask_np = np.array(mask_pil)
         if len(mask_np.shape) == 3: mask_np = mask_np[:, :, 0]
         mask_float = (mask_np / 255.0).astype(np.float32)
@@ -312,7 +327,7 @@ class HairDiffusionService:
         masks_pixel = mask_tensor.expand_as(gt_tensor)  # (1, 3, H, W)
         masked_tensor = gt_tensor * (1.0 - masks_pixel)
 
-        # Encode text prompt
+        # Encode text prompt (conditional)
         print(f"  → Encoding text prompt: '{prompt}'")
         with torch.no_grad():
             tokens_1 = self.tokenizer_1(prompt, padding="max_length", max_length=77, truncation=True, return_tensors="pt").input_ids.to(self.device)
@@ -326,6 +341,25 @@ class HairDiffusionService:
 
             prompt_embeds = torch.cat([hidden_1, hidden_2], dim=-1).float()
             pooled_embeds = enc_2.text_embeds.float()
+
+        # Encode negative/unconditional prompt (cho CFG)
+        # CFG: noise_pred = uncond + guidance_scale * (cond - uncond)
+        do_cfg = guidance_scale > 1.0
+        if do_cfg:
+            neg_prompt = negative_prompt if negative_prompt else ""
+            print(f"  → Encoding negative prompt cho CFG (scale={guidance_scale}): '{neg_prompt}'")
+            with torch.no_grad():
+                neg_tokens_1 = self.tokenizer_1(neg_prompt, padding="max_length", max_length=77, truncation=True, return_tensors="pt").input_ids.to(self.device)
+                neg_tokens_2 = self.tokenizer_2(neg_prompt, padding="max_length", max_length=77, truncation=True, return_tensors="pt").input_ids.to(self.device)
+
+                neg_enc_1 = self.text_encoder_1(neg_tokens_1, output_hidden_states=True)
+                neg_enc_2 = self.text_encoder_2(neg_tokens_2, output_hidden_states=True)
+
+                neg_hidden_1 = neg_enc_1.hidden_states[-2]
+                neg_hidden_2 = neg_enc_2.hidden_states[-2]
+
+                neg_prompt_embeds = torch.cat([neg_hidden_1, neg_hidden_2], dim=-1).float()
+                neg_pooled_embeds = neg_enc_2.text_embeds.float()
 
         # VAE encode
         print("  → VAE encoding images...")
@@ -342,29 +376,44 @@ class HairDiffusionService:
         style_embed_t = torch.zeros(1, 2048).to(self.device)  # 2048-d khớp Stage 1 Texture Encoder
         
         try:
-             if self.clip_model is not None and self.clip_preprocess is not None:
-                 img_ref = self.clip_preprocess(ref_pil).unsqueeze(0).to(self.device)
+             if self.texture_encoder is not None and self.style_transform is not None:
+                 # Crop vùng tóc từ ảnh reference (giống pipeline training)
+                 ref_np = np.array(ref_pil.resize((128, 128)))
+                 ref_tensor = self.style_transform(ref_np).unsqueeze(0).to(self.device)
                  with torch.no_grad():
-                     clip_embed = self.clip_model.encode_image(img_ref).float()  # (1, 768) cho ViT-L/14
-                     # Pad CLIP embed (768-d) → 2048-d để khớp CrossAttentionInjector.style_dim
-                     if clip_embed.shape[1] < 2048:
-                         style_embed_t = F.pad(clip_embed, (0, 2048 - clip_embed.shape[1]))
-                     else:
-                         style_embed_t = clip_embed[:, :2048]
+                     embed, _, _ = self.texture_encoder(ref_tensor)  # (1, 2048) — cùng distribution với training
+                     style_embed_t = embed.float()
+                 print(f"  ✅ Style embedding extracted via HairTextureEncoder (2048-d)")
         except Exception as e:
-             print(f"Warning: CLIP style encoding failed: {e}")
+             print(f"Warning: Style encoding failed: {e}")
 
+        # Conditional encoder hidden states
         injected_conds = self.injector.inject_conditioning(style_embed_t, id_embed_t)
         encoder_hidden_states = torch.cat([prompt_embeds, injected_conds], dim=1)
 
-        time_ids = torch.tensor([1024, 1024, 0, 0, 1024, 1024], dtype=torch.float32).unsqueeze(0).to(self.device)
+        # Unconditional encoder hidden states (cho CFG)
+        if do_cfg:
+            # Dùng zero conditioning cho style/identity trong unconditional pass
+            uncond_style = torch.zeros_like(style_embed_t)
+            uncond_id = torch.zeros_like(id_embed_t)
+            uncond_injected = self.injector.inject_conditioning(uncond_style, uncond_id)
+            uncond_encoder_hidden_states = torch.cat([neg_prompt_embeds, uncond_injected], dim=1)
+
+        # time_ids phù hợp với target_size thực tế (khớp với training distribution)
+        h, w = target_size
+        time_ids = torch.tensor([h, w, 0, 0, h, w], dtype=torch.float32).unsqueeze(0).to(self.device)
 
         added_cond_kwargs = {
             "text_embeds": pooled_embeds,
             "time_ids": time_ids
         }
+        if do_cfg:
+            uncond_added_cond_kwargs = {
+                "text_embeds": neg_pooled_embeds,
+                "time_ids": time_ids
+            }
 
-        print(f"  → Bắt đầu Denoising ({num_steps} steps)...")
+        print(f"  → Bắt đầu Denoising ({num_steps} steps, CFG={'ON scale='+str(guidance_scale) if do_cfg else 'OFF'})...")
         self.scheduler.set_timesteps(num_steps, device=self.device)
         timesteps = self.scheduler.timesteps
         latents = torch.randn_like(gt_latents)
@@ -372,7 +421,8 @@ class HairDiffusionService:
         for i, t in enumerate(tqdm(timesteps, desc="Denoising")):
             with torch.amp.autocast('cuda', dtype=torch.float16):
                 with torch.no_grad():
-                    noise_pred = self.unet(
+                    # Forward pass conditional (với prompt + style + identity)
+                    noise_pred_cond = self.unet(
                         noisy_latents=latents,
                         masked_latents=masked_latents,
                         mask=mask_down,
@@ -380,6 +430,21 @@ class HairDiffusionService:
                         encoder_hidden_states=encoder_hidden_states,
                         added_cond_kwargs=added_cond_kwargs
                     )
+                    
+                    if do_cfg:
+                        # Forward pass unconditional (negative prompt + zero conditioning)
+                        noise_pred_uncond = self.unet(
+                            noisy_latents=latents,
+                            masked_latents=masked_latents,
+                            mask=mask_down,
+                            timestep=t.unsqueeze(0),
+                            encoder_hidden_states=uncond_encoder_hidden_states,
+                            added_cond_kwargs=uncond_added_cond_kwargs
+                        )
+                        # Classifier-Free Guidance: đẩy mạnh đặc trưng theo prompt
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
+                    else:
+                        noise_pred = noise_pred_cond
 
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
             latents = latents * mask_down + masked_latents * (1 - mask_down)
