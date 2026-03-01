@@ -233,6 +233,22 @@ class TextureEncoderTrainer:
             
         return total_loss.item()
         
+    def _discover_data_dirs(self):
+        """Tìm tất cả processed_NNN directories. Fallback về processed/ nếu không có chunks."""
+        import re as _re
+        training_dir = PROJECT_DIR / "backend" / "training"
+        chunks = sorted([
+            d for d in training_dir.iterdir()
+            if d.is_dir() and _re.match(r'^processed_\d+$', d.name)
+            and (d / "metadata.jsonl").exists()
+        ])
+        if not chunks:
+            single = training_dir / "processed"
+            if single.exists() and (single / "metadata.jsonl").exists():
+                chunks = [single]
+                logger.info("  📁 Single processed/ directory (no chunks found)")
+        return chunks
+
     def train_loop(self, num_epochs=1, batch_size=4, max_samples=0, resume=False):
         logger.info(f"Khởi động vòng lặp Training Stage 1 - {num_epochs} Epochs")
         
@@ -248,8 +264,29 @@ class TextureEncoderTrainer:
             else:
                 logger.warning("⚠️ Flag --resume được bật nhưng không tìm thấy checkpoint cũ. Bắt đầu train từ đầu.")
         
-        processed_dir = PROJECT_DIR / "backend" / "training" / "processed"
-        full_dataset = HairTextureDataset(processed_dir)
+        # Tìm tất cả chunk directories (processed_001/, processed_002/,...) hoặc processed/
+        data_dirs = self._discover_data_dirs()
+        if not data_dirs:
+            logger.error("❌ Dataset Trống! Không tìm thấy thư mục processed_NNN/ hoặc processed/.")
+            return
+        
+        logger.info(f"📂 Tìm thấy {len(data_dirs)} thư mục dữ liệu: {[d.name for d in data_dirs]}")
+        
+        # Gộp tất cả patches từ mọi chunk vào 1 dataset
+        from torch.utils.data import ConcatDataset
+        all_datasets = []
+        for data_dir in data_dirs:
+            ds = HairTextureDataset(data_dir)
+            if len(ds) > 0:
+                all_datasets.append(ds)
+                logger.info(f"  📁 {data_dir.name}: {len(ds)} patches")
+        
+        if not all_datasets:
+            logger.error("❌ Dataset Trống! Không tìm thấy patches nào.")
+            return
+        
+        full_dataset = ConcatDataset(all_datasets)
+        logger.info(f"✅ Tổng cộng: {len(full_dataset)} patches từ {len(all_datasets)} chunks")
         
         if len(full_dataset) == 0:
             logger.error("Dataset Trống! Lỗi trích xuất Patches.")
