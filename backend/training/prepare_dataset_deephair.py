@@ -11,6 +11,7 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import concurrent.futures
+import threading
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent.parent
 sys.path.append(str(PROJECT_DIR))
@@ -20,6 +21,9 @@ from backend.app.services.face_detector import TrainingFaceDetector
 from backend.app.services.embedder import TrainingEmbedder
 
 logger = setupLogger("PrepareDatasetDeepHair")
+
+# Lock để đảm bảo thread-safety khi ghi metadata.jsonl
+_write_lock = threading.Lock()
 
 # PROJECT_DIR đã khai báo ở dòng 15
 INPUT_DIR = PROJECT_DIR / "backend" / "data" / "dataset" / "khairstyle" / "training" / "images"
@@ -214,6 +218,13 @@ def process_single_image(img_path_obj):
     cv2.imwrite(str(DIR_STYLE / f"{img_name}.png"), style_img)
     np.save(str(DIR_IDENTITY / f"{img_name}.npy"), embedding)
     
+    # Ground Truth: copy ảnh gốc vào processed/ground_truth_images/
+    gt_dir = PROCESSED_DIR / "ground_truth_images"
+    ensureDir(str(gt_dir))
+    gt_dest = gt_dir / f"{img_name}.png"
+    if not gt_dest.exists():
+        cv2.imwrite(str(gt_dest), image_cv2)
+    
     # Trả về chuỗi Metadata hoàn chỉnh để gom lại ghi 1 lần ở Thread gốc
     metadata = {
         "id": img_name,
@@ -268,8 +279,9 @@ def process_dataset():
         for future in tqdm(concurrent.futures.as_completed(futures), total=len(image_files), desc="Tạo Dữ Liệu Đa Luồng"):
             result_meta = future.result()
             if result_meta:
-                with open(meta_file_path, "a", encoding="utf-8") as f:
-                    f.write(json.dumps(result_meta, ensure_ascii=False) + "\n")
+                with _write_lock:
+                    with open(meta_file_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(result_meta, ensure_ascii=False) + "\n")
                 successful += 1
 
     logger.info(f"Hoàn tất tạo Pipeline Dữ liệu! Thành công: {successful}/{len(image_files)}.")

@@ -1,31 +1,38 @@
-# ===== Dataset / Data =====
-data/
-dataset/
-datasets/
-images/
-imgs/
-samples/
-inputs/
-outputs/
-results/
-checkpoints/
-weights/
-models/
+# ===== Dataset / Data (thư mục dữ liệu lớn) =====
+backend/data/
+backend/training/processed/
+backend/training/processed_*/
+backend/training/output/
 
-# File dữ liệu lớn
+# ===== Model Weights (binary) =====
+*.safetensors
+*.onnx
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.pkl
+*.bin
+
+# Giữ lại code Python trong training/models/
+!backend/training/models/*.py
+
+# ===== Toàn bộ backend/models/ (tải tự động) =====
+backend/models/
+
+# ===== Checkpoints =====
+backend/training/checkpoints/
+
+# ===== File nén =====
 *.zip
 *.tar
 *.tar.gz
 *.rar
 *.7z
-*.h5
-*.pth
-*.pt
-*.ckpt
-*.onnx
+
+# ===== File dữ liệu =====
 *.npy
 *.npz
-*.pkl
 
 # ===== Logs =====
 logs/
@@ -43,6 +50,7 @@ env/
 .venv/
 conda_env/
 venv_wsl/
+
 # ===== OS =====
 .DS_Store
 Thumbs.db
@@ -51,11 +59,11 @@ Thumbs.db
 .vscode/
 .idea/
 
-# ===== Jupyter =====
-
 # ===== Temporary =====
 tmp/
 temp/
+_truncate.py
+_verify_nb.py
 
 # ===== Environment Variables / Secrets =====
 .env
@@ -87,6 +95,5 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
-# ===== Training =====
-backend/training/output/
-backend/training/processed/
+# ===== Split scripts output =====
+split_dataset.log

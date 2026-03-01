@@ -3,6 +3,7 @@ import sys
 import json
 import time
 import random
+import shutil
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -25,6 +26,9 @@ from backend.training.models.losses import MaskAwareLoss, IdentityCosineLoss, Te
 
 logger = setupLogger("TrainStage2_Inpainting")
 DEVICE = getDevice()
+
+# Auto-detect Google Colab environment
+IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
@@ -126,12 +130,69 @@ class HairInpaintingDataset(Dataset):
                 for line in f:
                     self.metadata.append(json.loads(line.strip()))
         
+        # ================================================================
+        # VALIDATION: Lọc bỏ sample thiếu file trước khi train
+        # Kiểm tra: bald, ground_truth, hair_only, identity, style
+        # ================================================================
+        original_count = len(self.metadata)
+        valid_metadata = []
+        skipped_reasons = {}  # {reason: count}
+        
+        for item in self.metadata:
+            img_id = item["id"]
+            missing = []
+            
+            # 1. Ground Truth image
+            gt_dir = data_dir / "ground_truth_images"
+            gt_found = list(gt_dir.glob(f"{img_id}.*")) if gt_dir.exists() else []
+            if not gt_found:
+                gt_found = list(gt_dir.glob(f"{img_id.replace('_', '-')}.*")) if gt_dir.exists() else []
+            if not gt_found:
+                missing.append("ground_truth")
+            
+            # 2. Bald image
+            bald_path = data_dir / item.get("bald", "")
+            if not bald_path.exists() or not item.get("bald"):
+                missing.append("bald")
+            
+            # 3. Hair-only image (mask)
+            hair_only_path = data_dir / item.get("hair_only", "")
+            if not hair_only_path.exists() or not item.get("hair_only"):
+                missing.append("hair_only")
+            
+            # 4. Identity embedding
+            identity_path = data_dir / item.get("identity", "")
+            if not identity_path.exists() or not item.get("identity"):
+                missing.append("identity")
+            
+            # 5. Style vector
+            style_path = data_dir / item.get("style", "")
+            if not style_path.exists() or not item.get("style"):
+                missing.append("style")
+            
+            if missing:
+                reason = ",".join(missing)
+                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
+            else:
+                valid_metadata.append(item)
+        
+        skipped_count = original_count - len(valid_metadata)
+        if skipped_count > 0:
+            logger.warning(f"⚠️  Đã bỏ qua {skipped_count}/{original_count} samples do thiếu file:")
+            for reason, count in sorted(skipped_reasons.items(), key=lambda x: -x[1]):
+                logger.warning(f"   ❌ Thiếu [{reason}]: {count} samples")
+            logger.info(f"✅ Dataset hợp lệ: {len(valid_metadata)}/{original_count} samples")
+        else:
+            logger.info(f"✅ Tất cả {original_count} samples đều đầy đủ file")
+        
+        self.metadata = valid_metadata
+        
         # Giới hạn dataset size nếu cần
         if max_samples > 0 and len(self.metadata) > max_samples:
-            original_count = len(self.metadata)
+            before_limit = len(self.metadata)
             random.seed(42)  # Reproducible subset
             self.metadata = random.sample(self.metadata, max_samples)
-            logger.info(f"📉 Dataset giảm xuống {max_samples} samples (từ {original_count} gốc)")
+            logger.info(f"📉 Dataset giảm xuống {max_samples} samples (từ {before_limit} hợp lệ)")
         
         # Pre-encode text prompts nếu Text Encoder được cung cấp
         if text_encoder is not None and len(self.metadata) > 0:
@@ -174,22 +235,9 @@ class HairInpaintingDataset(Dataset):
             
             logger.info("Pre-encoding prompts hoàn tất!")
         else:
-            # Tải từ cache nếu đã encode trước đó
-            cache_dir = data_dir / "prompt_embeddings"
-            if cache_dir.exists():
-                for item in self.metadata:
-                    img_id = item["id"]
-                    img_id_dashed = img_id.replace("_", "-")
-                    cache_file = cache_dir / f"{img_id}.pt"
-                    cache_file_dashed = cache_dir / f"{img_id_dashed}.pt"
-                    if cache_file.exists():
-                        self.prompt_embeds_cache[img_id] = torch.load(
-                            str(cache_file), map_location="cpu", weights_only=True
-                        )
-                    elif cache_file_dashed.exists():
-                        self.prompt_embeds_cache[img_id] = torch.load(
-                            str(cache_file_dashed), map_location="cpu", weights_only=True
-                        )
+            # Lazy loading: prompt embeddings load on-demand trong _load_sample()
+            # Không bulk-load vào RAM → tiết kiệm ~3GB/chunk cho Colab
+            pass
                     
         # Pre-extract style embeddings từ Texture Encoder (Stage 1)
         self.style_embeds_cache = {}
@@ -226,13 +274,8 @@ class HairInpaintingDataset(Dataset):
             
             logger.info("✅ Style embeddings extraction hoàn tất!")
         else:
-            # Load từ cache nếu đã extract trước đó
-            if style_cache_dir.exists():
-                for item in self.metadata:
-                    img_id = item["id"]
-                    cache_file = style_cache_dir / f"{img_id}.npy"
-                    if cache_file.exists():
-                        self.style_embeds_cache[img_id] = np.load(str(cache_file))
+            # Lazy loading: style embeddings load on-demand trong _load_sample()
+            pass
         
         # Transform tensor chuẩn SDXL (-1 to 1)
         self.img_transform = transforms.Compose([
@@ -244,6 +287,32 @@ class HairInpaintingDataset(Dataset):
         return len(self.metadata)
 
     def __getitem__(self, idx):
+        max_retries = 3
+        for attempt in range(max_retries + 1):
+            try:
+                target_idx = idx if attempt == 0 else random.randint(0, len(self.metadata) - 1)
+                return self._load_sample(target_idx)
+            except Exception as e:
+                logger.warning(f"⚠️ Lỗi load sample (attempt {attempt+1}/{max_retries+1}, idx={target_idx}): {e}")
+                if attempt == max_retries:
+                    # Return zero tensors để tránh crash DataLoader
+                    logger.error(f"❌ Đã thử {max_retries+1} lần, trả về zero sample.")
+                    return {
+                        "image": torch.zeros(3, *self.target_size),
+                        "bald_image": torch.zeros(3, *self.target_size),
+                        "mask": torch.zeros(1, *self.target_size),
+                        "style_embed": torch.zeros(2048),
+                        "identity_embed": torch.zeros(512),
+                        "text_embeds": torch.zeros(77, 2048),
+                        "pooled_text_embeds": torch.zeros(1280),
+                        "time_ids": torch.tensor([
+                            self.target_size[0], self.target_size[1],
+                            0, 0,
+                            self.target_size[0], self.target_size[1]
+                        ], dtype=torch.float32)
+                    }
+    
+    def _load_sample(self, idx):
         item = self.metadata[idx]
         img_id = item["id"]
         
@@ -283,25 +352,44 @@ class HairInpaintingDataset(Dataset):
         # Identity (từ AdaFace 512d)
         id_embed = np.load(str(self.data_dir / item["identity"]))
         
-        # Text Prompt Embeddings (đã pre-encoded)
+        # Text Prompt Embeddings — lazy load từ disk cache
         if img_id in self.prompt_embeds_cache:
             cached = self.prompt_embeds_cache[img_id]
-            text_embeds = cached["prompt_embeds"]           # (77, 2048)
-            pooled_text_embeds = cached["pooled_prompt_embeds"]  # (1280,)
+            text_embeds = cached["prompt_embeds"]
+            pooled_text_embeds = cached["pooled_prompt_embeds"]
         else:
-            # Fallback nếu chưa encode — dùng zero vectors
-            logger.warning(f"Prompt embeddings chưa có cho {img_id}, dùng zeros fallback.")
-            text_embeds = torch.zeros(77, 2048)
-            pooled_text_embeds = torch.zeros(1280)
+            cache_dir = self.data_dir / "prompt_embeddings"
+            img_id_dashed = img_id.replace("_", "-")
+            cache_file = cache_dir / f"{img_id}.pt"
+            cache_file_dashed = cache_dir / f"{img_id_dashed}.pt"
+            if cache_file.exists():
+                cached = torch.load(str(cache_file), map_location="cpu", weights_only=True)
+                text_embeds = cached["prompt_embeds"]
+                pooled_text_embeds = cached["pooled_prompt_embeds"]
+            elif cache_file_dashed.exists():
+                cached = torch.load(str(cache_file_dashed), map_location="cpu", weights_only=True)
+                text_embeds = cached["prompt_embeds"]
+                pooled_text_embeds = cached["pooled_prompt_embeds"]
+            else:
+                text_embeds = torch.zeros(77, 2048)
+                pooled_text_embeds = torch.zeros(1280)
+        
+        # Style Embedding — lazy load từ disk cache
+        if img_id in self.style_embeds_cache:
+            style_embed = self.style_embeds_cache[img_id]
+        else:
+            style_cache_file = self.data_dir / "style_embeddings_cache" / f"{img_id}.npy"
+            if style_cache_file.exists():
+                style_embed = np.load(str(style_cache_file))
+            else:
+                style_embed = np.zeros(2048, dtype=np.float32)
         
         # Trả về Tensors
         return {
             "image": self.img_transform(gt_img),
             "bald_image": self.img_transform(bald_img),
             "mask": torch.from_numpy(true_mask).permute(2, 0, 1),
-            "style_embed": torch.from_numpy(
-                self.style_embeds_cache.get(img_id, np.zeros(2048, dtype=np.float32))
-            ).float(),  # (2048,) — từ Stage 1 Texture Encoder
+            "style_embed": torch.from_numpy(style_embed).float(),
             "identity_embed": torch.from_numpy(id_embed).squeeze(0).float(),
             "text_embeds": text_embeds,
             "pooled_text_embeds": pooled_text_embeds,
@@ -384,6 +472,13 @@ class Stage2Trainer:
         # 6. AMP Mixed Precision Scaler
         self.scaler = torch.amp.GradScaler('cuda')
         
+        # 7. Learning Rate Scheduler — Warmup + Cosine Decay
+        from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+        warmup_steps = 100
+        warmup_scheduler = LinearLR(self.optimizer, start_factor=0.1, total_iters=warmup_steps)
+        cosine_scheduler = CosineAnnealingLR(self.optimizer, T_max=2000, eta_min=1e-7)
+        self.scheduler = SequentialLR(self.optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_steps])
+        
         # 7. Tạo thư mục checkpoints
         self.checkpoints_dir = PROJECT_DIR / "backend" / "training" / "checkpoints"
         ensureDir(str(self.checkpoints_dir))
@@ -402,9 +497,31 @@ class Stage2Trainer:
         latents = latents * self.vae_scale_factor
         return latents.float()  # Trả về float32 cho training
     
-    @torch.no_grad()
     def _decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """Decode latents về RGB image qua VAE (cho Identity/Texture Loss)."""
+        """Decode latents về RGB image qua VAE (cho Identity/Texture Loss).
+        Sử dụng straight-through estimator để gradient flow ngược về UNet
+        MÀ KHÔNG CẦN gradient qua frozen VAE weights.
+        
+        Trick: decode với no_grad, sau đó gắn gradient path qua latents.
+        Khi backward: d(output)/d(latents) ≈ 1 → gradient chảy về UNet.
+        """
+        # Bước 1: Decode bình thường (no_grad — không tốn thêm VRAM)
+        with torch.no_grad():
+            latents_input = (latents / self.vae_scale_factor).to(self.vae.dtype)
+            decoded_no_grad = self.vae.decode(latents_input).sample.float()
+        
+        # Bước 2: Straight-through — gắn gradient path qua latents
+        # decoded_no_grad không có grad, nhưng latents có grad (từ UNet)
+        # Trick: cộng thêm (latents - latents.detach()) * 0 để PyTorch 
+        # tạo computation graph kết nối output → latents → UNet
+        latents_for_grad = latents / self.vae_scale_factor
+        decoded = decoded_no_grad + (latents_for_grad - latents_for_grad.detach()).sum() * 0
+        
+        return decoded
+    
+    @torch.no_grad()
+    def _decode_latents_no_grad(self, latents: torch.Tensor) -> torch.Tensor:
+        """Decode latents về RGB (frozen, dùng cho validation/visualize — KHÔNG cần gradient)."""
         latents_input = (latents / self.vae_scale_factor).to(self.vae.dtype)
         decoded = self.vae.decode(latents_input).sample
         return decoded.float()
@@ -427,7 +544,7 @@ class Stage2Trainer:
         
         # Gradient Accumulation: chỉ zero_grad mỗi N steps
         if global_step % accumulation_steps == 0:
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad(set_to_none=True)
         
         # Giải nén Batch
         gt_images = batch['image'].to(DEVICE)
@@ -508,7 +625,7 @@ class Stage2Trainer:
         loss_tex = None  # Guard: khởi tạo trước try block để tránh NameError
         loss_id = None
         
-        if global_step % 50 == 0 and global_step > 0:
+        if global_step % 200 == 0 and global_step > 0:
             try:
                 with torch.amp.autocast('cuda', dtype=torch.float16):
                     # Ước tính denoised output (x0 prediction) — RIÊNG cho mỗi sample trong batch
@@ -519,8 +636,8 @@ class Stage2Trainer:
                     sqrt_one_minus_alpha = ((1 - alpha_prod_t) ** 0.5).view(-1, 1, 1, 1)
                     pred_original = (noisy_latents - sqrt_one_minus_alpha * noise_pred) / (sqrt_alpha + 1e-8)
                     
-                    # Decode để lấy ảnh tái tạo
-                    decoded_img = self._decode_latents(pred_original.detach())
+                    # Decode để lấy ảnh tái tạo — KHÔNG detach để gradient flow về UNet
+                    decoded_img = self._decode_latents(pred_original)
                     
                     # Texture Loss — so sánh gram matrices giữa ảnh gốc và ảnh tái tạo
                     loss_tex = self.texture_loss(decoded_img, gt_images)
@@ -567,6 +684,7 @@ class Stage2Trainer:
             )
             self.scaler.step(self.optimizer)
             self.scaler.update()
+            self.scheduler.step()
         
         return {
             "total_loss": total_loss.item(),
@@ -667,7 +785,7 @@ class Stage2Trainer:
                         sqrt_one_minus_alpha = ((1 - alpha_prod_t) ** 0.5).view(-1, 1, 1, 1)
                         pred_original = (noisy_latents - sqrt_one_minus_alpha * noise_pred) / (sqrt_alpha + 1e-8)
                         
-                        decoded_img = self._decode_latents(pred_original)
+                        decoded_img = self._decode_latents_no_grad(pred_original)
                     
                     # LPIPS cần input [-1, 1] — cả decoded_img và gt_images đều ở range này
                     lpips_val = lpips_evaluator.evaluate_lpips(
@@ -756,7 +874,7 @@ class Stage2Trainer:
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
-        # --- 3. Texture + Identity Loss (mỗi 50 steps, bỏ qua giá trị 0) ---
+        # --- 3. Texture + Identity Loss (mỗi 200 steps, bỏ qua giá trị 0) ---
         ax3 = axes[1, 0]
         texSteps = [i+1 for i, v in enumerate(history['texture_loss']) if v > 0]
         texValues = [v for v in history['texture_loss'] if v > 0]
@@ -772,7 +890,7 @@ class Stage2Trainer:
                 ax3_twin.plot(idSteps, idValues, color='#9C27B0', linewidth=1.5, marker='.', markersize=3, label='Identity Loss')
                 ax3_twin.set_ylabel('Identity Loss', color='#9C27B0')
                 ax3_twin.legend(loc='upper right')
-            ax3.set_title('Texture + Identity Loss (mỗi 50 steps)', fontsize=13)
+            ax3.set_title('Texture + Identity Loss (mỗi 200 steps)', fontsize=13)
         else:
             ax3.text(0.5, 0.5, 'Chưa có dữ liệu\n(tính sau step 50)', ha='center', va='center', fontsize=12, transform=ax3.transAxes)
             ax3.set_title('Texture + Identity Loss', fontsize=13)
@@ -888,7 +1006,8 @@ class Stage2Trainer:
             self._save_safetensors_safe(self.unet.state_dict(), str(backup_unet))
             self._save_safetensors_safe(self.injector.state_dict(), str(backup_inj))
         
-        # Dọn dẹp: xóa tất cả file step/epoch cũ (chỉ giữ best + backup)
+        # Dọn dẹp: xóa file step/epoch cũ (chỉ giữ best + backup)
+        # Trên Colab: checkpoints/ symlink → Drive, nên KHÔNG xóa epoch files (giữ hết trên Drive)
         keep_names = {
             "deep_hair_v1_best.safetensors",
             "injector_best.safetensors", 
@@ -897,263 +1016,453 @@ class Stage2Trainer:
             "deep_hair_v1_latest.safetensors",
             "injector_latest.safetensors",
             "deep_hair_v1.safetensors",  # file export đã có sẵn
+            "training_history.json",     # training history
         }
         for p in self.checkpoints_dir.glob("*.safetensors"):
-            if p.name not in keep_names:
-                try:
-                    p.unlink()
-                    logger.info(f"  🗑️ Xóa checkpoint cũ: {p.name}")
-                except:
-                    pass
+            if p.name in keep_names:
+                continue
+            # Trên Colab: giữ lại epoch files (deep_hair_v1_epoch_*.safetensors, injector_epoch_*.safetensors)
+            if IS_COLAB and ("_epoch_" in p.name):
+                continue
+            try:
+                p.unlink()
+                logger.info(f"  🗑️ Xóa checkpoint cũ: {p.name}")
+            except:
+                pass
 
-    def train_loop(self, num_epochs=1, batch_size=1, max_samples=1000, target_size=(512, 512), accumulation_steps=8, resume=True):
+    def _save_to_drive(self, epoch: int, is_best: bool, loss_history: dict):
         """
-        Vòng lặp PyTorch Training Thực Kế.
-        
-        Args:
-            num_epochs: Số epochs training
-            batch_size: Batch size (1 cho RTX 3060 12GB)
-            max_samples: Giới hạn số samples dataset (0 = tất cả)
-            target_size: Kích thước ảnh (512x512 tiết kiệm VRAM, 1024x1024 chất lượng cao)
-            accumulation_steps: Gradient accumulation steps (effective batch = batch_size * accumulation_steps)
-            resume: Tiếp tục train từ checkpoint tốt nhất nếu tồn tại
+        Lưu checkpoint epoch lên Drive — CHỈ chạy khi IS_COLAB=True.
+        Trên Colab, checkpoints/ đã symlink → Drive, nên lưu trực tiếp vào checkpoints_dir.
+        Lưu tất cả epoch (không xóa), cập nhật best nếu tốt hơn, và lưu training history.
         """
-        logger.info(f"Khởi động vòng lặp Training Stage 2 - {num_epochs} Epochs")
-        logger.info(f"  📐 Resolution: {target_size[0]}x{target_size[1]}")
-        logger.info(f"  📊 Max samples: {max_samples if max_samples > 0 else 'ALL'}")
-        logger.info(f"  🔄 Gradient Accumulation: {accumulation_steps} steps (effective batch = {batch_size * accumulation_steps})")
-        logger.info(f"  💾 Checkpoint strategy: CHỈ GIỮ BEST + backup (tiết kiệm dung lượng)")
+        if not IS_COLAB:
+            return
         
-        if resume:
-            # Ưu tiên load best, fallback sang backup
-            best_unet = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
-            best_inj = self.checkpoints_dir / "injector_best.safetensors"
-            backup_unet = self.checkpoints_dir / "stage2_backup.safetensors"
-            backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
+        try:
+            # 1. Lưu epoch checkpoint trực tiếp (checkpoints/ đã symlink → Drive)
+            epoch_unet = self.checkpoints_dir / f"deep_hair_v1_epoch_{epoch}.safetensors"
+            epoch_inj = self.checkpoints_dir / f"injector_epoch_{epoch}.safetensors"
+            self._save_safetensors_safe(self.unet.state_dict(), str(epoch_unet))
+            self._save_safetensors_safe(self.injector.state_dict(), str(epoch_inj))
             
-            load_unet = best_unet if best_unet.exists() else (backup_unet if backup_unet.exists() else None)
-            load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
+            # 2. Lưu training history JSON (cập nhật mỗi epoch)
+            history_path = self.checkpoints_dir / "training_history.json"
+            with open(str(history_path), "w", encoding="utf-8") as f:
+                json.dump(loss_history, f, indent=2)
             
-            if load_unet and load_inj:
-                from safetensors.torch import load_file as load_safetensors
-                try:
-                    self.unet.load_state_dict(load_safetensors(str(load_unet)))
-                    self.injector.load_state_dict(load_safetensors(str(load_inj)))
-                    logger.info(f"🔄 [RESUME] Đã tải trọng số từ {load_unet.name} + {load_inj.name}")
-                except Exception as e:
-                    logger.error(f"❌ Lỗi khi tải checkpoint: {e}")
-            else:
-                logger.warning("⚠️ Flag --resume được bật nhưng thiếu file checkpoint. Bắt đầu train từ đầu.")
-                
-        processed_dir = PROJECT_DIR / "backend" / "training" / "processed"
+            best_str = '✓' if is_best else '✗'
+            logger.info(f"☁️ Drive: epoch_{epoch} | best={best_str} | history ✓")
+        except Exception as e:
+            logger.error(f"❌ Lỗi khi lưu epoch lên Drive: {e}")
+
+    # ==============================================================================
+    # CHUNKED LOADING — GLOBAL EPOCH TRAINING
+    # ==============================================================================
+    
+    def _discover_chunk_dirs(self):
+        """Tìm tất cả processed_NNN directories. Fallback về processed/ nếu không có chunks."""
+        import re as _re
+        training_dir = PROJECT_DIR / "backend" / "training"
+        chunks = sorted([
+            d for d in training_dir.iterdir()
+            if d.is_dir() and _re.match(r'^processed_\d+$', d.name)
+            and (d / "metadata.jsonl").exists()
+        ])
+        if not chunks:
+            single = training_dir / "processed"
+            if single.exists() and (single / "metadata.jsonl").exists():
+                chunks = [single]
+                logger.info("  📁 Single processed/ directory (no chunks found)")
+        return chunks
+    
+    def _precache_all_chunks(self, chunk_dirs, target_size, max_samples_per_chunk):
+        """Pre-encode text + style embeddings cho tất cả chunks chưa cache."""
+        needs_text = False
+        needs_style = False
         
-        # Pre-encode text prompts trước khi bắt đầu training
-        # Text Encoders sẽ bị giải phóng sau khi encode xong
-        text_encoder = None
-        cache_dir = processed_dir / "prompt_embeddings"
-        
-        # Chỉ load text encoder nếu chưa có cache
-        meta_path = processed_dir / "metadata.jsonl"
-        needs_encoding = False
-        if meta_path.exists():
+        for chunk_dir in chunk_dirs:
+            meta_path = chunk_dir / "metadata.jsonl"
+            if not meta_path.exists():
+                continue
+            cache_dir = chunk_dir / "prompt_embeddings"
+            style_cache_dir = chunk_dir / "style_embeddings_cache"
+            
             with open(str(meta_path), "r", encoding="utf-8") as f:
                 for line in f:
                     if not line.strip(): continue
                     item = json.loads(line.strip())
                     img_id = item['id']
-                    cache_file = cache_dir / f"{img_id}.pt"
-                    cache_file_dashed = cache_dir / f"{img_id.replace('_', '-')}.pt"
-                    if not cache_file.exists() and not cache_file_dashed.exists():
-                        needs_encoding = True
+                    if not needs_text:
+                        cf = cache_dir / f"{img_id}.pt"
+                        cf2 = cache_dir / f"{img_id.replace('_', '-')}.pt"
+                        if not cf.exists() and not cf2.exists():
+                            needs_text = True
+                    if not needs_style:
+                        if not (style_cache_dir / f"{img_id}.npy").exists():
+                            needs_style = True
+                    if needs_text and needs_style:
                         break
+            if needs_text and needs_style:
+                break
         
-        if needs_encoding:
-            logger.info("Prompt embeddings chưa được cache. Đang load Text Encoders...")
+        text_encoder = None
+        if needs_text:
+            logger.info("📝 Prompt embeddings chưa cache. Đang load Text Encoders...")
             text_encoder = SDXLTextEncoder()
         
-        # Load Texture Encoder (Stage 1) để extract style vectors
         texture_encoder = None
-        style_cache_dir = processed_dir / "style_embeddings_cache"
-        
-        # Chỉ load encoder nếu chưa có cache
-        needs_style_extraction = False
-        if meta_path.exists():
-            with open(str(meta_path), "r", encoding="utf-8") as f2:
-                for line in f2:
-                    if not line.strip(): continue
-                    item = json.loads(line.strip())
-                    if not (style_cache_dir / f"{item['id']}.npy").exists():
-                        needs_style_extraction = True
-                        break
-        
-        if needs_style_extraction:
-            logger.info("Style embeddings chưa cache. Đang load Texture Encoder (Stage 1)...")
+        if needs_style:
+            logger.info("🎨 Style embeddings chưa cache. Đang load Texture Encoder...")
             from backend.training.models.texture_encoder import HairTextureEncoder
             from safetensors.torch import load_file as load_safetensors
-            
             texture_encoder = HairTextureEncoder(pretrained=False).to(DEVICE).eval()
-            
-            # Load checkpoint tốt nhất của Stage 1 (ưu tiên best > latest)
-            tex_ckpt_best = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_best.safetensors"
-            tex_ckpt_latest = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_latest.safetensors"
-            tex_ckpt = tex_ckpt_best if tex_ckpt_best.exists() else tex_ckpt_latest
+            tex_best = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_best.safetensors"
+            tex_latest = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_latest.safetensors"
+            tex_ckpt = tex_best if tex_best.exists() else tex_latest
             if tex_ckpt.exists():
-                state_dict = load_safetensors(str(tex_ckpt))
-                texture_encoder.load_state_dict(state_dict, strict=False)
+                texture_encoder.load_state_dict(load_safetensors(str(tex_ckpt)), strict=False)
                 logger.info(f"  → Loaded Texture Encoder từ {tex_ckpt.name}")
             else:
-                logger.warning("  ⚠️ Không tìm thấy checkpoint Stage 1, dùng random weights!")
+                logger.warning("  ⚠️ Không tìm thấy checkpoint Stage 1!")
             texture_encoder.requires_grad_(False)
         
-        dataset = HairInpaintingDataset(
-            processed_dir, text_encoder=text_encoder, texture_encoder=texture_encoder,
-            target_size=target_size, max_samples=max_samples
-        )
+        if text_encoder or texture_encoder:
+            for i, chunk_dir in enumerate(chunk_dirs):
+                logger.info(f"  📂 Caching chunk {i+1}/{len(chunk_dirs)}: {chunk_dir.name}")
+                _ = HairInpaintingDataset(
+                    chunk_dir, text_encoder=text_encoder, texture_encoder=texture_encoder,
+                    target_size=target_size, max_samples=max_samples_per_chunk
+                )
+                del _
+            
+            if text_encoder:
+                text_encoder.unload()
+                del text_encoder
+            if texture_encoder:
+                del texture_encoder
+            torch.cuda.empty_cache()
+            logger.info("✅ Pre-caching hoàn tất, encoders đã giải phóng.")
+    
+    def _save_training_state(self, epoch, global_step, best_val_loss, best_epoch, loss_history):
+        """Save full training state cho Colab resume."""
+        state = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_val_loss": best_val_loss,
+            "best_epoch": best_epoch,
+            "loss_history": loss_history,
+            "optimizer": self.optimizer.state_dict(),
+            "scheduler": self.scheduler.state_dict(),
+            "scaler": self.scaler.state_dict(),
+        }
+        state_path = self.checkpoints_dir / "training_state.pth"
+        torch.save(state, str(state_path))
+        logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}")
+    
+    def _load_training_state(self):
+        """Load full training state để resume. Returns dict hoặc None."""
+        state_path = self.checkpoints_dir / "training_state.pth"
+        if not state_path.exists():
+            # Fallback: chỉ load model weights (backward compat)
+            best_unet = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
+            best_inj = self.checkpoints_dir / "injector_best.safetensors"
+            backup_unet = self.checkpoints_dir / "stage2_backup.safetensors"
+            backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
+            load_unet = best_unet if best_unet.exists() else (backup_unet if backup_unet.exists() else None)
+            load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
+            if load_unet and load_inj:
+                from safetensors.torch import load_file as load_safetensors
+                try:
+                    self.unet.load_state_dict(load_safetensors(str(load_unet)))
+                    self.injector.load_state_dict(load_safetensors(str(load_inj)))
+                    logger.info(f"🔄 [RESUME] Model weights loaded: {load_unet.name} + {load_inj.name}")
+                    logger.warning("  ⚠️ Không có training_state.pth — optimizer/scheduler bắt đầu lại")
+                except Exception as e:
+                    logger.error(f"❌ Lỗi load model weights: {e}")
+            return None
         
-        # Giải phóng Text Encoders sau khi encode xong
-        if text_encoder is not None:
-            text_encoder.unload()
-            del text_encoder
+        try:
+            state = torch.load(str(state_path), map_location=DEVICE, weights_only=False)
+            
+            # Restore model weights
+            best_unet = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
+            best_inj = self.checkpoints_dir / "injector_best.safetensors"
+            backup_unet = self.checkpoints_dir / "stage2_backup.safetensors"
+            backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
+            load_unet = best_unet if best_unet.exists() else (backup_unet if backup_unet.exists() else None)
+            load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
+            
+            if load_unet and load_inj:
+                from safetensors.torch import load_file as load_safetensors
+                self.unet.load_state_dict(load_safetensors(str(load_unet)))
+                self.injector.load_state_dict(load_safetensors(str(load_inj)))
+                logger.info(f"  🔄 Model weights: {load_unet.name} + {load_inj.name}")
+            
+            # Restore optimizer, scheduler, scaler
+            if "optimizer" in state:
+                self.optimizer.load_state_dict(state["optimizer"])
+            if "scheduler" in state:
+                self.scheduler.load_state_dict(state["scheduler"])
+            if "scaler" in state:
+                self.scaler.load_state_dict(state["scaler"])
+            
+            logger.info(f"  🔄 Optimizer + Scheduler + Scaler restored")
+            return state
+        except Exception as e:
+            logger.error(f"❌ Lỗi load training state: {e}")
+            return None
+    
+    def _validate_across_chunks(self, chunk_dirs, batch_size, target_size, global_step):
+        """Validate qua tất cả chunks, lấy mỗi chunk ~50 samples cố định."""
+        all_val_losses = []
         
-        if len(dataset) == 0:
-            logger.error("Dataset trống! Hãy chạy prepare_dataset_deephair.py trước.")
+        for chunk_dir in chunk_dirs:
+            try:
+                dataset = HairInpaintingDataset(
+                    chunk_dir, target_size=target_size, max_samples=100
+                )
+                if len(dataset) < 2:
+                    continue
+                
+                val_size = max(1, len(dataset) // 2)
+                train_size = len(dataset) - val_size
+                _, val_subset = random_split(
+                    dataset, [train_size, val_size],
+                    generator=torch.Generator().manual_seed(42)
+                )
+                
+                val_loader = DataLoader(
+                    val_subset, batch_size=batch_size,
+                    shuffle=False, drop_last=False, num_workers=0, pin_memory=True
+                )
+                
+                metrics = self.validate_epoch(val_loader, global_step)
+                all_val_losses.append(metrics['val_loss'])
+                
+                del dataset, val_subset, val_loader
+                torch.cuda.empty_cache()
+            except Exception as e:
+                logger.warning(f"  ⚠️ Validation lỗi cho {chunk_dir.name}: {e}")
+                continue
+        
+        avg_val = sum(all_val_losses) / len(all_val_losses) if all_val_losses else float('inf')
+        return {'val_loss': avg_val, 'val_lpips': -1.0}
+    
+    # ==============================================================================
+    # MAIN TRAINING LOOP — Chunked Loading, Global Epoch
+    # ==============================================================================
+    
+    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True):
+        """
+        Chunked Loading – Global Epoch Training.
+        1 epoch = model nhìn thấy TẤT CẢ chunks đúng 1 lần.
+        Model, optimizer, scheduler KHÔNG reset giữa các chunks.
+        
+        Args:
+            num_epochs: Số epochs (1 epoch = tất cả chunks)
+            batch_size: Batch size (1 cho RTX 3060 12GB)
+            max_samples_per_chunk: Giới hạn samples mỗi chunk (0 = tất cả)
+            target_size: Kích thước ảnh (512x512)
+            accumulation_steps: Gradient accumulation steps
+            resume: Resume từ checkpoint nếu có
+        """
+        logger.info(f"Khởi động Chunked Loading – Global Epoch Training")
+        logger.info(f"  📐 Resolution: {target_size[0]}x{target_size[1]}")
+        logger.info(f"  🔄 Gradient Accumulation: {accumulation_steps} steps (effective batch = {batch_size * accumulation_steps})")
+        logger.info(f"  💾 Checkpoint: Local=BEST+backup | Drive={'LƯU TẤT CẢ epoch' if IS_COLAB else 'N/A'}")
+        
+        # ==================================================
+        # 1. DISCOVER CHUNKS
+        # ==================================================
+        chunk_dirs = self._discover_chunk_dirs()
+        if not chunk_dirs:
+            logger.error("Không tìm thấy chunk nào! Hãy chạy prepare_dataset_deephair.py trước.")
             return
         
-        # =============================================
-        # TRAIN/VAL SPLIT — 80% train, 20% validation
-        # =============================================
-        val_ratio = 0.2
-        val_size = max(1, int(len(dataset) * val_ratio))
-        train_size = len(dataset) - val_size
-        train_dataset, val_dataset = random_split(
-            dataset, [train_size, val_size],
-            generator=torch.Generator().manual_seed(42)  # Reproducible split
-        )
-        logger.info(f"  📊 Dataset split: {train_size} train + {val_size} val ({val_ratio*100:.0f}%)")
+        logger.info(f"  📂 Found {len(chunk_dirs)} chunk(s): {[d.name for d in chunk_dirs]}")
         
-        dataloader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=2, pin_memory=True)
-        val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=0, pin_memory=True)
+        # ==================================================
+        # 2. PRE-CACHE EMBEDDINGS cho tất cả chunks
+        # ==================================================
+        self._precache_all_chunks(chunk_dirs, target_size, max_samples_per_chunk)
         
-        # =============================================
-        # BEST MODEL TRACKING — theo dõi VAL LOSS tốt nhất
-        # =============================================
+        # ==================================================
+        # 3. RESUME FROM CHECKPOINT
+        # ==================================================
+        start_epoch = 0
+        global_step = 0
         best_val_loss = float('inf')
         best_epoch = -1
-        
-        global_step = 0
-        step_times = []  # Theo dõi thời gian mỗi step
-        
-        # Thu thập lịch sử loss để vẽ chart
         loss_history = {
-            'total_loss': [],
-            'diffusion_loss': [],
-            'texture_loss': [],
-            'identity_loss': [],
-            'epoch_avg_loss': [],
-            'val_loss': [],       # Validation loss mỗi epoch
-            'val_lpips': [],      # Validation LPIPS mỗi epoch
+            'total_loss': [], 'diffusion_loss': [], 'texture_loss': [],
+            'identity_loss': [], 'epoch_avg_loss': [], 'val_loss': [], 'val_lpips': [],
         }
         
-        for epoch in range(num_epochs):
-            epoch_losses = []  # Thu thập loss mỗi step để tính trung bình
+        if resume:
+            loaded = self._load_training_state()
+            if loaded:
+                start_epoch = loaded['epoch']
+                global_step = loaded['global_step']
+                best_val_loss = loaded['best_val_loss']
+                best_epoch = loaded.get('best_epoch', -1)
+                loss_history = loaded.get('loss_history', loss_history)
+                logger.info(f"🔄 [RESUME] Epoch {start_epoch}, Step {global_step}, Best Val: {best_val_loss:.6f}")
+        
+        logger.info(f"  📊 Training: {num_epochs} epochs × {len(chunk_dirs)} chunk(s)")
+        logger.info(f"  📊 Max samples/chunk: {max_samples_per_chunk if max_samples_per_chunk > 0 else 'ALL'}")
+        
+        step_times = []
+        
+        # ==================================================
+        # 4. TRAINING LOOP — 1 epoch = TẤT CẢ chunks
+        # ==================================================
+        for epoch in range(start_epoch, num_epochs):
             epoch_start = time.time()
+            epoch_losses = []
             
-            pbar = tqdm(dataloader, desc=f"Epoch {epoch+1}/{num_epochs}")
-            for step, batch in enumerate(pbar):
-                step_start = time.time()
-                losses = self.train_step(batch, global_step, accumulation_steps=accumulation_steps)
-                step_time = time.time() - step_start
-                step_times.append(step_time)
-                epoch_losses.append(losses['total_loss'])
-                
-                # Ghi lại loss history cho chart
-                loss_history['total_loss'].append(losses['total_loss'])
-                loss_history['diffusion_loss'].append(losses['diffusion_loss'])
-                loss_history['texture_loss'].append(losses['texture_loss'])
-                loss_history['identity_loss'].append(losses.get('identity_loss', 0.0))
-                
-                # Tính ETA
-                avg_step_time = sum(step_times[-50:]) / len(step_times[-50:])  # Trung bình 50 steps gần nhất
-                remaining_steps = len(dataloader) - step - 1
-                eta_seconds = remaining_steps * avg_step_time
-                eta_str = f"{int(eta_seconds//3600)}h{int((eta_seconds%3600)//60)}m"
-                
-                pbar.set_postfix({
-                    "Loss": f"{losses['total_loss']:.4f}",
-                    "Diff": f"{losses['diffusion_loss']:.4f}",
-                    "Tex": f"{losses['texture_loss']:.4f}",
-                    "ID": f"{losses.get('identity_loss', 0.0):.4f}",
-                    "Best": f"{best_val_loss:.4f}" if best_val_loss < float('inf') else "N/A",
-                    "s/it": f"{step_time:.1f}s",
-                    "ETA": eta_str,
-                })
-                global_step += 1
+            # Shuffle thứ tự chunks mỗi epoch
+            shuffled_chunks = chunk_dirs.copy()
+            random.shuffle(shuffled_chunks)
             
-            # Tính average TRAIN loss cho epoch này
+            logger.info(f"\n{'='*60}")
+            logger.info(f"EPOCH {epoch+1}/{num_epochs} — {len(shuffled_chunks)} chunk(s)")
+            logger.info(f"  Chunk order: {[d.name for d in shuffled_chunks]}")
+            logger.info(f"{'='*60}")
+            
+            for chunk_idx, chunk_dir in enumerate(shuffled_chunks):
+                chunk_start = time.time()
+                
+                # Load dataset cho chunk hiện tại (lazy loading — không tốn RAM cho embeddings)
+                dataset = HairInpaintingDataset(
+                    chunk_dir, target_size=target_size, max_samples=max_samples_per_chunk
+                )
+                
+                if len(dataset) == 0:
+                    logger.warning(f"  ⚠️ Chunk {chunk_dir.name} trống, bỏ qua.")
+                    continue
+                
+                num_workers = 0 if os.name == 'nt' else 2
+                dataloader = DataLoader(
+                    dataset, batch_size=batch_size, shuffle=True,
+                    drop_last=True, num_workers=num_workers, pin_memory=True
+                )
+                
+                logger.info(f"\n  📂 Chunk {chunk_idx+1}/{len(shuffled_chunks)}: {chunk_dir.name} ({len(dataset)} samples)")
+                
+                pbar = tqdm(dataloader, desc=f"E{epoch+1} C{chunk_idx+1}/{len(shuffled_chunks)}")
+                for step, batch in enumerate(pbar):
+                    step_start = time.time()
+                    losses = self.train_step(batch, global_step, accumulation_steps=accumulation_steps)
+                    step_time = time.time() - step_start
+                    step_times.append(step_time)
+                    epoch_losses.append(losses['total_loss'])
+                    
+                    # Ghi loss history
+                    loss_history['total_loss'].append(losses['total_loss'])
+                    loss_history['diffusion_loss'].append(losses['diffusion_loss'])
+                    loss_history['texture_loss'].append(losses['texture_loss'])
+                    loss_history['identity_loss'].append(losses.get('identity_loss', 0.0))
+                    
+                    # ETA
+                    avg_step_time = sum(step_times[-50:]) / len(step_times[-50:])
+                    remaining_steps = len(dataloader) - step - 1
+                    eta_seconds = remaining_steps * avg_step_time
+                    eta_str = f"{int(eta_seconds//3600)}h{int((eta_seconds%3600)//60)}m"
+                    
+                    pbar.set_postfix({
+                        "Loss": f"{losses['total_loss']:.4f}",
+                        "Diff": f"{losses['diffusion_loss']:.4f}",
+                        "Tex": f"{losses['texture_loss']:.4f}",
+                        "ID": f"{losses.get('identity_loss', 0.0):.4f}",
+                        "Best": f"{best_val_loss:.4f}" if best_val_loss < float('inf') else "N/A",
+                        "s/it": f"{step_time:.1f}s",
+                        "ETA": eta_str,
+                    })
+                    global_step += 1
+                
+                chunk_time = time.time() - chunk_start
+                chunk_avg = sum(epoch_losses[-len(dataloader):]) / max(1, len(dataloader))
+                logger.info(f"  ✅ Chunk {chunk_dir.name} done — Avg Loss: {chunk_avg:.5f} — Time: {chunk_time/60:.1f}min")
+                
+                # Giải phóng memory sau mỗi chunk
+                del dataset, dataloader
+                torch.cuda.empty_cache()
+                
+                # Backup checkpoint sau mỗi chunk (Colab safety)
+                self._save_checkpoint("backup", is_best=False)
+            
+            # ==================================================
+            # VALIDATION sau mỗi epoch đầy đủ
+            # ==================================================
             epoch_time = time.time() - epoch_start
             avg_epoch_loss = sum(epoch_losses) / len(epoch_losses) if epoch_losses else float('inf')
             
-            # =============================================
-            # VALIDATION — đánh giá trên val set
-            # =============================================
-            logger.info(f"Đang đánh giá Validation (Epoch {epoch+1})...")
-            val_metrics = self.validate_epoch(val_dataloader, global_step)
+            logger.info(f"\nĐang validate Epoch {epoch+1} qua {len(chunk_dirs)} chunk(s)...")
+            val_metrics = self._validate_across_chunks(
+                chunk_dirs, batch_size, target_size, global_step
+            )
             val_loss = val_metrics['val_loss']
             val_lpips = val_metrics['val_lpips']
             
-            # Kiểm tra xem epoch này có tốt hơn best không (dựa trên VAL LOSS)
             is_new_best = val_loss < best_val_loss
-            
             val_lpips_str = f"{val_lpips:.4f}" if val_lpips >= 0 else "N/A"
             
             if is_new_best:
                 best_val_loss = val_loss
                 best_epoch = epoch + 1
-                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Train Loss: {avg_epoch_loss:.6f} — Val Loss: {val_loss:.6f} — Val LPIPS: {val_lpips_str} — Time: {epoch_time/60:.1f}min")
+                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} — Time: {epoch_time/60:.1f}min")
             else:
-                logger.info(f"Epoch {epoch+1} — Train Loss: {avg_epoch_loss:.6f} — Val Loss: {val_loss:.6f} — Val LPIPS: {val_lpips_str} (Best: Epoch {best_epoch}, Val: {best_val_loss:.6f}) — Time: {epoch_time/60:.1f}min")
+                logger.info(f"Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} (Best: Ep{best_epoch}, {best_val_loss:.6f}) — Time: {epoch_time/60:.1f}min")
             
-            # Lưu checkpoint: best nếu đạt, backup nếu không
+            # Save model checkpoint (best hoặc backup)
             self._save_checkpoint(f"epoch_{epoch+1}", is_best=is_new_best)
             
-            # Ghi epoch loss và vẽ chart
+            # Ghi epoch loss history
             loss_history['epoch_avg_loss'].append(avg_epoch_loss)
             loss_history['val_loss'].append(val_loss)
             loss_history['val_lpips'].append(val_lpips if val_lpips >= 0 else 0.0)
+            
+            # Save FULL training state (optimizer + scheduler + scaler) cho resume
+            self._save_training_state(epoch + 1, global_step, best_val_loss, best_epoch, loss_history)
+            
+            # Save to Google Drive (Colab)
+            self._save_to_drive(epoch + 1, is_new_best, loss_history)
+            
+            # Plot training charts
             self._plot_training_charts(loss_history, epoch + 1)
-                    
-        # Lưu Final Model (latest = epoch cuối cùng)
+        
+        # ==================================================
+        # FINAL: Save latest model
+        # ==================================================
         final_ckpt_path = self.checkpoints_dir / "deep_hair_v1_latest.safetensors"
         self._save_safetensors_safe(self.unet.state_dict(), str(final_ckpt_path))
         final_inj_path = self.checkpoints_dir / "injector_latest.safetensors"
         self._save_safetensors_safe(self.injector.state_dict(), str(final_inj_path))
         
-        # Xóa file backup sau khi đã có latest
+        # Xóa backup
         for backup in ["stage2_backup.safetensors", "injector_backup.safetensors"]:
             bp = self.checkpoints_dir / backup
             if bp.exists():
                 try: bp.unlink()
                 except: pass
         
-        # Thống kê dung lượng checkpoint cuối cùng
-        total_size = 0
-        for f in self.checkpoints_dir.glob("*.safetensors"):
-            total_size += f.stat().st_size
+        total_size = sum(f.stat().st_size for f in self.checkpoints_dir.glob("*.safetensors"))
         
         logger.info(f"{'='*60}")
-        logger.info(f"✅ Hoàn thành Training Stage 2!")
-        logger.info(f"  📁 Model cuối cùng: {final_ckpt_path}")
-        logger.info(f"  🏆 Model tốt nhất: deep_hair_v1_best.safetensors (Epoch {best_epoch}, Val Loss: {best_val_loss:.6f})")
-        logger.info(f"  💾 Tổng dung lượng checkpoints: {total_size / (1024**3):.2f} GB")
-        logger.info(f"  💡 Dùng file BEST để deploy, không dùng file latest!")
+        logger.info(f"✅ Hoàn thành Chunked Loading – Global Epoch Training!")
+        logger.info(f"  📁 Model cuối: {final_ckpt_path}")
+        logger.info(f"  🏆 Model tốt nhất: deep_hair_v1_best.safetensors (Epoch {best_epoch}, Val: {best_val_loss:.6f})")
+        logger.info(f"  💾 Tổng checkpoints: {total_size / (1024**3):.2f} GB")
+        logger.info(f"  📂 Chunks trained: {len(chunk_dirs)}")
         logger.info(f"{'='*60}")
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Train Stage 2 - Hair Inpainting")
-    parser.add_argument("--epochs", type=int, default=1, help="Số epochs")
+    parser = argparse.ArgumentParser(description="Train Stage 2 - Hair Inpainting (Chunked Loading – Global Epoch)")
+    parser.add_argument("--epochs", type=int, default=1, help="Số epochs (1 epoch = tất cả chunks)")
     parser.add_argument("--batch-size", type=int, default=1, help="Batch size")
-    parser.add_argument("--max-samples", type=int, default=1000, help="Giới hạn samples (0=tất cả)")
+    parser.add_argument("--max-samples-per-chunk", type=int, default=0, help="Giới hạn samples mỗi chunk (0=tất cả)")
     parser.add_argument("--resolution", type=int, default=512, help="Kích thước ảnh (512 hoặc 1024)")
     parser.add_argument("--accumulation", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--fresh", action="store_true", help="Train từ đầu, KHÔNG load checkpoint cũ")
@@ -1163,8 +1472,9 @@ if __name__ == "__main__":
     trainer.train_loop(
         num_epochs=args.epochs,
         batch_size=args.batch_size,
-        max_samples=args.max_samples,
+        max_samples_per_chunk=args.max_samples_per_chunk,
         target_size=(args.resolution, args.resolution),
         accumulation_steps=args.accumulation,
         resume=not args.fresh
     )
+
