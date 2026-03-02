@@ -237,7 +237,11 @@ class FaceFeatureExtractor(nn.Module):
     
     def _crop_face_region(self, images: torch.Tensor, hair_masks: torch.Tensor) -> torch.Tensor:
         """
-        Crop vùng mặt từ ảnh dựa trên inverse hair mask.
+        Crop vùng mặt từ ảnh, loại bỏ tóc và giới hạn background.
+        
+        Chiến lược: Tìm vùng KHÔNG phải tóc trong nửa dưới + center ảnh,
+        vì mặt thường nằm ở center-bottom. Nếu không đủ dữ liệu, 
+        fallback lấy center crop 60%.
         
         Args:
             images: (B, 3, H, W) — ảnh RGB, range [-1, 1]
@@ -246,34 +250,45 @@ class FaceFeatureExtractor(nn.Module):
         Returns:
             face_crops: (B, 3, 112, 112) — face crops đã resize, range [-1, 1]
         """
-        B = images.shape[0]
+        B, _, H, W = images.shape
         face_crops = []
         
-        face_mask = (1.0 - hair_masks)  # Inverse: 1 = mặt, 0 = tóc
-        
         for i in range(B):
-            mask_2d = face_mask[i, 0]  # (H, W)
+            hair_2d = hair_masks[i, 0]  # (H, W), 1=tóc, 0=không tóc
             
-            # Tìm bounding box của vùng mặt
-            y_indices = torch.where(mask_2d > 0.5)[0]
-            x_indices = torch.where(mask_2d > 0.5)[1]
+            # Tạo face region mask: không phải tóc + nằm trong center 80% ảnh
+            # (loại bỏ viền ngoài chứa background)
+            center_mask = torch.zeros_like(hair_2d)
+            margin_y = int(H * 0.1)
+            margin_x = int(W * 0.1)
+            center_mask[margin_y:H-margin_y, margin_x:W-margin_x] = 1.0
             
-            if len(y_indices) == 0 or len(x_indices) == 0:
-                # Không tìm thấy vùng mặt → dùng toàn bộ ảnh
-                crop = F.interpolate(images[i:i+1], size=(112, 112), mode='bilinear', align_corners=False)
-                face_crops.append(crop)
-                continue
+            # Face = không phải tóc AND nằm trong center
+            face_mask = (1.0 - hair_2d) * center_mask
             
-            y_min, y_max = y_indices.min().item(), y_indices.max().item()
-            x_min, x_max = x_indices.min().item(), x_indices.max().item()
+            # Tìm bounding box vùng mặt
+            y_indices = torch.where(face_mask > 0.5)[0]
+            x_indices = torch.where(face_mask > 0.5)[1]
             
-            # Thêm padding 10%
-            h_pad = max(1, int((y_max - y_min) * 0.1))
-            w_pad = max(1, int((x_max - x_min) * 0.1))
-            y_min = max(0, y_min - h_pad)
-            y_max = min(images.shape[2], y_max + h_pad)
-            x_min = max(0, x_min - w_pad)
-            x_max = min(images.shape[3], x_max + w_pad)
+            if len(y_indices) < 100:
+                # Không đủ pixel mặt → fallback center crop 60%
+                cy, cx = H // 2, W // 2
+                half_h, half_w = int(H * 0.3), int(W * 0.3)
+                y_min = max(0, cy - half_h)
+                y_max = min(H, cy + half_h)
+                x_min = max(0, cx - half_w)
+                x_max = min(W, cx + half_w)
+            else:
+                y_min, y_max = y_indices.min().item(), y_indices.max().item()
+                x_min, x_max = x_indices.min().item(), x_indices.max().item()
+                
+                # Thêm padding 10%
+                h_pad = max(1, int((y_max - y_min) * 0.1))
+                w_pad = max(1, int((x_max - x_min) * 0.1))
+                y_min = max(0, y_min - h_pad)
+                y_max = min(H, y_max + h_pad)
+                x_min = max(0, x_min - w_pad)
+                x_max = min(W, x_max + w_pad)
             
             # Crop + resize
             crop = images[i:i+1, :, y_min:y_max, x_min:x_max]

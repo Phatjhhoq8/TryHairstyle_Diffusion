@@ -174,6 +174,20 @@ class TextureEncoderTrainer:
         self.criterion_contrastive = SupConLoss(temperature=0.07)
         
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-4, weight_decay=1e-4)
+    
+    def _save_safetensors_safe(self, state_dict, path: str):
+        """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt."""
+        import tempfile, shutil
+        target_dir = os.path.dirname(path)
+        fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=target_dir)
+        os.close(fd)
+        try:
+            save_file(state_dict, temp_path)
+            shutil.move(temp_path, path)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise e
 
     def train_step(self, batch):
         self.model.train()
@@ -352,7 +366,7 @@ class TextureEncoderTrainer:
                 
                 # Tạo file best mới theo epoch
                 new_best_path = checkpoints_dir / f"texture_encoder_best_ep{epoch+1}.safetensors"
-                save_file(self.model.state_dict(), str(new_best_path))
+                self._save_safetensors_safe(self.model.state_dict(), str(new_best_path))
                 
                 # Xóa file best cũ (chỉ giữ lại cái tốt nhất)
                 if best_ckpt_path and best_ckpt_path.exists():
@@ -368,7 +382,7 @@ class TextureEncoderTrainer:
             
             # Lưu file latest mỗi epoch (xóa qua đè lại liên tục)
             latest_path = checkpoints_dir / "texture_encoder_latest.safetensors"
-            save_file(self.model.state_dict(), str(latest_path))
+            self._save_safetensors_safe(self.model.state_dict(), str(latest_path))
             logger.info(f"💾 Checkpoint Epoch {epoch+1}{' ⭐ (BEST)' if is_new_best else ''}")
         
         # Kết thúc: copy file best hiện tại sang tên chuẩn để export/deploy

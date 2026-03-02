@@ -19,7 +19,7 @@ class CheckpointManager:
     def __init__(self):
         self.project_dir = Path(__file__).resolve().parent.parent.parent
         self.checkpoints_dir = self.project_dir / "backend" / "training" / "checkpoints"
-        self.production_models_dir = self.project_dir / "backend" / "training" / "models"
+        self.production_models_dir = self.project_dir / "backend" / "models"
         
         # Tạo thư mục checkpoints nếu chưa có
         os.makedirs(self.checkpoints_dir, exist_ok=True)
