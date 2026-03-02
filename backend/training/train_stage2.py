@@ -1286,30 +1286,7 @@ class Stage2Trainer:
         self._precache_all_chunks(chunk_dirs, target_size, max_samples_per_chunk)
         
         # ==================================================
-        # 2b. RECONFIGURE LR SCHEDULER dựa trên dataset size thực tế
-        # ==================================================
-        # Ước tính tổng steps: đếm samples từ metadata → tính steps/epoch
-        total_samples = 0
-        for chunk_dir in chunk_dirs:
-            meta_path = chunk_dir / "metadata.jsonl"
-            if meta_path.exists():
-                with open(str(meta_path), "r", encoding="utf-8") as f:
-                    n = sum(1 for line in f if line.strip())
-                if max_samples_per_chunk > 0:
-                    n = min(n, max_samples_per_chunk)
-                total_samples += n
-        
-        if total_samples > 0:
-            steps_per_epoch = total_samples // (batch_size * accumulation_steps)
-            estimated_total_steps = steps_per_epoch * num_epochs
-            new_t_max = max(estimated_total_steps - self._warmup_steps, 500)  # minimum 500
-            
-            # Reconfigure cosine scheduler T_max
-            self.scheduler.schedulers[1].T_max = new_t_max
-            logger.info(f"  📐 LR Scheduler: warmup={self._warmup_steps} → cosine T_max={new_t_max} (est. {estimated_total_steps} total optimizer steps)")
-        
-        # ==================================================
-        # 3. RESUME FROM CHECKPOINT
+        # 2b. RESUME FROM CHECKPOINT (TRƯỚC KHI reconfigure scheduler)
         # ==================================================
         start_epoch = 0
         global_step = 0
@@ -1340,6 +1317,30 @@ class Stage2Trainer:
                     start_epoch = max(0, start_epoch - 1)
                 else:
                     logger.info(f"🔄 [RESUME] Epoch {start_epoch}, Step {global_step}, Best Val: {best_val_loss:.6f}")
+        
+        # ==================================================
+        # 3. RECONFIGURE LR SCHEDULER dựa trên dataset size thực tế
+        #    (SAU resume để không bị state cũ ghi đè T_max)
+        # ==================================================
+        # Ước tính tổng steps: đếm samples từ metadata → tính steps/epoch
+        total_samples = 0
+        for chunk_dir in chunk_dirs:
+            meta_path = chunk_dir / "metadata.jsonl"
+            if meta_path.exists():
+                with open(str(meta_path), "r", encoding="utf-8") as f:
+                    n = sum(1 for line in f if line.strip())
+                if max_samples_per_chunk > 0:
+                    n = min(n, max_samples_per_chunk)
+                total_samples += n
+        
+        if total_samples > 0:
+            steps_per_epoch = total_samples // (batch_size * accumulation_steps)
+            estimated_total_steps = steps_per_epoch * num_epochs
+            new_t_max = max(estimated_total_steps - self._warmup_steps, 500)  # minimum 500
+            
+            # Reconfigure cosine scheduler T_max (ghi đè giá trị từ checkpoint nếu có)
+            self.scheduler.schedulers[1].T_max = new_t_max
+            logger.info(f"  📐 LR Scheduler: warmup={self._warmup_steps} → cosine T_max={new_t_max} (est. {estimated_total_steps} total optimizer steps)")
         
         logger.info(f"  📊 Training: {num_epochs} epochs × {len(chunk_dirs)} chunk(s)")
         logger.info(f"  📊 Max samples/chunk: {max_samples_per_chunk if max_samples_per_chunk > 0 else 'ALL'}")
