@@ -185,8 +185,8 @@ class HairInpaintingDataset(Dataset):
         # Giới hạn dataset size nếu cần
         if max_samples > 0 and len(self.metadata) > max_samples:
             before_limit = len(self.metadata)
-            random.seed(42)  # Reproducible subset
-            self.metadata = random.sample(self.metadata, max_samples)
+            rng = random.Random(42)  # Local RNG — không ảnh hưởng global random state
+            self.metadata = rng.sample(self.metadata, max_samples)
             logger.info(f"📉 Dataset giảm xuống {max_samples} samples (từ {before_limit} hợp lệ)")
         
         # Pre-encode text prompts nếu Text Encoder được cung cấp
