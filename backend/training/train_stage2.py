@@ -1114,13 +1114,16 @@ class Stage2Trainer:
             texture_encoder.requires_grad_(False)
         
         if text_encoder or texture_encoder:
-            for i, chunk_dir in enumerate(chunk_dirs):
+            chunk_pbar = tqdm(enumerate(chunk_dirs), total=len(chunk_dirs), desc="Pre-caching chunks")
+            for i, chunk_dir in chunk_pbar:
+                chunk_pbar.set_postfix({"chunk": chunk_dir.name})
                 logger.info(f"  📂 Caching chunk {i+1}/{len(chunk_dirs)}: {chunk_dir.name}")
                 _ = HairInpaintingDataset(
                     chunk_dir, text_encoder=text_encoder, texture_encoder=texture_encoder,
                     target_size=target_size, max_samples=max_samples_per_chunk
                 )
                 del _
+            chunk_pbar.close()
             
             if text_encoder:
                 text_encoder.unload()
