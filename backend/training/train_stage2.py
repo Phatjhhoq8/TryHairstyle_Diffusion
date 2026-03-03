@@ -1359,7 +1359,7 @@ class Stage2Trainer:
             new_t_max = max(estimated_total_steps - self._warmup_steps, 500)  # minimum 500
             
             # Reconfigure cosine scheduler T_max (ghi đè giá trị từ checkpoint nếu có)
-            self.scheduler.schedulers[1].T_max = new_t_max
+            self.scheduler._schedulers[1].T_max = new_t_max
             logger.info(f"  📐 LR Scheduler: warmup={self._warmup_steps} → cosine T_max={new_t_max} (est. {estimated_total_steps} total optimizer steps)")
         
         logger.info(f"  📊 Training: {num_epochs} epochs × {len(chunk_dirs)} chunk(s)")
