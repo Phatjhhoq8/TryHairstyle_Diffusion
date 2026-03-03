@@ -1084,20 +1084,28 @@ class Stage2Trainer:
             style_cache_dir = chunk_dir / "style_embeddings_cache"
             
             with open(str(meta_path), "r", encoding="utf-8") as f:
-                for line in f:
-                    if not line.strip(): continue
-                    item = json.loads(line.strip())
-                    img_id = item['id']
-                    if not needs_text:
-                        cf = cache_dir / f"{img_id}.pt"
-                        cf2 = cache_dir / f"{img_id.replace('_', '-')}.pt"
-                        if not cf.exists() and not cf2.exists():
-                            needs_text = True
-                    if not needs_style:
-                        if not (style_cache_dir / f"{img_id}.npy").exists():
-                            needs_style = True
-                    if needs_text and needs_style:
-                        break
+                all_items = [json.loads(line.strip()) for line in f if line.strip()]
+            
+            # Khi max_samples > 0 (smoke test): chỉ kiểm tra samples sẽ thực sự dùng
+            # Dùng cùng seed 42 và logic random.sample giống HairInpaintingDataset
+            if max_samples_per_chunk > 0 and len(all_items) > max_samples_per_chunk:
+                rng = random.Random(42)
+                check_items = rng.sample(all_items, max_samples_per_chunk)
+            else:
+                check_items = all_items
+            
+            for item in check_items:
+                img_id = item['id']
+                if not needs_text:
+                    cf = cache_dir / f"{img_id}.pt"
+                    cf2 = cache_dir / f"{img_id.replace('_', '-')}.pt"
+                    if not cf.exists() and not cf2.exists():
+                        needs_text = True
+                if not needs_style:
+                    if not (style_cache_dir / f"{img_id}.npy").exists():
+                        needs_style = True
+                if needs_text and needs_style:
+                    break
             if needs_text and needs_style:
                 break
         
