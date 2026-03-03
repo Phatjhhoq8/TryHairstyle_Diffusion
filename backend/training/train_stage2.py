@@ -1,4 +1,8 @@
 import os
+
+# Giảm memory fragmentation trên T4/Colab — PyTorch sẽ dùng expandable segments
+# thay vì allocate block cố định, tránh tình trạng "reserved but unallocated"
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import sys
 import json
 import time
@@ -560,6 +564,9 @@ class Stage2Trainer:
         masked_latents = self._encode_to_latents(masked_images)
         del masked_images  # Free ngay sau khi encode xong
         masks_latent = F.interpolate(masks, size=latents.shape[-2:], mode='nearest')
+        # Free pixel-space tensors — chỉ cần latent-space cho UNet forward
+        # gt_images/masks/masks_pixel sẽ re-load từ batch nếu cần ở step 200
+        del gt_images, masks, masks_pixel
         torch.cuda.empty_cache()  # Reclaim fragmented memory trước UNet forward
         
         # ==========================================
@@ -574,6 +581,7 @@ class Stage2Trainer:
         
         # Thêm noise theo scheduler chuẩn diffusion
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
+        del latents  # Free — noise target là `noise`, không cần `latents` nữa
         
         # ==========================================
         # CONDITIONING (thực)
@@ -628,6 +636,11 @@ class Stage2Trainer:
         if global_step % 200 == 0 and global_step > 0:
             try:
                 with torch.amp.autocast('cuda', dtype=torch.float16):
+                    # Re-load pixel tensors từ batch (đã free ở trên để tiết kiệm VRAM)
+                    gt_images = batch['image'].to(DEVICE)
+                    masks = batch['mask'].to(DEVICE)
+                    masks_pixel = F.interpolate(masks, size=gt_images.shape[-2:], mode='nearest')
+                    
                     # Ước tính denoised output (x0 prediction) — RIÊNG cho mỗi sample trong batch
                     alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(DEVICE)
                     alpha_prod_t = alphas_cumprod[timesteps]  # (B,)
