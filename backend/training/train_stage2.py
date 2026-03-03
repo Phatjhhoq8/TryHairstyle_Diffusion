@@ -239,7 +239,16 @@ class HairInpaintingDataset(Dataset):
         style_cache_dir = data_dir / "style_embeddings_cache"
         
         if texture_encoder is not None:
-            ensureDir(str(style_cache_dir))
+            try:
+                ensureDir(str(style_cache_dir))
+            except OSError as e:
+                logger.error(f"❌ Không thể tạo style cache dir: {e}")
+                raise RuntimeError(
+                    f"Không thể tạo thư mục cache '{style_cache_dir}'. "
+                    f"Kiểm tra quyền ghi trên Drive hoặc symlink."
+                ) from e
+            
+        if texture_encoder is not None:
             logger.info(f"Pre-extracting style embeddings cho {len(self.metadata)} samples...")
             
             style_transform = transforms.Compose([

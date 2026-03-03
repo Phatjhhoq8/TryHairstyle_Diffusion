@@ -163,14 +163,28 @@ def normalizeEmbedding(embedding):
     return embedding / norm
 
 
-def ensureDir(dirPath):
+def ensureDir(dirPath, retries=3, delay=2):
     """
     Tạo thư mục nếu chưa tồn tại.
+    Resolve symlinks trước để tránh lỗi trên Google Drive FUSE (Colab).
+    Retry nếu Drive FUSE bị timeout tạm thời.
     
     Args:
         dirPath: Đường dẫn thư mục
+        retries: Số lần thử lại nếu lỗi (default=3)
+        delay: Giây chờ giữa mỗi lần thử (default=2)
     """
-    os.makedirs(str(dirPath), exist_ok=True)
+    import time
+    resolved = os.path.realpath(str(dirPath))
+    for attempt in range(retries):
+        try:
+            os.makedirs(resolved, exist_ok=True)
+            return
+        except OSError as e:
+            if attempt < retries - 1:
+                time.sleep(delay)
+            else:
+                raise
 
 
 def cropFaceFromImage(image, bbox, margin=0.2):
