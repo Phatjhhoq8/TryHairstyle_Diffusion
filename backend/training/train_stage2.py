@@ -443,12 +443,11 @@ class Stage2Trainer:
         self.identity_loss = IdentityCosineLoss().to(DEVICE)
         self.texture_loss = TextureConsistencyLoss().to(DEVICE)
         
-        # 5a. Face Feature Extractor (frozen) — dùng cho Identity Cosine Loss thực
-        # Trích xuất face embedding từ decoded image để so sánh với GT
-        logger.info("  → Loading Face Feature Extractor (frozen, cho Identity Loss)...")
-        self.face_extractor = FaceFeatureExtractor(device=str(DEVICE)).to(DEVICE)
-        self.face_extractor.eval()
-        self.face_extractor.requires_grad_(False)
+        # 5a. Face Feature Extractor — LAZY LOAD
+        # Được load ON-DEMAND mỗi 200 steps rồi xóa ngay để tiết kiệm VRAM.
+        # Trên T4 (14.56GB), giữ ResNet50 permanent sẽ gây OOM.
+        self.face_extractor = None  # Lazy-loaded in train_step
+        logger.info("  → Face Feature Extractor: LAZY mode (load mỗi 200 steps)")
         
         # 5. Optimizer — 8-bit AdamW để tiết kiệm ~2.5GB VRAM
         train_params = list(self.unet.parameters()) + list(self.injector.parameters())
@@ -550,7 +549,7 @@ class Stage2Trainer:
         masks = batch['mask'].to(DEVICE)
         
         # ==========================================
-        # VAE ENCODE (thực)
+        # VAE ENCODE (thực) — sequential + aggressive cleanup
         # ==========================================
         latents = self._encode_to_latents(gt_images)
         
@@ -559,7 +558,9 @@ class Stage2Trainer:
         masks_pixel = F.interpolate(masks, size=gt_images.shape[-2:], mode='nearest')
         masked_images = gt_images * (1.0 - masks_pixel)
         masked_latents = self._encode_to_latents(masked_images)
+        del masked_images  # Free ngay sau khi encode xong
         masks_latent = F.interpolate(masks, size=latents.shape[-2:], mode='nearest')
+        torch.cuda.empty_cache()  # Reclaim fragmented memory trước UNet forward
         
         # ==========================================
         # NOISE SCHEDULING (thực)
@@ -628,7 +629,6 @@ class Stage2Trainer:
             try:
                 with torch.amp.autocast('cuda', dtype=torch.float16):
                     # Ước tính denoised output (x0 prediction) — RIÊNG cho mỗi sample trong batch
-                    # Fix: tính alpha_prod_t per-sample thay vì chỉ dùng timesteps[0]
                     alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(DEVICE)
                     alpha_prod_t = alphas_cumprod[timesteps]  # (B,)
                     sqrt_alpha = (alpha_prod_t ** 0.5).view(-1, 1, 1, 1)  # (B, 1, 1, 1)
@@ -642,23 +642,30 @@ class Stage2Trainer:
                     loss_tex = self.texture_loss(decoded_img, gt_images)
                     loss_tex_val = loss_tex.item()
                     
-                    # Identity Loss — Cosine Embedding thực trên face embeddings
-                    # Trích xuất face embedding từ ảnh decoded và ảnh gốc
-                    # FaceFeatureExtractor crop vùng mặt (inverse mask) → backbone → 512-dim embedding
+                    # Identity Loss — Lazy load FaceFeatureExtractor
+                    # Load ON-DEMAND rồi xóa ngay để tiết kiệm VRAM
+                    face_extractor = FaceFeatureExtractor(device=str(DEVICE)).to(DEVICE)
+                    face_extractor.eval()
+                    face_extractor.requires_grad_(False)
+                    
                     gt_images_resized = F.interpolate(gt_images, size=decoded_img.shape[-2:], mode='bilinear', align_corners=False) if gt_images.shape[-2:] != decoded_img.shape[-2:] else gt_images
                     masks_for_face = F.interpolate(masks_pixel[:, :1], size=decoded_img.shape[-2:], mode='nearest') if masks_pixel.shape[-2:] != decoded_img.shape[-2:] else masks_pixel[:, :1]
                     
-                    gen_face_embeds = self.face_extractor(decoded_img, masks_for_face)
-                    target_face_embeds = self.face_extractor(gt_images_resized, masks_for_face)
+                    gen_face_embeds = face_extractor(decoded_img, masks_for_face)
+                    target_face_embeds = face_extractor(gt_images_resized, masks_for_face)
                     loss_id = self.identity_loss(gen_face_embeds.float(), target_face_embeds.float())
                     loss_id_val = loss_id.item()
+                    
+                    # Xóa face_extractor ngay lập tức
+                    del face_extractor, gen_face_embeds, target_face_embeds
+                    del gt_images_resized, masks_for_face, decoded_img, pred_original
+                    torch.cuda.empty_cache()
                 
                 # Cộng auxiliary losses NGOÀI autocast (đã ở fp32)
-                # Chỉ cộng nếu loss đã được tính thành công (không None)
                 if loss_tex is not None:
                     total_loss = total_loss + 0.01 * loss_tex.float()
                 if loss_id is not None:
-                    total_loss = total_loss + 0.05 * loss_id.float()  # Weight cao hơn texture vì bảo vệ danh tính quan trọng
+                    total_loss = total_loss + 0.05 * loss_id.float()
                     
             except RuntimeError as e:
                 if "out of memory" in str(e):
