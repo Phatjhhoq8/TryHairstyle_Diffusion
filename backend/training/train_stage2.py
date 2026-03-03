@@ -415,20 +415,21 @@ class Stage2Trainer:
     """
     def __init__(self):
         from diffusers import AutoencoderKL, DDPMScheduler
+        from peft import LoraConfig, get_peft_model
         
-        logger.info("Khởi tạo Stage 2 Trainer: SDXL Mask-Conditioned Inpainting")
+        logger.info("Khởi tạo Stage 2 Trainer: SDXL LoRA Inpainting ")
         
-        # 1. Load VAE (frozen, chỉ encode/decode)
-        logger.info("  → Loading VAE (fp16, frozen)...")
+        # 1. Load VAE (frozen, FP16) → CPU offload để tiết kiệm ~0.3GB VRAM
+        logger.info("  → Loading VAE (fp16, frozen, CPU offload)...")
         self.vae = AutoencoderKL.from_pretrained(
             LOCAL_SDXL_PATH, subfolder="vae", torch_dtype=torch.float16
-        ).to(DEVICE).eval()
+        ).eval()
         self.vae.requires_grad_(False)
         self.vae_scale_factor = self.vae.config.scaling_factor  # 0.13025 cho SDXL
-        
-        # VAE slicing + tiling để giảm peak VRAM khi encode/decode
         self.vae.enable_slicing()
-        self.vae.enable_tiling()  # Chia ảnh thành tiles nhỏ → giảm ~100-200MB peak
+        self.vae.enable_tiling()
+        self.vae.to('cpu')  # CPU offload — move lên GPU khi cần encode/decode
+        logger.info("  → VAE loaded → CPU (sẽ move lên GPU on-demand)")
         
         # 2. Load Noise Scheduler
         logger.info("  → Loading DDPMScheduler...")
@@ -436,61 +437,81 @@ class Stage2Trainer:
             LOCAL_SDXL_PATH, subfolder="scheduler"
         )
         
-        # 3. Load UNet 9-channel + CrossAttention Injector
-        # Load FP16 trước, rồi convert sang FP32 cho training.
-        # GradScaler (AMP) yêu cầu master weights ở FP32 — autocast sẽ tự cast FP16 trong forward pass.
-        logger.info("  → Loading UNet 9-channel (fp16 → fp32 for training)...")
-        self.unet = HairInpaintingUNet().to(DEVICE).float()  # FP16 → FP32
-        self.injector = CrossAttentionInjector(self.unet.unet, style_dim=2048).to(DEVICE).float()  # style=2048 từ Stage 1
+        # 3. Load UNet 9-channel (FP16 frozen) + LoRA adapters
+        # KHÔNG gọi .float() — giữ FP16 cho frozen weights (~5GB thay vì ~10GB)
+        logger.info("  → Loading UNet 9-channel (fp16 frozen + LoRA r=16)...")
+        self.unet = HairInpaintingUNet().to(DEVICE)  # FP16 trên GPU
+        
+        # 3a. Apply LoRA — chỉ train tiny adapters thay vì toàn bộ 2.6B params
+        lora_config = LoraConfig(
+            r=16,                    # Rank 16 — cân bằng quality / VRAM
+            lora_alpha=16,           # Alpha = rank → scaling = 1.0
+            target_modules=["to_q", "to_k", "to_v", "to_out.0"],
+            lora_dropout=0.05,
+            bias="none",
+        )
+        self.unet.unet = get_peft_model(self.unet.unet, lora_config)
+        
+        # 3b. Unfreeze conv_in (9-channel layer mới, cần train)
+        self.unet.unet.base_model.model.conv_in.requires_grad_(True)
+        self.unet.unet.base_model.model.conv_in.float()  # FP32 cho training precision
+        
+        # Log trainable params
+        trainable_n = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
+        total_n = sum(p.numel() for p in self.unet.parameters())
+        logger.info(f"  → LoRA: {trainable_n:,} trainable / {total_n:,} total ({100*trainable_n/total_n:.2f}%)")
+        
+        # 3c. CrossAttention Injector (FP32, train toàn bộ — rất nhỏ ~50MB)
+        self.injector = CrossAttentionInjector(
+            self.unet.unet.base_model.model, style_dim=2048
+        ).to(DEVICE).float()
         
         # 4. Khởi tạo Loss Functions
         self.mask_aware_loss = MaskAwareLoss(loss_type='l2').to(DEVICE)
         self.identity_loss = IdentityCosineLoss().to(DEVICE)
-        # TextureConsistencyLoss (VGG16 ~0.5GB) → LAZY LOAD mỗi 200 steps
-        # Không giữ permanent trong VRAM để tiết kiệm cho UNet forward
-        self.texture_loss = None
-        logger.info("  → TextureConsistencyLoss: LAZY mode (load mỗi 200 steps, tiết kiệm ~0.5GB)")
-        
-        # 5a. Face Feature Extractor — LAZY LOAD
-        # Được load ON-DEMAND mỗi 200 steps rồi xóa ngay để tiết kiệm VRAM.
-        # Trên T4 (14.56GB), giữ ResNet50 permanent sẽ gây OOM.
-        self.face_extractor = None  # Lazy-loaded in train_step
+        self.texture_loss = None  # LAZY LOAD mỗi 200 steps
+        logger.info("  → TextureConsistencyLoss: LAZY mode (load mỗi 200 steps)")
+        self.face_extractor = None  # LAZY LOAD
         logger.info("  → Face Feature Extractor: LAZY mode (load mỗi 200 steps)")
         
-        # 5. Optimizer — 8-bit AdamW để tiết kiệm ~2.5GB VRAM
-        train_params = list(self.unet.parameters()) + list(self.injector.parameters())
+        # 5. Optimizer — CHỈ train LoRA + conv_in + Injector
+        self._trainable_params = (
+            [p for p in self.unet.parameters() if p.requires_grad]
+            + list(self.injector.parameters())
+        )
+        n_train = sum(p.numel() for p in self._trainable_params)
+        logger.info(f"  → Total trainable (LoRA+conv_in+Injector): {n_train:,} params")
+        
         try:
             import bitsandbytes as bnb
             self.optimizer = bnb.optim.AdamW8bit(
-                train_params,
-                lr=1e-5,
-                weight_decay=1e-2
+                self._trainable_params, lr=1e-5, weight_decay=1e-2
             )
-            logger.info("  → Sử dụng 8-bit AdamW (bitsandbytes) — tiết kiệm ~2.5GB VRAM")
+            logger.info("  → 8-bit AdamW cho LoRA + Injector")
         except ImportError:
             self.optimizer = torch.optim.AdamW(
-                train_params,
-                lr=1e-5,
-                weight_decay=1e-2
+                self._trainable_params, lr=1e-5, weight_decay=1e-2
             )
-            logger.warning("  → bitsandbytes chưa cài, dùng AdamW 32-bit (tốn VRAM hơn). Chạy: pip install bitsandbytes")
+            logger.warning("  → bitsandbytes chưa cài, dùng AdamW 32-bit")
         
         # 6. AMP Mixed Precision Scaler
         self.scaler = torch.amp.GradScaler('cuda')
         
         # 7. Learning Rate Scheduler — Warmup + Cosine Decay
-        # T_max sẽ được reconfigure trong train_loop() dựa trên dataset size thực tế
         from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
         self._warmup_steps = 100
         warmup_scheduler = LinearLR(self.optimizer, start_factor=0.1, total_iters=self._warmup_steps)
-        cosine_scheduler = CosineAnnealingLR(self.optimizer, T_max=2000, eta_min=1e-7)  # placeholder, reconfigured later
-        self.scheduler = SequentialLR(self.optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[self._warmup_steps])
+        cosine_scheduler = CosineAnnealingLR(self.optimizer, T_max=2000, eta_min=1e-7)
+        self.scheduler = SequentialLR(
+            self.optimizer, schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[self._warmup_steps]
+        )
         
-        # 7. Tạo thư mục checkpoints
+        # 8. Tạo thư mục checkpoints
         self.checkpoints_dir = PROJECT_DIR / "backend" / "training" / "checkpoints"
         ensureDir(str(self.checkpoints_dir))
         
-        logger.info("Trainer khởi tạo thành công. VRAM sử dụng:")
+        logger.info("Trainer khởi tạo thành công (LoRA mode). VRAM sử dụng:")
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
             reserved = torch.cuda.memory_reserved() / 1024**3
@@ -498,40 +519,63 @@ class Stage2Trainer:
         
     @torch.no_grad()
     def _encode_to_latents(self, images: torch.Tensor) -> torch.Tensor:
-        """Encode ảnh RGB tensor sang latent space qua VAE."""
-        # VAE cần fp16 input
+        """Encode ảnh RGB tensor sang latent space qua VAE (CPU↔GPU offload)."""
+        self.vae.to(DEVICE)
         latents = self.vae.encode(images.to(self.vae.dtype)).latent_dist.sample()
         latents = latents * self.vae_scale_factor
-        return latents.float()  # Trả về float32 cho training
+        self.vae.to('cpu')
+        torch.cuda.empty_cache()
+        return latents.float()
     
     def _decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """Decode latents về RGB image qua VAE (cho Identity/Texture Loss).
-        Sử dụng straight-through estimator để gradient flow ngược về UNet
-        MÀ KHÔNG CẦN gradient qua frozen VAE weights.
-        
-        Trick: decode với no_grad, sau đó gắn gradient path qua latents.
-        Khi backward: d(output)/d(latents) ≈ 1 → gradient chảy về UNet.
-        """
-        # Bước 1: Decode bình thường (no_grad — không tốn thêm VRAM)
+        """Decode latents về RGB image qua VAE (CPU↔GPU offload + straight-through estimator)."""
         with torch.no_grad():
+            self.vae.to(DEVICE)
             latents_input = (latents / self.vae_scale_factor).to(self.vae.dtype)
             decoded_no_grad = self.vae.decode(latents_input).sample.float()
+            self.vae.to('cpu')
+            torch.cuda.empty_cache()
         
-        # Bước 2: Straight-through estimator — gắn gradient path qua latents
-        # decoded_no_grad không có grad, nhưng latents có grad (từ UNet)
-        # Trick: cộng (latents - latents.detach()) → value = 0 nhưng gradient = 1
-        # → PyTorch tạo computation graph kết nối output → latents → UNet
+        # Straight-through estimator — gradient flow về UNet qua latents
         latents_for_grad = latents / self.vae_scale_factor
         decoded = decoded_no_grad + (latents_for_grad - latents_for_grad.detach())
-        
         return decoded
     
     @torch.no_grad()
     def _decode_latents_no_grad(self, latents: torch.Tensor) -> torch.Tensor:
-        """Decode latents về RGB (frozen, dùng cho validation/visualize — KHÔNG cần gradient)."""
+        """Decode latents về RGB (validation, CPU↔GPU offload)."""
+        self.vae.to(DEVICE)
         latents_input = (latents / self.vae_scale_factor).to(self.vae.dtype)
         decoded = self.vae.decode(latents_input).sample
+        self.vae.to('cpu')
+        torch.cuda.empty_cache()
         return decoded.float()
+    
+    def _get_lora_state_dict(self):
+        """Lấy LoRA adapter weights + conv_in weights để save checkpoint."""
+        from peft import get_peft_model_state_dict
+        lora_weights = dict(get_peft_model_state_dict(self.unet.unet))
+        # Thêm conv_in weights (9-channel layer, train riêng)
+        for k, v in self.unet.unet.base_model.model.conv_in.state_dict().items():
+            lora_weights[f"conv_in.{k}"] = v
+        return lora_weights
+    
+    def _load_lora_weights(self, path):
+        """Load LoRA + conv_in weights từ checkpoint."""
+        from safetensors.torch import load_file as load_safetensors
+        from peft import set_peft_model_state_dict
+        state_dict = load_safetensors(str(path))
+        conv_in_state = {}
+        lora_state = {}
+        for k, v in state_dict.items():
+            if k.startswith("conv_in."):
+                conv_in_state[k[len("conv_in."):]] = v
+            else:
+                lora_state[k] = v
+        set_peft_model_state_dict(self.unet.unet, lora_state)
+        if conv_in_state:
+            self.unet.unet.base_model.model.conv_in.load_state_dict(conv_in_state)
+        logger.info(f"  → LoRA + conv_in loaded từ {Path(path).name}")
         
     def train_step(self, batch, global_step: int, accumulation_steps: int = 8):
         """
@@ -712,7 +756,7 @@ class Stage2Trainer:
         if (global_step + 1) % accumulation_steps == 0:
             self.scaler.unscale_(self.optimizer)
             torch.nn.utils.clip_grad_norm_(
-                list(self.unet.parameters()) + list(self.injector.parameters()),
+                self._trainable_params,  # Chỉ LoRA + conv_in + Injector
                 max_norm=1.0
             )
             self.scaler.step(self.optimizer)
@@ -1015,47 +1059,45 @@ class Stage2Trainer:
 
     def _save_checkpoint(self, suffix: str, is_best: bool = False):
         """
-        Lưu checkpoint UNet + Injector.
-        Chiến lược tiết kiệm dung lượng: CHỈ GIỮ file BEST.
-        File epoch/step chỉ lưu tạm, xóa ngay sau khi best được cập nhật.
+        Lưu LoRA checkpoint (tiny ~50MB thay vì ~5GB full UNet).
+        Chiến lược: CHỈ GIỮ file BEST + backup.
         """
         if is_best:
-            # Lưu trực tiếp vào file best (không lưu epoch/step riêng để tiết kiệm disk)
-            best_unet = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
+            best_lora = self.checkpoints_dir / "lora_best.safetensors"
             best_inj = self.checkpoints_dir / "injector_best.safetensors"
-            logger.info(f"🏆 Saving BEST model ({suffix})...")
-            self._save_safetensors_safe(self.unet.state_dict(), str(best_unet))
+            logger.info(f"🏆 Saving BEST LoRA model ({suffix})...")
+            self._save_safetensors_safe(self._get_lora_state_dict(), str(best_lora))
             self._save_safetensors_safe(self.injector.state_dict(), str(best_inj))
             
-            # Verify
-            if best_unet.exists() and best_inj.exists():
-                logger.info(f"✅ BEST files verified: {best_unet.name} + {best_inj.name}")
+            if best_lora.exists() and best_inj.exists():
+                logger.info(f"✅ BEST files verified: {best_lora.name} + {best_inj.name}")
             else:
                 logger.error(f"❌ BEST files MISSING! Kiểm tra quyền ghi: {self.checkpoints_dir}")
         else:
-            # Không phải best → lưu tạm 1 file backup (ghi đè mỗi lần)
-            # Mục đích: nếu training crash, có thể resume từ backup này
-            backup_unet = self.checkpoints_dir / "stage2_backup.safetensors"
+            backup_lora = self.checkpoints_dir / "lora_backup.safetensors"
             backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
-            self._save_safetensors_safe(self.unet.state_dict(), str(backup_unet))
+            self._save_safetensors_safe(self._get_lora_state_dict(), str(backup_lora))
             self._save_safetensors_safe(self.injector.state_dict(), str(backup_inj))
         
-        # Dọn dẹp: xóa file step/epoch cũ (chỉ giữ best + backup)
-        # Trên Colab: checkpoints/ symlink → Drive, nên KHÔNG xóa epoch files (giữ hết trên Drive)
+        # Dọn dẹp: chỉ giữ LoRA files + legacy files
         keep_names = {
-            "deep_hair_v1_best.safetensors",
-            "injector_best.safetensors", 
-            "stage2_backup.safetensors",
+            "lora_best.safetensors",
+            "injector_best.safetensors",
+            "lora_backup.safetensors",
             "injector_backup.safetensors",
-            "deep_hair_v1_latest.safetensors",
+            "lora_latest.safetensors",
             "injector_latest.safetensors",
-            "deep_hair_v1.safetensors",  # file export đã có sẵn
-            "training_history.json",     # training history
+            # Legacy (backward compat)
+            "deep_hair_v1_best.safetensors",
+            "deep_hair_v1_latest.safetensors",
+            "deep_hair_v1.safetensors",
+            "texture_encoder_best.safetensors",
+            "texture_encoder_latest.safetensors",
+            "training_history.json",
         }
         for p in self.checkpoints_dir.glob("*.safetensors"):
             if p.name in keep_names:
                 continue
-            # Trên Colab: giữ lại epoch files (deep_hair_v1_epoch_*.safetensors, injector_epoch_*.safetensors)
             if IS_COLAB and ("_epoch_" in p.name):
                 continue
             try:
@@ -1074,10 +1116,10 @@ class Stage2Trainer:
             return
         
         try:
-            # 1. Lưu epoch checkpoint trực tiếp (checkpoints/ đã symlink → Drive)
-            epoch_unet = self.checkpoints_dir / f"deep_hair_v1_epoch_{epoch}.safetensors"
+            # 1. Lưu LoRA epoch checkpoint trực tiếp
+            epoch_lora = self.checkpoints_dir / f"lora_epoch_{epoch}.safetensors"
             epoch_inj = self.checkpoints_dir / f"injector_epoch_{epoch}.safetensors"
-            self._save_safetensors_safe(self.unet.state_dict(), str(epoch_unet))
+            self._save_safetensors_safe(self._get_lora_state_dict(), str(epoch_lora))
             self._save_safetensors_safe(self.injector.state_dict(), str(epoch_inj))
             
             # 2. Lưu training history JSON (cập nhật mỗi epoch)
@@ -1210,40 +1252,40 @@ class Stage2Trainer:
         """Load full training state để resume. Returns dict hoặc None."""
         state_path = self.checkpoints_dir / "training_state.pth"
         if not state_path.exists():
-            # Fallback: chỉ load model weights (backward compat)
-            best_unet = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
+            # Fallback: chỉ load LoRA weights (backward compat)
+            best_lora = self.checkpoints_dir / "lora_best.safetensors"
             best_inj = self.checkpoints_dir / "injector_best.safetensors"
-            backup_unet = self.checkpoints_dir / "stage2_backup.safetensors"
+            backup_lora = self.checkpoints_dir / "lora_backup.safetensors"
             backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
-            load_unet = best_unet if best_unet.exists() else (backup_unet if backup_unet.exists() else None)
+            load_lora = best_lora if best_lora.exists() else (backup_lora if backup_lora.exists() else None)
             load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
-            if load_unet and load_inj:
+            if load_lora and load_inj:
                 from safetensors.torch import load_file as load_safetensors
                 try:
-                    self.unet.load_state_dict(load_safetensors(str(load_unet)))
+                    self._load_lora_weights(str(load_lora))
                     self.injector.load_state_dict(load_safetensors(str(load_inj)))
-                    logger.info(f"🔄 [RESUME] Model weights loaded: {load_unet.name} + {load_inj.name}")
+                    logger.info(f"🔄 [RESUME] LoRA weights loaded: {load_lora.name} + {load_inj.name}")
                     logger.warning("  ⚠️ Không có training_state.pth — optimizer/scheduler bắt đầu lại")
                 except Exception as e:
-                    logger.error(f"❌ Lỗi load model weights: {e}")
+                    logger.error(f"❌ Lỗi load LoRA weights: {e}")
             return None
         
         try:
             state = torch.load(str(state_path), map_location=DEVICE, weights_only=False)
             
-            # Restore model weights
-            best_unet = self.checkpoints_dir / "deep_hair_v1_best.safetensors"
+            # Restore LoRA + Injector weights
+            best_lora = self.checkpoints_dir / "lora_best.safetensors"
             best_inj = self.checkpoints_dir / "injector_best.safetensors"
-            backup_unet = self.checkpoints_dir / "stage2_backup.safetensors"
+            backup_lora = self.checkpoints_dir / "lora_backup.safetensors"
             backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
-            load_unet = best_unet if best_unet.exists() else (backup_unet if backup_unet.exists() else None)
+            load_lora = best_lora if best_lora.exists() else (backup_lora if backup_lora.exists() else None)
             load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
             
-            if load_unet and load_inj:
+            if load_lora and load_inj:
                 from safetensors.torch import load_file as load_safetensors
-                self.unet.load_state_dict(load_safetensors(str(load_unet)))
+                self._load_lora_weights(str(load_lora))
                 self.injector.load_state_dict(load_safetensors(str(load_inj)))
-                logger.info(f"  🔄 Model weights: {load_unet.name} + {load_inj.name}")
+                logger.info(f"  🔄 LoRA weights: {load_lora.name} + {load_inj.name}")
             
             # Restore optimizer, scheduler, scaler
             if "optimizer" in state:
@@ -1546,15 +1588,15 @@ class Stage2Trainer:
             self._plot_training_charts(loss_history, epoch + 1)
         
         # ==================================================
-        # FINAL: Save latest model
+        # FINAL: Save latest LoRA model
         # ==================================================
-        final_ckpt_path = self.checkpoints_dir / "deep_hair_v1_latest.safetensors"
-        self._save_safetensors_safe(self.unet.state_dict(), str(final_ckpt_path))
+        final_lora_path = self.checkpoints_dir / "lora_latest.safetensors"
+        self._save_safetensors_safe(self._get_lora_state_dict(), str(final_lora_path))
         final_inj_path = self.checkpoints_dir / "injector_latest.safetensors"
         self._save_safetensors_safe(self.injector.state_dict(), str(final_inj_path))
         
         # Xóa backup
-        for backup in ["stage2_backup.safetensors", "injector_backup.safetensors"]:
+        for backup in ["lora_backup.safetensors", "injector_backup.safetensors"]:
             bp = self.checkpoints_dir / backup
             if bp.exists():
                 try: bp.unlink()
@@ -1563,10 +1605,10 @@ class Stage2Trainer:
         total_size = sum(f.stat().st_size for f in self.checkpoints_dir.glob("*.safetensors"))
         
         logger.info(f"{'='*60}")
-        logger.info(f"✅ Hoàn thành Chunked Loading – Global Epoch Training!")
-        logger.info(f"  📁 Model cuối: {final_ckpt_path}")
-        logger.info(f"  🏆 Model tốt nhất: deep_hair_v1_best.safetensors (Epoch {best_epoch}, Val: {best_val_loss:.6f})")
-        logger.info(f"  💾 Tổng checkpoints: {total_size / (1024**3):.2f} GB")
+        logger.info(f"✅ Hoàn thành LoRA Training – Global Epoch!")
+        logger.info(f"  📁 LoRA cuối: {final_lora_path}")
+        logger.info(f"  🏆 LoRA tốt nhất: lora_best.safetensors (Epoch {best_epoch}, Val: {best_val_loss:.6f})")
+        logger.info(f"  💾 Tổng checkpoints: {total_size / (1024**2):.1f} MB")
         logger.info(f"  📂 Chunks trained: {len(chunk_dirs)}")
         logger.info(f"{'='*60}")
 
