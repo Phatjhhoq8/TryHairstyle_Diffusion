@@ -426,8 +426,9 @@ class Stage2Trainer:
         self.vae.requires_grad_(False)
         self.vae_scale_factor = self.vae.config.scaling_factor  # 0.13025 cho SDXL
         
-        # VAE slicing để giảm peak VRAM khi encode/decode ảnh 1024×1024
+        # VAE slicing + tiling để giảm peak VRAM khi encode/decode
         self.vae.enable_slicing()
+        self.vae.enable_tiling()  # Chia ảnh thành tiles nhỏ → giảm ~100-200MB peak
         
         # 2. Load Noise Scheduler
         logger.info("  → Loading DDPMScheduler...")
@@ -445,7 +446,10 @@ class Stage2Trainer:
         # 4. Khởi tạo Loss Functions
         self.mask_aware_loss = MaskAwareLoss(loss_type='l2').to(DEVICE)
         self.identity_loss = IdentityCosineLoss().to(DEVICE)
-        self.texture_loss = TextureConsistencyLoss().to(DEVICE)
+        # TextureConsistencyLoss (VGG16 ~0.5GB) → LAZY LOAD mỗi 200 steps
+        # Không giữ permanent trong VRAM để tiết kiệm cho UNet forward
+        self.texture_loss = None
+        logger.info("  → TextureConsistencyLoss: LAZY mode (load mỗi 200 steps, tiết kiệm ~0.5GB)")
         
         # 5a. Face Feature Extractor — LAZY LOAD
         # Được load ON-DEMAND mỗi 200 steps rồi xóa ngay để tiết kiệm VRAM.
@@ -614,6 +618,12 @@ class Stage2Trainer:
                 added_cond_kwargs=added_cond_kwargs
             )
             
+            # Free conditioning tensors ngay sau UNet forward — không cần cho backward
+            del encoder_hidden_states, added_cond_kwargs
+            del style_embeds, id_embeds, injected_conds
+            del text_embeds, pooled_text_embeds, time_ids
+            del masked_latents  # Không cần sau forward
+            
             # ==========================================
             # LOSS COMPUTATION
             # ==========================================
@@ -651,9 +661,13 @@ class Stage2Trainer:
                     # Decode để lấy ảnh tái tạo — KHÔNG detach để gradient flow về UNet
                     decoded_img = self._decode_latents(pred_original)
                     
-                    # Texture Loss — so sánh gram matrices giữa ảnh gốc và ảnh tái tạo
-                    loss_tex = self.texture_loss(decoded_img, gt_images)
+                    # Texture Loss — LAZY LOAD VGG16 rồi xóa ngay (tiết kiệm ~0.5GB)
+                    texture_loss_fn = TextureConsistencyLoss().to(DEVICE)
+                    texture_loss_fn.eval()
+                    texture_loss_fn.requires_grad_(False)
+                    loss_tex = texture_loss_fn(decoded_img, gt_images)
                     loss_tex_val = loss_tex.item()
+                    del texture_loss_fn  # Free VGG16 ngay lập tức
                     
                     # Identity Loss — Lazy load FaceFeatureExtractor
                     # Load ON-DEMAND rồi xóa ngay để tiết kiệm VRAM
