@@ -2,6 +2,7 @@ import os
 import sys
 import json
 import cv2
+import time
 import numpy as np
 import torch
 import torch.nn as nn
@@ -18,6 +19,10 @@ from backend.app.services.training_utils import setupLogger, getDevice, ensureDi
 
 logger = setupLogger("TrainStage1_Texture")
 DEVICE = getDevice()
+
+# Auto-detect Google Colab environment
+IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
+
 
 class HairTextureEncoder(nn.Module):
     """
@@ -163,6 +168,9 @@ class HairTextureDataset(Dataset):
         }
 
 class TextureEncoderTrainer:
+    # Lưu training state mỗi N steps để giảm mất mát khi disconnect
+    SAVE_EVERY_N_STEPS = 50
+    
     def __init__(self):
         logger.info("Khởi tạo Stage 1 Trainer: Hair Texture Encoder")
         self.model = HairTextureEncoder().to(DEVICE)
@@ -174,6 +182,11 @@ class TextureEncoderTrainer:
         self.criterion_contrastive = SupConLoss(temperature=0.07)
         
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=5e-4, weight_decay=1e-4)
+        
+        # Thư mục checkpoints
+        self.checkpoints_dir = PROJECT_DIR / "backend" / "training" / "checkpoints"
+        ensureDir(str(self.checkpoints_dir))
+
     
     def _save_safetensors_safe(self, state_dict, path: str):
         """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt."""
@@ -263,22 +276,123 @@ class TextureEncoderTrainer:
                 logger.info("  📁 Single processed/ directory (no chunks found)")
         return chunks
 
-    def train_loop(self, num_epochs=1, batch_size=4, max_samples=0, resume=False):
-        logger.info(f"Khởi động vòng lặp Training Stage 1 - {num_epochs} Epochs")
+    def _save_training_state(self, epoch, global_step, best_val_loss, best_epoch, loss_history, batch_index=-1):
+        """Save full training state cho Colab resume.
+        batch_index: index batch vừa train xong (-1 = epoch hoàn tất).
+        """
+        state = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_val_loss": best_val_loss,
+            "best_epoch": best_epoch,
+            "loss_history": loss_history,
+            "optimizer": self.optimizer.state_dict(),
+            "batch_index": batch_index,
+        }
+        state_path = self.checkpoints_dir / "stage1_training_state.pth"
+        torch.save(state, str(state_path))
+        batch_info = f", batch={batch_index}" if batch_index >= 0 else ""
+        logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}{batch_info}")
+    
+    def _load_training_state(self):
+        """Load full training state để resume. Returns dict hoặc None."""
+        state_path = self.checkpoints_dir / "stage1_training_state.pth"
         
-        if resume:
-            best_ckpt = PROJECT_DIR / "backend" / "training" / "checkpoints" / "texture_encoder_best.safetensors"
-            if best_ckpt.exists():
+        best_ckpt = self.checkpoints_dir / "texture_encoder_best.safetensors"
+        latest_ckpt = self.checkpoints_dir / "texture_encoder_latest.safetensors"
+        
+        if not state_path.exists():
+            # Fallback: chỉ load model weights (backward compat — không có training state)
+            # Ưu tiên best vì không biết latest ở trạng thái nào
+            load_ckpt = best_ckpt if best_ckpt.exists() else (latest_ckpt if latest_ckpt.exists() else None)
+            if load_ckpt:
                 from safetensors.torch import load_file as load_safetensors
                 try:
-                    self.model.load_state_dict(load_safetensors(str(best_ckpt)))
-                    logger.info(f"🔄 [RESUME] Đã tải trọng số từ {best_ckpt.name} để tiếp tục huấn luyện.")
+                    self.model.load_state_dict(load_safetensors(str(load_ckpt)))
+                    logger.info(f"🔄 [RESUME] Model weights loaded: {load_ckpt.name}")
+                    logger.warning("  ⚠️ Không có stage1_training_state.pth — optimizer bắt đầu lại")
                 except Exception as e:
-                    logger.error(f"❌ Không thể tải checkpoint {best_ckpt.name}: {e}")
-            else:
-                logger.warning("⚠️ Flag --resume được bật nhưng không tìm thấy checkpoint cũ. Bắt đầu train từ đầu.")
+                    logger.error(f"❌ Lỗi load model weights: {e}")
+            return None
         
-        # Tìm tất cả chunk directories (processed_001/, processed_002/,...) hoặc processed/
+        try:
+            state = torch.load(str(state_path), map_location=DEVICE, weights_only=False)
+            batch_index = state.get("batch_index", -1)
+            
+            # Khi có training_state.pth:
+            # - Mid-epoch (batch_index >= 0): ưu tiên LATEST (weights mới nhất, saved mỗi 50 steps)
+            # - End-epoch (batch_index == -1): ưu tiên BEST (model tốt nhất đã validate)
+            if batch_index >= 0:
+                load_ckpt = latest_ckpt if latest_ckpt.exists() else (best_ckpt if best_ckpt.exists() else None)
+            else:
+                load_ckpt = best_ckpt if best_ckpt.exists() else (latest_ckpt if latest_ckpt.exists() else None)
+            
+            if load_ckpt:
+                from safetensors.torch import load_file as load_safetensors
+                self.model.load_state_dict(load_safetensors(str(load_ckpt)))
+                logger.info(f"  🔄 Model weights: {load_ckpt.name}")
+            
+            # Restore optimizer
+            if "optimizer" in state:
+                self.optimizer.load_state_dict(state["optimizer"])
+                logger.info(f"  🔄 Optimizer state restored")
+            
+            return state
+        except Exception as e:
+            logger.error(f"❌ Lỗi load training state: {e}")
+            return None
+    
+    def _cleanup_mid_epoch_state(self):
+        """Xóa file training state trung gian khi epoch hoàn tất.
+        File state chỉ cần thiết để resume giữa epoch.
+        Sau khi epoch xong, model weights đã lưu vào latest/best."""
+        state_path = self.checkpoints_dir / "stage1_training_state.pth"
+        if state_path.exists():
+            try:
+                state_path.unlink()
+                logger.info("  🗑️ Đã xóa checkpoint trung gian: stage1_training_state.pth")
+            except Exception:
+                pass
+
+    def train_loop(self, num_epochs=1, batch_size=4, max_samples=0, resume=False):
+        logger.info(f"Khởi động vòng lặp Training Stage 1 - {num_epochs} Epochs")
+        logger.info(f"  💾 Checkpoint: mỗi {self.SAVE_EVERY_N_STEPS} steps + cuối epoch")
+        logger.info(f"  💾 Drive: {'LƯU TẤT CẢ epoch' if IS_COLAB else 'N/A'}")
+        
+        # ==================================================
+        # 1. RESUME FROM CHECKPOINT
+        # ==================================================
+        start_epoch = 0
+        global_step = 0
+        best_val_loss = float('inf')
+        best_epoch = -1
+        loss_history = {
+            'train_loss': [], 'val_loss': [], 'epoch_avg_train': [], 'epoch_avg_val': [],
+        }
+        resume_batch_index = -1  # -1 = bắt đầu epoch mới
+        
+        if resume:
+            loaded = self._load_training_state()
+            if loaded:
+                start_epoch = loaded['epoch']
+                global_step = loaded['global_step']
+                best_val_loss = loaded['best_val_loss']
+                best_epoch = loaded.get('best_epoch', -1)
+                loss_history = loaded.get('loss_history', loss_history)
+                resume_batch_index = loaded.get('batch_index', -1)
+                
+                if resume_batch_index >= 0:
+                    logger.info(f"🔄 [RESUME] Epoch {start_epoch+1}, Step {global_step}, Batch {resume_batch_index}, Best Val: {best_val_loss:.6f}")
+                    # Epoch chưa hoàn tất → giữ nguyên epoch để tiếp tục
+                else:
+                    logger.info(f"🔄 [RESUME] Epoch {start_epoch}, Step {global_step}, Best Val: {best_val_loss:.6f}")
+            elif not loaded:
+                # Fallback đã xử lý trong _load_training_state
+                pass
+        
+        # ==================================================
+        # 2. LOAD DATASET
+        # ==================================================
         data_dirs = self._discover_data_dirs()
         if not data_dirs:
             logger.error("❌ Dataset Trống! Không tìm thấy thư mục processed_NNN/ hoặc processed/.")
@@ -324,29 +438,63 @@ class TextureEncoderTrainer:
             generator=torch.Generator().manual_seed(42)  # Reproducible split (khớp với Stage 2)
         )
             
-        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
-        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False)
+        num_workers = 0 if os.name == 'nt' else 2
+        train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=num_workers, pin_memory=True)
+        val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers, pin_memory=True)
         
-        best_val_loss = float('inf')
-        best_epoch = -1
-        checkpoints_dir = PROJECT_DIR / "backend" / "training" / "checkpoints"
-        ensureDir(str(checkpoints_dir))
+        steps_per_epoch = len(train_loader)
+        logger.info(f"  📊 Training: {num_epochs} epochs × {steps_per_epoch} steps/epoch")
         
-        best_ckpt_path = None # Theo dõi file best để xóa cái cũ
+        best_ckpt_path = None  # Theo dõi file best để xóa cái cũ
         
-        global_step = 0
-        for epoch in range(num_epochs):
+        # ==================================================
+        # 3. TRAINING LOOP
+        # ==================================================
+        for epoch in range(start_epoch, num_epochs):
+            epoch_start = time.time()
+            
+            # Xác định batch cần skip khi resume giữa epoch
+            skip_until = 0
+            if resume_batch_index >= 0 and epoch == start_epoch:
+                skip_until = resume_batch_index + 1
+                logger.info(f"\n🔄 RESUME Epoch {epoch+1} — skip {skip_until} batches đã train")
+            
             # Training Phase
             self.model.train()
             train_losses = []
             pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]")
             for step, batch in enumerate(pbar):
+                # Skip batches đã train khi resume
+                if step < skip_until:
+                    continue
+                
                 loss = self.train_step(batch)
                 train_losses.append(loss)
-                pbar.set_postfix({"Loss": f"{loss:.4f}"})
+                loss_history['train_loss'].append(loss)
+                pbar.set_postfix({"Loss": f"{loss:.4f}", "Step": global_step})
                 global_step += 1
                 
+                # Lưu checkpoint trung gian mỗi N steps
+                if global_step % self.SAVE_EVERY_N_STEPS == 0:
+                    self._save_safetensors_safe(
+                        self.model.state_dict(),
+                        str(self.checkpoints_dir / "texture_encoder_latest.safetensors")
+                    )
+                    self._save_training_state(
+                        epoch=epoch, global_step=global_step,
+                        best_val_loss=best_val_loss, best_epoch=best_epoch,
+                        loss_history=loss_history, batch_index=step
+                    )
+            
+            # Reset resume state sau epoch đầu tiên
+            resume_batch_index = -1
+            
+            if not train_losses:
+                logger.warning(f"  ⚠️ Epoch {epoch+1} không có training data, bỏ qua.")
+                continue
+            
             avg_train_loss = sum(train_losses) / len(train_losses)
+            loss_history['epoch_avg_train'].append(avg_train_loss)
             
             # Validation Phase
             val_losses = []
@@ -356,16 +504,20 @@ class TextureEncoderTrainer:
                 val_losses.append(loss)
                 pbar_val.set_postfix({"Loss": f"{loss:.4f}"})
                 
-            avg_val_loss = sum(val_losses) / len(val_losses)
+            avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('inf')
+            loss_history['val_loss'].append(avg_val_loss)
+            loss_history['epoch_avg_val'].append(avg_val_loss)
+            
+            epoch_time = time.time() - epoch_start
             
             is_new_best = avg_val_loss < best_val_loss
             if is_new_best:
                 best_val_loss = avg_val_loss
                 best_epoch = epoch + 1
-                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Train Loss: {avg_train_loss:.4f} — Val Loss: {avg_val_loss:.4f}")
+                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Train: {avg_train_loss:.4f} — Val: {avg_val_loss:.4f} — Time: {epoch_time:.0f}s")
                 
                 # Tạo file best mới theo epoch
-                new_best_path = checkpoints_dir / f"texture_encoder_best_ep{epoch+1}.safetensors"
+                new_best_path = self.checkpoints_dir / f"texture_encoder_best_ep{epoch+1}.safetensors"
                 self._save_safetensors_safe(self.model.state_dict(), str(new_best_path))
                 
                 # Xóa file best cũ (chỉ giữ lại cái tốt nhất)
@@ -378,24 +530,36 @@ class TextureEncoderTrainer:
                 
                 best_ckpt_path = new_best_path
             else:
-                logger.info(f"Epoch {epoch+1} — Train Loss: {avg_train_loss:.4f} — Val Loss: {avg_val_loss:.4f} (Best: {best_val_loss:.4f} at Ep {best_epoch})")
+                logger.info(f"Epoch {epoch+1} — Train: {avg_train_loss:.4f} — Val: {avg_val_loss:.4f} — Time: {epoch_time:.0f}s (Best: {best_val_loss:.4f} at Ep {best_epoch})")
             
-            # Lưu file latest mỗi epoch (xóa qua đè lại liên tục)
-            latest_path = checkpoints_dir / "texture_encoder_latest.safetensors"
+            # Lưu file latest mỗi epoch
+            latest_path = self.checkpoints_dir / "texture_encoder_latest.safetensors"
             self._save_safetensors_safe(self.model.state_dict(), str(latest_path))
+            
+            # Lưu training state cuối epoch (batch_index=-1 = epoch hoàn tất)
+            self._save_training_state(
+                epoch=epoch + 1, global_step=global_step,
+                best_val_loss=best_val_loss, best_epoch=best_epoch,
+                loss_history=loss_history, batch_index=-1
+            )
+            
+            # ✅ Epoch hoàn tất → xóa checkpoint trung gian
+            self._cleanup_mid_epoch_state()
+            
             logger.info(f"💾 Checkpoint Epoch {epoch+1}{' ⭐ (BEST)' if is_new_best else ''}")
         
         # Kết thúc: copy file best hiện tại sang tên chuẩn để export/deploy
         if best_ckpt_path and best_ckpt_path.exists():
             import shutil
-            final_best_path = checkpoints_dir / "texture_encoder_best.safetensors"
+            final_best_path = self.checkpoints_dir / "texture_encoder_best.safetensors"
             shutil.copy2(str(best_ckpt_path), str(final_best_path))
         
-        logger.info(f"="*60)
+        logger.info(f"={'='*60}")
         logger.info(f"✅ Hoàn thành Training Stage 1!")
         logger.info(f"  🏆 Model tốt nhất (dùng để deploy): texture_encoder_best.safetensors (Epoch {best_epoch}, Val Loss: {best_val_loss:.4f})")
         logger.info(f"  📁 Model cuối cùng: texture_encoder_latest.safetensors")
-        logger.info(f"="*60)
+        logger.info(f"={'='*60}")
+
 
 if __name__ == "__main__":
     import argparse
