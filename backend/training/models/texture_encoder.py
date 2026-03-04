@@ -155,17 +155,32 @@ class HairTextureDataset(Dataset):
 
     def __getitem__(self, idx):
         patch_path = self.patch_paths[idx]
-        img = cv2.cvtColor(cv2.imread(patch_path), cv2.COLOR_BGR2RGB)
-        img = cv2.resize(img, self.target_size)
-        
-        # Nhãn thực từ metadata
         curl_label, volume_label = self.patch_labels[idx]
         
-        return {
-            "patch": self.img_transform(img),
-            "curl_label": torch.tensor(curl_label, dtype=torch.long),
-            "volume_label": torch.tensor(volume_label, dtype=torch.long)
-        }
+        # Thử đọc ảnh tối đa 3 lần (Drive FUSE có thể timeout tạm thời)
+        for attempt in range(3):
+            try:
+                raw = cv2.imread(patch_path)
+                if raw is None:
+                    raise ValueError(f"cv2.imread returned None: {patch_path}")
+                img = cv2.cvtColor(raw, cv2.COLOR_BGR2RGB)
+                img = cv2.resize(img, self.target_size)
+                return {
+                    "patch": self.img_transform(img),
+                    "curl_label": torch.tensor(curl_label, dtype=torch.long),
+                    "volume_label": torch.tensor(volume_label, dtype=torch.long)
+                }
+            except Exception:
+                if attempt < 2:
+                    import time
+                    time.sleep(0.5)  # Chờ 0.5s rồi thử lại
+        
+        # 3 lần đều thất bại → bỏ qua, lấy sample khác ngẫu nhiên
+        import random
+        new_idx = random.randint(0, len(self.patch_paths) - 1)
+        while new_idx == idx:
+            new_idx = random.randint(0, len(self.patch_paths) - 1)
+        return self.__getitem__(new_idx)
 
 class TextureEncoderTrainer:
     # Lưu training state mỗi N steps để giảm mất mát khi disconnect
