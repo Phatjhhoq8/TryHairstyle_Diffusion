@@ -569,8 +569,9 @@ class TextureEncoderTrainer:
                 loss_history=loss_history, batch_index=-1
             )
             
-            # ✅ Epoch hoàn tất → xóa checkpoint trung gian
-            self._cleanup_mid_epoch_state()
+            # ✅ Epoch trung gian → xóa checkpoint mid-epoch (giữ lại ở epoch cuối để skip logic hoạt động)
+            if epoch + 1 < num_epochs:
+                self._cleanup_mid_epoch_state()
             
             logger.info(f"💾 Checkpoint Epoch {epoch+1}{' ⭐ (BEST)' if is_new_best else ''}")
         

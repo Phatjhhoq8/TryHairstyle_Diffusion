@@ -93,7 +93,7 @@ class TrainingEmbedder:
             from backend.app.services.adaface_ir import iresnet100
             
             model = iresnet100()
-            checkpoint = torch.load(ADAFACE_MODEL_PATH, map_location="cpu")
+            checkpoint = torch.load(ADAFACE_MODEL_PATH, map_location="cpu", weights_only=False)
             
             if "state_dict" in checkpoint:
                 stateDict = checkpoint["state_dict"]
