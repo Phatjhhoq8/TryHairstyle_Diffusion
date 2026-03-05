@@ -101,6 +101,48 @@ class SDXLTextEncoder:
         
         return prompt_embeds.float().cpu(), pooled_prompt_embeds.float().cpu()
     
+    @torch.no_grad()
+    def encode_prompts_batch(self, prompts: list, batch_size: int = 16):
+        """
+        Batch encode nhiều prompts cùng lúc — nhanh hơn 5-10x so với encode từng cái.
+        Returns:
+            dict[str, dict]: mapping prompt_text → {"prompt_embeds": (77, 2048), "pooled_prompt_embeds": (1280,)}
+        """
+        results = {}
+        for i in range(0, len(prompts), batch_size):
+            batch = prompts[i:i+batch_size]
+            
+            # Batch tokenize cho encoder 1
+            tokens_1 = self.tokenizer(
+                batch, padding="max_length", max_length=77,
+                truncation=True, return_tensors="pt"
+            ).input_ids.to(self.device)
+            
+            # Batch tokenize cho encoder 2
+            tokens_2 = self.tokenizer_2(
+                batch, padding="max_length", max_length=77,
+                truncation=True, return_tensors="pt"
+            ).input_ids.to(self.device)
+            
+            # Batch encode
+            enc_out_1 = self.text_encoder(tokens_1, output_hidden_states=True)
+            enc_out_2 = self.text_encoder_2(tokens_2, output_hidden_states=True)
+            
+            hidden_1 = enc_out_1.hidden_states[-2]  # (B, 77, 768)
+            hidden_2 = enc_out_2.hidden_states[-2]  # (B, 77, 1280)
+            
+            prompt_embeds = torch.cat([hidden_1, hidden_2], dim=-1)  # (B, 77, 2048)
+            pooled_embeds = enc_out_2.text_embeds  # (B, 1280)
+            
+            # Tách kết quả cho từng prompt
+            for j, prompt_text in enumerate(batch):
+                results[prompt_text] = {
+                    "prompt_embeds": prompt_embeds[j].float().cpu(),       # (77, 2048)
+                    "pooled_prompt_embeds": pooled_embeds[j].float().cpu() # (1280,)
+                }
+        
+        return results
+    
     def unload(self):
         """Giải phóng VRAM sau khi encode xong tất cả prompts."""
         del self.text_encoder, self.text_encoder_2
@@ -195,44 +237,57 @@ class HairInpaintingDataset(Dataset):
         
         # Pre-encode text prompts nếu Text Encoder được cung cấp
         if text_encoder is not None and len(self.metadata) > 0:
-            logger.info(f"Pre-encoding {len(self.metadata)} text prompts...")
-            
             # Cache thư mục cho prompt embeddings
             cache_dir = data_dir / "prompt_embeddings"
             ensureDir(str(cache_dir))
             
-            for item in tqdm(self.metadata, desc="Encoding Prompts"):
+            # ============================================================
+            # STEP 1: Tìm samples chưa có cache, nhóm theo unique prompt
+            # ============================================================
+            uncached_by_prompt = {}  # {full_prompt: [img_id, ...]}
+            cached_count = 0
+            
+            for item in self.metadata:
                 img_id = item["id"]
                 img_id_dashed = img_id.replace("_", "-")
                 cache_file = cache_dir / f"{img_id}.pt"
                 cache_file_dashed = cache_dir / f"{img_id_dashed}.pt"
                 
-                if cache_file.exists():
-                    # Load từ cache
-                    cached = torch.load(str(cache_file), map_location="cpu", weights_only=True)
-                    self.prompt_embeds_cache[img_id] = cached
-                elif cache_file_dashed.exists():
-                    # Load fallback từ dashed cache
-                    cached = torch.load(str(cache_file_dashed), map_location="cpu", weights_only=True)
-                    self.prompt_embeds_cache[img_id] = cached
+                if cache_file.exists() or cache_file_dashed.exists():
+                    cached_count += 1
                 else:
-                    # Encode và cache
                     text_prompt = item.get("text_prompt", "hairstyle")
                     if not text_prompt.strip():
                         text_prompt = "hairstyle"
-                    
-                    # Thêm prefix chất lượng cho SDXL
                     full_prompt = f"high quality, realistic {text_prompt}, detailed hair texture"
-                    
-                    p_embeds, pooled_embeds = text_encoder.encode_prompt(full_prompt)
-                    cached = {
-                        "prompt_embeds": p_embeds.squeeze(0),      # (77, 2048)
-                        "pooled_prompt_embeds": pooled_embeds.squeeze(0)  # (1280,)
-                    }
-                    torch.save(cached, str(cache_file))
-                    self.prompt_embeds_cache[img_id] = cached
+                    uncached_by_prompt.setdefault(full_prompt, []).append(img_id)
             
-            logger.info("Pre-encoding prompts hoàn tất!")
+            # ============================================================
+            # STEP 2: Batch encode các unique prompts chưa cache
+            # ============================================================
+            if uncached_by_prompt:
+                unique_prompts = list(uncached_by_prompt.keys())
+                total_uncached = sum(len(ids) for ids in uncached_by_prompt.values())
+                logger.info(
+                    f"Pre-encoding {total_uncached} samples "
+                    f"({len(unique_prompts)} unique prompts, {cached_count} đã cache)"
+                )
+                
+                # Batch encode tất cả unique prompts cùng lúc
+                encoded_map = text_encoder.encode_prompts_batch(unique_prompts, batch_size=16)
+                
+                # Lưu cache cho tất cả samples
+                for full_prompt, img_ids in tqdm(
+                    uncached_by_prompt.items(), desc="Saving Prompt Cache"
+                ):
+                    cached_data = encoded_map[full_prompt]
+                    for img_id in img_ids:
+                        cache_file = cache_dir / f"{img_id}.pt"
+                        torch.save(cached_data, str(cache_file))
+                
+                logger.info(f"✅ Pre-encoding hoàn tất! ({len(unique_prompts)} unique → {total_uncached} files)")
+            else:
+                logger.info(f"✅ Tất cả {cached_count} prompt embeddings đã cache — skip encoding")
         else:
             # Lazy loading: prompt embeddings load on-demand trong _load_sample()
             # Không bulk-load vào RAM → tiết kiệm ~3GB/chunk cho Colab
@@ -1225,6 +1280,8 @@ class Stage2Trainer:
                 del texture_encoder
             torch.cuda.empty_cache()
             logger.info("✅ Pre-caching hoàn tất, encoders đã giải phóng.")
+        else:
+            logger.info("✅ Tất cả embeddings đã cache đầy đủ — skip pre-caching")
     
     def _save_training_state(self, epoch, global_step, best_val_loss, best_epoch, loss_history, chunk_index=-1, chunk_names=None):
         """Save full training state cho Colab resume.
@@ -1305,6 +1362,7 @@ class Stage2Trainer:
         """Validate qua tối đa 3 chunks CỐ ĐỊNH, lấy mỗi chunk ~30 samples.
         Seed cố định để val set nhất quán giữa các epoch → metric so sánh được."""
         all_val_losses = []
+        all_val_lpips = []
         
         # Chọn tối đa 3 chunks CỐ ĐỊNH (sorted + lấy đầu) để val set ổn định
         # Không random shuffle — đảm bảo cùng val set giữa các epoch
@@ -1333,6 +1391,8 @@ class Stage2Trainer:
                 
                 metrics = self.validate_epoch(val_loader, global_step)
                 all_val_losses.append(metrics['val_loss'])
+                if metrics['val_lpips'] >= 0:
+                    all_val_lpips.append(metrics['val_lpips'])
                 
                 del dataset, val_subset, val_loader
                 torch.cuda.empty_cache()
@@ -1341,7 +1401,8 @@ class Stage2Trainer:
                 continue
         
         avg_val = sum(all_val_losses) / len(all_val_losses) if all_val_losses else float('inf')
-        return {'val_loss': avg_val, 'val_lpips': -1.0}
+        avg_lpips = sum(all_val_lpips) / len(all_val_lpips) if all_val_lpips else -1.0
+        return {'val_loss': avg_val, 'val_lpips': avg_lpips}
     
     # ==============================================================================
     # MAIN TRAINING LOOP — Chunked Loading, Global Epoch
