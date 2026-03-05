@@ -404,6 +404,17 @@ class TextureEncoderTrainer:
             elif not loaded:
                 # Fallback đã xử lý trong _load_training_state
                 pass
+            
+            # ── SKIP nếu đã train đủ epochs ──
+            if loaded:
+                completed_epoch = loaded.get('epoch', 0)
+                batch_index = loaded.get('batch_index', -1)
+                best_ckpt = self.checkpoints_dir / "texture_encoder_best.safetensors"
+                # Đã hoàn tất (batch_index == -1) VÀ đủ epochs VÀ có best checkpoint
+                if batch_index == -1 and completed_epoch >= num_epochs and best_ckpt.exists():
+                    logger.info(f"⏭️ SKIP Stage 1: đã hoàn tất {completed_epoch} epochs (yêu cầu {num_epochs})")
+                    logger.info(f"  🏆 Best model sẵn sàng: {best_ckpt.name}")
+                    return
         
         # ==================================================
         # 2. LOAD DATASET
