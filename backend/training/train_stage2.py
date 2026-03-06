@@ -308,21 +308,39 @@ class HairInpaintingDataset(Dataset):
                 ) from e
             
         if texture_encoder is not None:
-            logger.info(f"Pre-extracting style embeddings cho {len(self.metadata)} samples...")
-            
-            style_transform = transforms.Compose([
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-            
-            with torch.no_grad():
-                for item in tqdm(self.metadata, desc="Extracting Style"):
-                    img_id = item["id"]
-                    cache_file = style_cache_dir / f"{img_id}.npy"
-                    
-                    if cache_file.exists():
-                        self.style_embeds_cache[img_id] = np.load(str(cache_file))
-                    else:
+            # ============================================================
+            # PRE-CHECK: Đếm xem bao nhiêu style cache đã tồn tại
+            # Nếu tất cả đã cache → skip hoàn toàn (không loop 5000 items)
+            # ============================================================
+            uncached_items = []
+            cached_style_count = 0
+            for item in self.metadata:
+                img_id = item["id"]
+                cache_file = style_cache_dir / f"{img_id}.npy"
+                if cache_file.exists():
+                    cached_style_count += 1
+                else:
+                    uncached_items.append(item)
+
+            if not uncached_items:
+                # Tất cả đã cache → lazy load on-demand, không load vào RAM trước
+                logger.info(f"✅ Tất cả {cached_style_count} style embeddings đã cache — skip extraction")
+            else:
+                logger.info(
+                    f"Pre-extracting style embeddings: {len(uncached_items)} chưa cache "
+                    f"({cached_style_count} đã cache / {len(self.metadata)} tổng)"
+                )
+
+                style_transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+
+                with torch.no_grad():
+                    for item in tqdm(uncached_items, desc="Extracting Style"):
+                        img_id = item["id"]
+                        cache_file = style_cache_dir / f"{img_id}.npy"
+
                         style_img_path = data_dir / item["style"]
                         if style_img_path.exists():
                             style_img = cv2.cvtColor(cv2.imread(str(style_img_path)), cv2.COLOR_BGR2RGB)
@@ -331,11 +349,10 @@ class HairInpaintingDataset(Dataset):
                             embed, _, _ = texture_encoder(style_tensor)
                             embed_np = embed.cpu().numpy().squeeze(0)  # (2048,)
                             np.save(str(cache_file), embed_np)
-                            self.style_embeds_cache[img_id] = embed_np
                         else:
-                            self.style_embeds_cache[img_id] = np.zeros(2048, dtype=np.float32)
-            
-            logger.info("✅ Style embeddings extraction hoàn tất!")
+                            np.save(str(cache_file), np.zeros(2048, dtype=np.float32))
+
+                logger.info(f"✅ Style embeddings extraction hoàn tất! ({len(uncached_items)} mới cache)")
         else:
             # Lazy loading: style embeddings load on-demand trong _load_sample()
             pass
