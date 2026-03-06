@@ -336,21 +336,38 @@ class HairInpaintingDataset(Dataset):
                     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
                 ])
 
+                STYLE_BATCH = 32  # Số samples xử lý mỗi batch → ~20-30x nhanh hơn 1-by-1
                 with torch.no_grad():
-                    for item in tqdm(uncached_items, desc="Extracting Style"):
-                        img_id = item["id"]
-                        cache_file = style_cache_dir / f"{img_id}.npy"
+                    for batch_start in tqdm(range(0, len(uncached_items), STYLE_BATCH), desc="Extracting Style"):
+                        batch_items = uncached_items[batch_start:batch_start + STYLE_BATCH]
 
-                        style_img_path = data_dir / item["style"]
-                        if style_img_path.exists():
-                            style_img = cv2.cvtColor(cv2.imread(str(style_img_path)), cv2.COLOR_BGR2RGB)
-                            style_img = cv2.resize(style_img, (128, 128))
-                            style_tensor = style_transform(style_img).unsqueeze(0).to(DEVICE)
-                            embed, _, _ = texture_encoder(style_tensor)
-                            embed_np = embed.cpu().numpy().squeeze(0)  # (2048,)
-                            np.save(str(cache_file), embed_np)
-                        else:
-                            np.save(str(cache_file), np.zeros(2048, dtype=np.float32))
+                        batch_tensors = []
+                        batch_ids = []
+                        zero_ids = []  # items không có file ảnh → lưu zeros
+
+                        for item in batch_items:
+                            img_id = item["id"]
+                            style_img_path = data_dir / item["style"]
+                            if style_img_path.exists():
+                                style_img = cv2.cvtColor(cv2.imread(str(style_img_path)), cv2.COLOR_BGR2RGB)
+                                style_img = cv2.resize(style_img, (128, 128))
+                                batch_tensors.append(style_transform(style_img))
+                                batch_ids.append(img_id)
+                            else:
+                                zero_ids.append(img_id)
+
+                        # Lưu zeros cho ảnh bị thiếu
+                        for img_id in zero_ids:
+                            np.save(str(style_cache_dir / f"{img_id}.npy"), np.zeros(2048, dtype=np.float32))
+
+                        # Batch forward pass
+                        if batch_tensors:
+                            batch_tensor = torch.stack(batch_tensors).to(DEVICE)  # (B, 3, 128, 128)
+                            embeds, _, _ = texture_encoder(batch_tensor)           # (B, 2048)
+                            embeds_np = embeds.cpu().numpy()                       # (B, 2048)
+
+                            for img_id, embed_np in zip(batch_ids, embeds_np):
+                                np.save(str(style_cache_dir / f"{img_id}.npy"), embed_np)
 
                 logger.info(f"✅ Style embeddings extraction hoàn tất! ({len(uncached_items)} mới cache)")
         else:
