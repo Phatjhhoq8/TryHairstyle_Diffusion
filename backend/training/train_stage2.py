@@ -368,9 +368,9 @@ class HairInpaintingDataset(Dataset):
                         "text_embeds": torch.zeros(77, 2048),
                         "pooled_text_embeds": torch.zeros(1280),
                         "time_ids": torch.tensor([
-                            self.target_size[0], self.target_size[1],
+                            1024, 1024,   # SDXL native resolution (khớp inference)
                             0, 0,
-                            self.target_size[0], self.target_size[1]
+                            1024, 1024
                         ], dtype=torch.float32)
                     }
     
@@ -452,9 +452,9 @@ class HairInpaintingDataset(Dataset):
             "text_embeds": text_embeds,
             "pooled_text_embeds": pooled_text_embeds,
             "time_ids": torch.tensor([
-                self.target_size[0], self.target_size[1],
+                1024, 1024,   # SDXL native resolution — nhất quán với inference
                 0, 0,
-                self.target_size[0], self.target_size[1]
+                1024, 1024
             ], dtype=torch.float32)
         }
 

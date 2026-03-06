@@ -255,8 +255,9 @@ class HairDiffusionService:
         """
         Thực hiện Inpainting thay tóc (SDXL 1024x1024).
         """
-        # Thay đổi kích thước đầu vào dựa trên model
-        target_size = (1024, 1024)
+        # 512×512 để khớp với resolution training (train_stage2.py --resolution 512)
+        # Output sẽ được upscale về kích thước gốc bởi tasks.py sau inference
+        target_size = (512, 512)
         
         image = base_image.resize(target_size, Image.LANCZOS)
         mask = mask_image.resize(target_size, Image.NEAREST)
@@ -399,9 +400,9 @@ class HairDiffusionService:
             uncond_injected = self.injector.inject_conditioning(uncond_style, uncond_id)
             uncond_encoder_hidden_states = torch.cat([neg_prompt_embeds, uncond_injected], dim=1)
 
-        # time_ids phù hợp với target_size thực tế (khớp với training distribution)
-        h, w = target_size
-        time_ids = torch.tensor([h, w, 0, 0, h, w], dtype=torch.float32).unsqueeze(0).to(self.device)
+        # time_ids = 1024 (SDXL native) để khớp với pretraining distribution của SDXL
+        # Dù ảnh chạy ở 512×512, SDXL conditioning nên ở 1024 để nhất quán với training
+        time_ids = torch.tensor([1024, 1024, 0, 0, 1024, 1024], dtype=torch.float32).unsqueeze(0).to(self.device)
 
         added_cond_kwargs = {
             "text_embeds": pooled_embeds,
