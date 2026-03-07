@@ -1238,13 +1238,13 @@ class Stage2Trainer:
     
     def _precache_all_chunks(self, chunk_dirs, target_size, max_samples_per_chunk):
         """Pre-encode text + style embeddings cho tất cả chunks chưa cache.
-        
-        Trước tiên đếm đầy đủ số file cache trong từng subdir và so sánh với
-        số samples thực tế. In báo cáo chi tiết rồi mới quyết định có cần
-        encode/extract không.
+
+        Đếm đầy đủ file cache toàn bộ chunks, in báo cáo chi tiết, rồi chỉ
+        encode/extract những chunks thực sự còn thiếu (không dò lại từ đầu).
         """
-        needs_text = False
-        needs_style = False
+        # chunks_need_text / chunks_need_style: chỉ chứa chunks thực sự thiếu
+        chunks_need_text  = []
+        chunks_need_style = []
 
         logger.info("🔍 Kiểm tra trạng thái cache toàn bộ chunks...")
         for chunk_dir in chunk_dirs:
@@ -1269,8 +1269,8 @@ class Stage2Trainer:
             n_expected = len(check_items)
 
             # ── Đếm file trong từng subdir cache ──────────────────────────────
-            prompt_count  = len(list(cache_dir.iterdir()))       if cache_dir.exists()       else 0
-            style_count   = len(list(style_cache_dir.iterdir())) if style_cache_dir.exists() else 0
+            prompt_count = len(list(cache_dir.iterdir()))       if cache_dir.exists()       else 0
+            style_count  = len(list(style_cache_dir.iterdir())) if style_cache_dir.exists() else 0
 
             # ── In báo cáo dạng "📦 chunk  →  📁 subdir → N files" ───────────
             logger.info(f"\n📦 {chunk_dir.name}  (expected: {n_expected} samples)")
@@ -1281,20 +1281,23 @@ class Stage2Trainer:
                 status = "✅" if count >= n_expected else "⚠️ "
                 logger.info(f"  📁 {subdir.name:45s} → {count} files  {status}")
 
-            # ── Quyết định có cần encode/extract không ────────────────────────
+            # ── Track từng chunk: chỉ thêm vào list nếu thực sự thiếu ─────────
             if prompt_count < n_expected:
-                needs_text = True
+                chunks_need_text.append(chunk_dir)
             if style_count < n_expected:
-                needs_style = True
-        
+                chunks_need_style.append(chunk_dir)
+
+        needs_text  = len(chunks_need_text)  > 0
+        needs_style = len(chunks_need_style) > 0
+
         text_encoder = None
         if needs_text:
-            logger.info("📝 Prompt embeddings chưa cache. Đang load Text Encoders...")
+            logger.info(f"📝 {len(chunks_need_text)} chunks cần encode prompt. Đang load Text Encoders...")
             text_encoder = SDXLTextEncoder()
-        
+
         texture_encoder = None
         if needs_style:
-            logger.info("🎨 Style embeddings chưa cache. Đang load Texture Encoder...")
+            logger.info(f"🎨 {len(chunks_need_style)} chunks cần extract style. Đang load Texture Encoder...")
             from backend.training.models.texture_encoder import HairTextureEncoder
             from safetensors.torch import load_file as load_safetensors
             texture_encoder = HairTextureEncoder(pretrained=False).to(DEVICE).eval()
@@ -1307,14 +1310,23 @@ class Stage2Trainer:
             else:
                 logger.warning("  ⚠️ Không tìm thấy checkpoint Stage 1!")
             texture_encoder.requires_grad_(False)
-        
+
         if text_encoder or texture_encoder:
-            chunk_pbar = tqdm(enumerate(chunk_dirs), total=len(chunk_dirs), desc="Pre-caching chunks")
+            # Chỉ xử lý chunks thực sự thiếu (union của 2 list)
+            chunks_to_process = sorted(
+                set(chunks_need_text) | set(chunks_need_style),
+                key=lambda d: d.name
+            )
+            # Truyền encoder tương ứng cho từng chunk
+            chunk_pbar = tqdm(enumerate(chunks_to_process), total=len(chunks_to_process), desc="Pre-caching chunks")
             for i, chunk_dir in chunk_pbar:
                 chunk_pbar.set_postfix({"chunk": chunk_dir.name})
-                logger.info(f"  📂 Caching chunk {i+1}/{len(chunk_dirs)}: {chunk_dir.name}")
+                logger.info(f"  📂 Caching chunk {i+1}/{len(chunks_to_process)}: {chunk_dir.name}")
+                # Chỉ truyền encoder nếu chunk đó thực sự thiếu loại đó
+                _te  = text_encoder    if chunk_dir in chunks_need_text  else None
+                _ste = texture_encoder if chunk_dir in chunks_need_style else None
                 _ = HairInpaintingDataset(
-                    chunk_dir, text_encoder=text_encoder, texture_encoder=texture_encoder,
+                    chunk_dir, text_encoder=_te, texture_encoder=_ste,
                     target_size=target_size, max_samples=max_samples_per_chunk
                 )
                 del _
