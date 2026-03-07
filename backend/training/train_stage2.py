@@ -1237,20 +1237,27 @@ class Stage2Trainer:
         return chunks
     
     def _precache_all_chunks(self, chunk_dirs, target_size, max_samples_per_chunk):
-        """Pre-encode text + style embeddings cho tất cả chunks chưa cache."""
+        """Pre-encode text + style embeddings cho tất cả chunks chưa cache.
+        
+        Trước tiên đếm đầy đủ số file cache trong từng subdir và so sánh với
+        số samples thực tế. In báo cáo chi tiết rồi mới quyết định có cần
+        encode/extract không.
+        """
         needs_text = False
         needs_style = False
-        
+
+        logger.info("🔍 Kiểm tra trạng thái cache toàn bộ chunks...")
         for chunk_dir in chunk_dirs:
             meta_path = chunk_dir / "metadata.jsonl"
             if not meta_path.exists():
                 continue
+
             cache_dir = chunk_dir / "prompt_embeddings"
             style_cache_dir = chunk_dir / "style_embeddings_cache"
-            
+
             with open(str(meta_path), "r", encoding="utf-8") as f:
                 all_items = [json.loads(line.strip()) for line in f if line.strip()]
-            
+
             # Khi max_samples > 0 (smoke test): chỉ kiểm tra samples sẽ thực sự dùng
             # Dùng cùng seed 42 và logic random.sample giống HairInpaintingDataset
             if max_samples_per_chunk > 0 and len(all_items) > max_samples_per_chunk:
@@ -1258,21 +1265,27 @@ class Stage2Trainer:
                 check_items = rng.sample(all_items, max_samples_per_chunk)
             else:
                 check_items = all_items
-            
-            for item in check_items:
-                img_id = item['id']
-                if not needs_text:
-                    cf = cache_dir / f"{img_id}.pt"
-                    cf2 = cache_dir / f"{img_id.replace('_', '-')}.pt"
-                    if not cf.exists() and not cf2.exists():
-                        needs_text = True
-                if not needs_style:
-                    if not (style_cache_dir / f"{img_id}.npy").exists():
-                        needs_style = True
-                if needs_text and needs_style:
-                    break
-            if needs_text and needs_style:
-                break
+
+            n_expected = len(check_items)
+
+            # ── Đếm file trong từng subdir cache ──────────────────────────────
+            prompt_count  = len(list(cache_dir.iterdir()))       if cache_dir.exists()       else 0
+            style_count   = len(list(style_cache_dir.iterdir())) if style_cache_dir.exists() else 0
+
+            # ── In báo cáo dạng "📦 chunk  →  📁 subdir → N files" ───────────
+            logger.info(f"\n📦 {chunk_dir.name}  (expected: {n_expected} samples)")
+            for subdir, count in [
+                (cache_dir,       prompt_count),
+                (style_cache_dir, style_count),
+            ]:
+                status = "✅" if count >= n_expected else "⚠️ "
+                logger.info(f"  📁 {subdir.name:45s} → {count} files  {status}")
+
+            # ── Quyết định có cần encode/extract không ────────────────────────
+            if prompt_count < n_expected:
+                needs_text = True
+            if style_count < n_expected:
+                needs_style = True
         
         text_encoder = None
         if needs_text:
