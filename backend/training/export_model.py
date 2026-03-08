@@ -13,6 +13,9 @@ from backend.app.services.training_utils import setupLogger
 
 logger = setupLogger("ModelExportVerification")
 
+IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
+DRIVE_MODELS_DIR = Path("/content/drive/MyDrive/TryHairStyle_Models")
+
 class CheckpointManager:
     """
     Quản lý, đánh giá và xuất LoRA Checkpoints sau khi Train Stage 2.
@@ -26,6 +29,19 @@ class CheckpointManager:
         self.production_models_dir = self.project_dir / "backend" / "models"
         
         os.makedirs(self.checkpoints_dir, exist_ok=True)
+    
+    def _copy_to_drive(self, local_path):
+        """Copy file production lên Google Drive (chỉ Colab)."""
+        if not IS_COLAB:
+            return
+        try:
+            os.makedirs(str(DRIVE_MODELS_DIR), exist_ok=True)
+            dest = DRIVE_MODELS_DIR / os.path.basename(local_path)
+            shutil.copy2(str(local_path), str(dest))
+            size_mb = os.path.getsize(str(dest)) / (1024 * 1024)
+            logger.info(f"  ☁️ Drive: {dest.name} ({size_mb:.1f} MB) → {DRIVE_MODELS_DIR}")
+        except Exception as e:
+            logger.warning(f"  ⚠️ Không thể copy lên Drive: {e}")
         
     def find_latest_checkpoint(self, stage="stage2"):
         """ 
@@ -234,6 +250,11 @@ class CheckpointManager:
             logger.warning("  ⚠️ Không tìm thấy Injector checkpoint!")
         
         logger.info(f"  ✅ Export hoàn tất! Web App có thể load model mới.")
+        
+        # Copy lên Drive nếu chạy trên Colab
+        self._copy_to_drive(dest_path)
+        if injector_path:
+            self._copy_to_drive(self.production_models_dir / "injector.safetensors")
         return True
 
     def export_to_production(self, checkpoint_path, destination_name="deep_hair_v1.safetensors"):
@@ -268,6 +289,11 @@ class CheckpointManager:
                     logger.warning("  ⚠️ Không tìm thấy Injector checkpoint!")
                 
                 logger.info(f"  → Deploy hoàn tất!")
+                
+                # Copy lên Drive nếu chạy trên Colab
+                self._copy_to_drive(dest_path)
+                if injector_path:
+                    self._copy_to_drive(self.production_models_dir / "injector.safetensors")
                 return True
             except Exception as e:
                 logger.error(f"  → Lỗi Deploy Model: {e}")
