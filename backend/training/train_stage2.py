@@ -558,10 +558,10 @@ class Stage2Trainer:
         # 4. Khởi tạo Loss Functions
         self.mask_aware_loss = MaskAwareLoss(loss_type='l2').to(DEVICE)
         self.identity_loss = IdentityCosineLoss().to(DEVICE)
-        self.texture_loss = None  # LAZY LOAD mỗi 200 steps
-        logger.info("  → TextureConsistencyLoss: LAZY mode (load mỗi 200 steps)")
+        self.texture_loss = None  # LAZY LOAD mỗi 50 steps
+        logger.info("  → TextureConsistencyLoss: LAZY mode (load mỗi 50 steps)")
         self.face_extractor = None  # LAZY LOAD
-        logger.info("  → Face Feature Extractor: LAZY mode (load mỗi 200 steps)")
+        logger.info("  → Face Feature Extractor: LAZY mode (load mỗi 50 steps)")
         
         # 5. Optimizer — CHỈ train LoRA + conv_in + Injector
         self._trainable_params = (
@@ -616,18 +616,18 @@ class Stage2Trainer:
         torch.cuda.empty_cache()
         return latents.float()
     
+    @torch.no_grad()
     def _decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """Decode latents về RGB image qua VAE (CPU↔GPU offload + straight-through estimator)."""
-        with torch.no_grad():
-            self.vae.to(DEVICE)
-            latents_input = (latents / self.vae_scale_factor).to(self.vae.dtype)
-            decoded_no_grad = self.vae.decode(latents_input).sample.float()
-            self.vae.to('cpu')
-            torch.cuda.empty_cache()
+        """Decode latents về RGB image qua VAE (CPU↔GPU offload, no_grad).
         
-        # Straight-through estimator — gradient flow về UNet qua latents
-        latents_for_grad = latents / self.vae_scale_factor
-        decoded = decoded_no_grad + (latents_for_grad - latents_for_grad.detach())
+        Dùng no_grad để tiết kiệm ~1-2GB VRAM (không lưu VAE activation graph).
+        Auxiliary losses (Texture/Identity) chỉ dùng để monitor, không cần gradient.
+        """
+        self.vae.to(DEVICE)
+        latents_input = (latents / self.vae_scale_factor).to(self.vae.dtype)
+        decoded = self.vae.decode(latents_input).sample.float()
+        self.vae.to('cpu')
+        torch.cuda.empty_cache()
         return decoded
     
     @torch.no_grad()
@@ -702,7 +702,7 @@ class Stage2Trainer:
         del masked_images  # Free ngay sau khi encode xong
         masks_latent = F.interpolate(masks, size=latents.shape[-2:], mode='nearest')
         # Free pixel-space tensors — chỉ cần latent-space cho UNet forward
-        # gt_images/masks/masks_pixel sẽ re-load từ batch nếu cần ở step 200
+        # gt_images/masks/masks_pixel sẽ re-load từ batch nếu cần ở step monitor
         del gt_images, masks, masks_pixel
         torch.cuda.empty_cache()  # Reclaim fragmented memory trước UNet forward
         
@@ -765,71 +765,60 @@ class Stage2Trainer:
             loss_diffusion = self.mask_aware_loss(noise_pred, noise, masks_latent)
             total_loss = loss_diffusion
         
-        # Cast sang fp32 TRƯỚC khi cộng thêm auxiliary losses
-        # Tránh mixed precision mismatch giữa fp16 (autocast) và fp32 auxiliary losses
+        # Cast sang fp32 TRƯỚC khi backprop
         total_loss = total_loss.float()
         
-        # 2. Identity & Texture Loss (mỗi N steps để tiết kiệm VRAM)
-        # Decode latents → ảnh RGB → tính perceptual losses
+        # 2. Texture & Identity Loss — MONITOR ONLY (mỗi 50 steps)
+        # Dùng no_grad: chỉ log giá trị lên chart, KHÔNG cộng vào total_loss
+        # → Tiết kiệm ~2GB VRAM, cho phép batch_size=2 trên T4 15GB
         loss_id_val = 0.0
         loss_tex_val = 0.0
-        loss_tex = None  # Guard: khởi tạo trước try block để tránh NameError
-        loss_id = None
         
-        if global_step % 200 == 0 and global_step > 0:
+        if global_step % 50 == 0 and global_step > 0:
             try:
-                with torch.amp.autocast('cuda', dtype=torch.float16):
-                    # Re-load pixel tensors từ batch (đã free ở trên để tiết kiệm VRAM)
+                with torch.no_grad():
+                    # Re-load pixel tensors từ batch (đã free ở trên)
                     gt_images = batch['image'].to(DEVICE)
                     masks = batch['mask'].to(DEVICE)
                     masks_pixel = F.interpolate(masks, size=gt_images.shape[-2:], mode='nearest')
                     
-                    # Ước tính denoised output (x0 prediction) — RIÊNG cho mỗi sample trong batch
+                    # Ước tính denoised output (x0 prediction)
                     alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(DEVICE)
                     alpha_prod_t = alphas_cumprod[timesteps]  # (B,)
-                    sqrt_alpha = (alpha_prod_t ** 0.5).view(-1, 1, 1, 1)  # (B, 1, 1, 1)
+                    sqrt_alpha = (alpha_prod_t ** 0.5).view(-1, 1, 1, 1)
                     sqrt_one_minus_alpha = ((1 - alpha_prod_t) ** 0.5).view(-1, 1, 1, 1)
                     pred_original = (noisy_latents - sqrt_one_minus_alpha * noise_pred) / (sqrt_alpha + 1e-8)
                     
-                    # Decode để lấy ảnh tái tạo — KHÔNG detach để gradient flow về UNet
+                    # Decode no_grad — tiết kiệm VRAM
                     decoded_img = self._decode_latents(pred_original)
                     
-                    # Texture Loss — LAZY LOAD VGG16 rồi xóa ngay (tiết kiệm ~0.5GB)
+                    # Texture Loss — LAZY LOAD VGG16 rồi xóa ngay
                     texture_loss_fn = TextureConsistencyLoss().to(DEVICE)
                     texture_loss_fn.eval()
-                    texture_loss_fn.requires_grad_(False)
-                    loss_tex = texture_loss_fn(decoded_img, gt_images)
-                    loss_tex_val = loss_tex.item()
-                    del texture_loss_fn  # Free VGG16 ngay lập tức
+                    masks_decoded = F.interpolate(masks_pixel, size=decoded_img.shape[-2:], mode='nearest')
+                    loss_tex_val = texture_loss_fn(decoded_img, gt_images, masks_decoded).item()
+                    del texture_loss_fn
                     
-                    # Identity Loss — Lazy load FaceFeatureExtractor
-                    # Load ON-DEMAND rồi xóa ngay để tiết kiệm VRAM
+                    # Identity Loss — Lazy load FaceFeatureExtractor (InceptionResnetV1)
                     face_extractor = FaceFeatureExtractor(device=str(DEVICE)).to(DEVICE)
                     face_extractor.eval()
-                    face_extractor.requires_grad_(False)
                     
                     gt_images_resized = F.interpolate(gt_images, size=decoded_img.shape[-2:], mode='bilinear', align_corners=False) if gt_images.shape[-2:] != decoded_img.shape[-2:] else gt_images
                     masks_for_face = F.interpolate(masks_pixel[:, :1], size=decoded_img.shape[-2:], mode='nearest') if masks_pixel.shape[-2:] != decoded_img.shape[-2:] else masks_pixel[:, :1]
                     
                     gen_face_embeds = face_extractor(decoded_img, masks_for_face)
                     target_face_embeds = face_extractor(gt_images_resized, masks_for_face)
-                    loss_id = self.identity_loss(gen_face_embeds.float(), target_face_embeds.float())
-                    loss_id_val = loss_id.item()
+                    loss_id_val = self.identity_loss(gen_face_embeds.float(), target_face_embeds.float()).item()
                     
-                    # Xóa face_extractor ngay lập tức
+                    # Cleanup
                     del face_extractor, gen_face_embeds, target_face_embeds
                     del gt_images_resized, masks_for_face, decoded_img, pred_original
+                    del gt_images, masks, masks_pixel, masks_decoded
                     torch.cuda.empty_cache()
-                
-                # Cộng auxiliary losses NGOÀI autocast (đã ở fp32)
-                if loss_tex is not None:
-                    total_loss = total_loss + 0.01 * loss_tex.float()
-                if loss_id is not None:
-                    total_loss = total_loss + 0.05 * loss_id.float()
                     
             except RuntimeError as e:
                 if "out of memory" in str(e):
-                    logger.warning("OOM khi tính Texture/Identity Loss, skip step này.")
+                    logger.warning("OOM khi tính Texture/Identity monitor, skip step này.")
                     torch.cuda.empty_cache()
                 else:
                     raise
@@ -1040,7 +1029,7 @@ class Stage2Trainer:
         ax2.legend()
         ax2.grid(True, alpha=0.3)
         
-        # --- 3. Texture + Identity Loss (mỗi 200 steps, bỏ qua giá trị 0) ---
+        # --- 3. Texture + Identity Loss (monitor mỗi 50 steps, bỏ qua giá trị 0) ---
         ax3 = axes[1, 0]
         texSteps = [i+1 for i, v in enumerate(history['texture_loss']) if v > 0]
         texValues = [v for v in history['texture_loss'] if v > 0]
@@ -1056,7 +1045,7 @@ class Stage2Trainer:
                 ax3_twin.plot(idSteps, idValues, color='#9C27B0', linewidth=1.5, marker='.', markersize=3, label='Identity Loss')
                 ax3_twin.set_ylabel('Identity Loss', color='#9C27B0')
                 ax3_twin.legend(loc='upper right')
-            ax3.set_title('Texture + Identity Loss (mỗi 200 steps)', fontsize=13)
+            ax3.set_title('Texture + Identity Loss (monitor mỗi 50 steps)', fontsize=13)
         else:
             ax3.text(0.5, 0.5, 'Chưa có dữ liệu\n(tính sau step 50)', ha='center', va='center', fontsize=12, transform=ax3.transAxes)
             ax3.set_title('Texture + Identity Loss', fontsize=13)

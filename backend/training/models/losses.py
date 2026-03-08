@@ -141,10 +141,15 @@ class TextureConsistencyLoss(nn.Module):
         # [0, 1] → ImageNet normalize
         return (img_01 - self.imagenet_mean.to(img.device)) / self.imagenet_std.to(img.device)
 
-    def forward(self, generated_img, target_img):
+    def forward(self, generated_img, target_img, mask=None):
         # Rescale từ [-1,1] → ImageNet normalize trước khi truyền vào VGG
         gen_norm = self._to_imagenet_norm(generated_img)
         tar_norm = self._to_imagenet_norm(target_img)
+        
+        # Áp mask để chỉ tính texture trong vùng tóc (tránh nhiễu từ background)
+        if mask is not None:
+            gen_norm = gen_norm * mask
+            tar_norm = tar_norm * mask
         
         gen_features = self.vgg_extractor(gen_norm)
         target_features = self.vgg_extractor(tar_norm)
@@ -175,10 +180,13 @@ class MaskAwareLoss(nn.Module):
             diff = torch.abs(pred - target)
         else: # l2
             diff = (pred - target) ** 2
-            
-        masked_diff = diff * mask
-        # Tính normalize loss sum theo diện tích pixel của mask để không bị lệch biên độ gradient
-        loss = masked_diff.sum() / (mask.sum() + 1e-6)
+        
+        # Vùng tóc (mask=1): trọng số cao → focus inpaint
+        # Vùng nền (mask=0): trọng số nhỏ → giữ background/khuôn mặt ổn định
+        bg_weight = 0.1
+        weights = mask + bg_weight * (1.0 - mask)
+        weighted_diff = diff * weights
+        loss = weighted_diff.sum() / (weights.sum() + 1e-6)
         return loss
 
 class IdentityCosineLoss(nn.Module):
@@ -205,12 +213,12 @@ class IdentityCosineLoss(nn.Module):
 class FaceFeatureExtractor(nn.Module):
     """
     Frozen Face Feature Extractor dùng cho Identity Loss trong training loop.
-    Sử dụng ResNet50 pretrained ImageNet để trích xuất face embedding (512-dim).
+    Sử dụng InceptionResnetV1 pretrained VGGFace2 để trích xuất face embedding (512-dim).
     
     Workflow:
     1. Từ ảnh RGB + hair mask → lấy inverse mask (vùng mặt)
     2. Crop bounding box vùng mặt → resize 112×112
-    3. Feed qua frozen ResNet50 → embedding 2048-dim (L2-normalized)
+    3. Feed qua frozen InceptionResnetV1 → embedding 512-dim (L2-normalized)
     
     LƯU Ý: Module này hoàn toàn frozen, KHÔNG tham gia backprop.
     """
@@ -218,20 +226,15 @@ class FaceFeatureExtractor(nn.Module):
         super(FaceFeatureExtractor, self).__init__()
         self.device = device
         
-        # Dùng ResNet50 pretrained ImageNet làm face feature extractor
-        # Lý do: ArcFace iresnet50 chỉ có ONNX weights (không load vào PyTorch),
-        # còn ResNet50 ImageNet đã có sẵn weights tốt cho face structure features.
-        # Output: 2048-dim vector (KHÔNG dùng Linear projection vì random weights
-        # sẽ phá hủy semantic features từ ImageNet pretrained backbone)
-        from torchvision import models
-        resnet = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V1)
-        self.backbone = nn.Sequential(
-            *list(resnet.children())[:-1],  # Output: (B, 2048, 1, 1)
-            nn.Flatten(),                    # (B, 2048)
-        )
+        # Dùng InceptionResnetV1 pretrained trên VGGFace2 (3.3M ảnh khuôn mặt)
+        # để trích xuất face embedding 512-dim.
+        # Khác ResNet50 ImageNet (nhận diện vật thể), model này thực sự hiểu
+        # sự khác biệt giữa các khuôn mặt → Identity Loss chính xác hơn.
+        from facenet_pytorch import InceptionResnetV1
+        self.backbone = InceptionResnetV1(pretrained='vggface2').eval()
+        # Output: (B, 512) — L2-normalized face embedding
         
         # Freeze toàn bộ — KHÔNG tham gia training
-        self.backbone.eval()
         for param in self.backbone.parameters():
             param.requires_grad = False
     
@@ -248,7 +251,7 @@ class FaceFeatureExtractor(nn.Module):
             hair_masks: (B, 1, H, W) — hair mask (1 = tóc, 0 = không tóc)
         
         Returns:
-            face_crops: (B, 3, 112, 112) — face crops đã resize, range [-1, 1]
+            face_crops: (B, 3, 160, 160) — face crops đã resize, range [-1, 1]
         """
         B, _, H, W = images.shape
         face_crops = []
@@ -292,15 +295,11 @@ class FaceFeatureExtractor(nn.Module):
             
             # Crop + resize
             crop = images[i:i+1, :, y_min:y_max, x_min:x_max]
-            crop = F.interpolate(crop, size=(112, 112), mode='bilinear', align_corners=False)
+            crop = F.interpolate(crop, size=(160, 160), mode='bilinear', align_corners=False)
             face_crops.append(crop)
         
-        return torch.cat(face_crops, dim=0)  # (B, 3, 112, 112)
+        return torch.cat(face_crops, dim=0)  # (B, 3, 160, 160)
     
-    # KHÔNG dùng @torch.no_grad() — gradient cần flow qua input (decoded_img)
-    # để Identity Loss thực sự update UNet weights.
-    # Backbone đã frozen (requires_grad=False) → weights không bị update,
-    # nhưng gradient cho INPUT tensor vẫn được tính → flow ngược về UNet.
     def forward(self, images: torch.Tensor, hair_masks: torch.Tensor) -> torch.Tensor:
         """
         Trích xuất face embedding từ ảnh + hair mask.
@@ -310,9 +309,9 @@ class FaceFeatureExtractor(nn.Module):
             hair_masks: (B, 1, H, W) — hair mask (1 = tóc)
         
         Returns:
-            embeddings: (B, 2048) — L2-normalized face embeddings
+            embeddings: (B, 512) — L2-normalized face embeddings
         """
-        # Crop vùng mặt → (B, 3, 112, 112)
+        # Crop vùng mặt → (B, 3, 160, 160)
         face_crops = self._crop_face_region(images, hair_masks)
         
         # Forward qua backbone
@@ -344,10 +343,10 @@ if __name__ == "__main__":
     supcon = SupConLoss()
     print("SupCon Loss:", supcon(feats, labels).item())
 
-    # Test Identity Cosine Loss (2048-dim, matching FaceFeatureExtractor output)
+    # Test Identity Cosine Loss (512-dim, matching FaceFeatureExtractor output)
     id_loss_fn = IdentityCosineLoss()
-    gen_id = torch.rand(B, 2048)
-    tar_id = torch.rand(B, 2048)
+    gen_id = torch.rand(B, 512)
+    tar_id = torch.rand(B, 512)
     print("Identity Cosine Loss:", id_loss_fn(gen_id, tar_id).item())
 
     print("Losses setups are functional!")
