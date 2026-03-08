@@ -34,6 +34,9 @@ DEVICE = getDevice()
 # Auto-detect Google Colab environment
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
+# Mid-chunk checkpoint: save mỗi N samples để tránh mất progress khi disconnect
+MID_CHUNK_SAVE_INTERVAL = 1000  # samples (với batch_size=2 → mỗi 500 steps)
+
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
 
@@ -1331,10 +1334,11 @@ class Stage2Trainer:
         else:
             logger.info("✅ Tất cả embeddings đã cache đầy đủ — skip pre-caching")
     
-    def _save_training_state(self, epoch, global_step, best_val_loss, best_epoch, loss_history, chunk_index=-1, chunk_names=None):
+    def _save_training_state(self, epoch, global_step, best_val_loss, best_epoch, loss_history, chunk_index=-1, chunk_names=None, step_in_chunk=0):
         """Save full training state cho Colab resume.
         chunk_index: index chunk vừa train xong (-1 = epoch hoàn tất).
         chunk_names: danh sách tên chunks theo thứ tự shuffled của epoch hiện tại.
+        step_in_chunk: số batches đã train trong chunk hiện tại (0 = chunk hoàn tất).
         """
         state = {
             "epoch": epoch,
@@ -1347,11 +1351,13 @@ class Stage2Trainer:
             "scaler": self.scaler.state_dict(),
             "chunk_index": chunk_index,
             "chunk_names": chunk_names or [],
+            "step_in_chunk": step_in_chunk,
         }
         state_path = self.checkpoints_dir / "training_state.pth"
         torch.save(state, str(state_path))
         chunk_info = f", chunk={chunk_index}" if chunk_index >= 0 else ""
-        logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}{chunk_info}")
+        step_info = f", step_in_chunk={step_in_chunk}" if step_in_chunk > 0 else ""
+        logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}{chunk_info}{step_info}")
     
     def _load_training_state(self):
         """Load full training state để resume. Returns dict hoặc None."""
@@ -1504,6 +1510,7 @@ class Stage2Trainer:
         
         resume_chunk_index = -1  # -1 = bắt đầu epoch mới
         resume_chunk_names = []   # thứ tự chunks đã shuffle của epoch bị interrupt
+        resume_step_in_chunk = 0  # số batches đã train trong chunk bị interrupt
         
         if resume:
             loaded = self._load_training_state()
@@ -1515,9 +1522,11 @@ class Stage2Trainer:
                 loss_history = loaded.get('loss_history', loss_history)
                 resume_chunk_index = loaded.get('chunk_index', -1)
                 resume_chunk_names = loaded.get('chunk_names', [])
+                resume_step_in_chunk = loaded.get('step_in_chunk', 0)
                 
                 if resume_chunk_index >= 0:
-                    logger.info(f"🔄 [RESUME] Epoch {start_epoch}, Step {global_step}, Chunk {resume_chunk_index+1}/{len(resume_chunk_names)}, Best Val: {best_val_loss:.6f}")
+                    step_info = f", Step-in-chunk {resume_step_in_chunk}" if resume_step_in_chunk > 0 else ""
+                    logger.info(f"🔄 [RESUME] Epoch {start_epoch}, Step {global_step}, Chunk {resume_chunk_index+1}/{len(resume_chunk_names)}{step_info}, Best Val: {best_val_loss:.6f}")
                     # Epoch chưa hoàn tất → lùi epoch lại 1 để tiếp tục
                     start_epoch = max(0, start_epoch - 1)
                 else:
@@ -1565,8 +1574,13 @@ class Stage2Trainer:
                 # Khôi phục thứ tự chunks từ state đã lưu
                 name_to_dir = {d.name: d for d in chunk_dirs}
                 shuffled_chunks = [name_to_dir[n] for n in resume_chunk_names if n in name_to_dir]
-                skip_until = resume_chunk_index + 1  # skip chunks đã train xong
-                logger.info(f"\n🔄 RESUME Epoch {epoch+1} — skip {skip_until} chunks đã train")
+                if resume_step_in_chunk > 0:
+                    # Chunk bị interrupt giữa chừng → quay lại chunk đó
+                    skip_until = resume_chunk_index
+                    logger.info(f"\n🔄 RESUME Epoch {epoch+1} — skip {skip_until} chunks, resume chunk {resume_chunk_index+1} từ batch {resume_step_in_chunk}")
+                else:
+                    skip_until = resume_chunk_index + 1  # chunk đã xong → skip
+                    logger.info(f"\n🔄 RESUME Epoch {epoch+1} — skip {skip_until} chunks đã train")
             else:
                 shuffled_chunks = chunk_dirs.copy()
                 random.shuffle(shuffled_chunks)
@@ -1598,15 +1612,31 @@ class Stage2Trainer:
                     continue
                 
                 num_workers = 0 if os.name == 'nt' else 2
+                # Deterministic DataLoader: cùng seed → cùng thứ tự batch → resume chính xác
+                dl_seed = epoch * 10000 + chunk_idx
+                dl_generator = torch.Generator().manual_seed(dl_seed)
                 dataloader = DataLoader(
-                    dataset, batch_size=batch_size, shuffle=True,
+                    dataset, batch_size=batch_size, shuffle=True, generator=dl_generator,
                     drop_last=True, num_workers=num_workers, pin_memory=True
                 )
                 
+                # Mid-chunk resume: skip batches đã train
+                skip_steps = 0
+                if chunk_idx == resume_chunk_index and resume_step_in_chunk > 0 and epoch == start_epoch:
+                    skip_steps = resume_step_in_chunk
+                
                 logger.info(f"\n  📂 Chunk {chunk_idx+1}/{len(shuffled_chunks)}: {chunk_dir.name} ({len(dataset)} samples)")
+                if skip_steps > 0:
+                    logger.info(f"  ⏩ Skipping {skip_steps} batches đã train (mid-chunk resume)...")
                 
                 pbar = tqdm(dataloader, desc=f"E{epoch+1} C{chunk_idx+1}/{len(shuffled_chunks)}")
                 for step, batch in enumerate(pbar):
+                    # Skip batches đã train (mid-chunk resume)
+                    if step < skip_steps:
+                        if step == 0 or (step + 1) % 100 == 0:
+                            pbar.set_postfix({"skip": f"{step+1}/{skip_steps}"})
+                        continue
+                    
                     step_start = time.time()
                     losses = self.train_step(batch, global_step, accumulation_steps=accumulation_steps)
                     step_time = time.time() - step_start
@@ -1635,6 +1665,17 @@ class Stage2Trainer:
                         "ETA": eta_str,
                     })
                     global_step += 1
+                    
+                    # Mid-chunk checkpoint: save mỗi MID_CHUNK_SAVE_INTERVAL samples
+                    samples_trained = (step + 1) * batch_size
+                    if samples_trained % MID_CHUNK_SAVE_INTERVAL == 0 and step + 1 < len(dataloader):
+                        logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
+                        self._save_checkpoint("backup", is_best=False)
+                        self._save_training_state(
+                            epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
+                            chunk_index=chunk_idx, chunk_names=chunk_names,
+                            step_in_chunk=step + 1
+                        )
                 
                 chunk_time = time.time() - chunk_start
                 chunk_avg = sum(epoch_losses[-len(dataloader):]) / max(1, len(dataloader))
@@ -1648,8 +1689,13 @@ class Stage2Trainer:
                 self._save_checkpoint("backup", is_best=False)
                 self._save_training_state(
                     epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
-                    chunk_index=chunk_idx, chunk_names=chunk_names
+                    chunk_index=chunk_idx, chunk_names=chunk_names,
+                    step_in_chunk=0  # 0 = chunk hoàn tất
                 )
+                
+                # Reset mid-chunk resume flag sau khi chunk resume xong
+                if resume_step_in_chunk > 0:
+                    resume_step_in_chunk = 0
             
             # ==================================================
             # VALIDATION sau mỗi epoch đầy đủ
