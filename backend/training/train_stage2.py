@@ -36,7 +36,7 @@ DEVICE = getDevice()
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
 # Mid-chunk checkpoint: save mỗi N samples để tránh mất progress khi disconnect
-MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 250 steps)
+MID_CHUNK_SAVE_INTERVAL = 1000  # samples (với batch_size=2 → mỗi 500 steps)
 
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
@@ -604,6 +604,9 @@ class Stage2Trainer:
         self.checkpoints_dir = PROJECT_DIR / "backend" / "training" / "checkpoints"
         ensureDir(str(self.checkpoints_dir))
         
+        # 9. Track background Drive copy threads (tránh quá nhiều copies đồng thời)
+        self._pending_drive_copies = []
+        
         logger.info("Trainer khởi tạo thành công (LoRA mode). VRAM sử dụng:")
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
@@ -974,6 +977,15 @@ class Stage2Trainer:
     # Lock để serialize background Drive writes (tránh race condition)
     _drive_copy_lock = threading.Lock()
     
+    def _wait_pending_copies(self, timeout=120):
+        """Đợi tất cả background Drive copies hoàn tất trước khi save tiếp."""
+        alive = [t for t in self._pending_drive_copies if t.is_alive()]
+        if alive:
+            logger.info(f"  ⏳ Đợi {len(alive)} background copy(s) hoàn tất...")
+            for t in alive:
+                t.join(timeout=timeout)
+        self._pending_drive_copies = [t for t in self._pending_drive_copies if t.is_alive()]
+    
     @staticmethod
     def _bg_copy_to_drive(src: str, dst: str):
         """Background thread: copy file từ local → Drive, rồi cleanup temp."""
@@ -1012,6 +1024,7 @@ class Stage2Trainer:
                     daemon=True
                 )
                 t.start()
+                self._pending_drive_copies.append(t)
             except Exception as e:
                 logger.error(f"❌ Lỗi khi lưu {path}: {e}")
                 if os.path.exists(temp_path):
@@ -1385,6 +1398,9 @@ class Stage2Trainer:
         Optimizer state dict rất lớn (~200-400MB), ghi trực tiếp lên Drive FUSE
         gây I/O blocking → Colab runtime gửi SIGINT → crash.
         """
+        # Đợi pending copies trước khi tạo thêm
+        self._wait_pending_copies()
+        
         state = {
             "epoch": epoch,
             "global_step": global_step,
@@ -1414,6 +1430,7 @@ class Stage2Trainer:
                 daemon=True
             )
             t.start()
+            self._pending_drive_copies.append(t)
         else:
             torch.save(state, str(state_path))
         
@@ -1421,58 +1438,119 @@ class Stage2Trainer:
         step_info = f", step_in_chunk={step_in_chunk}" if step_in_chunk > 0 else ""
         logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}{chunk_info}{step_info}")
     
-    def _load_training_state(self):
-        """Load full training state để resume. Returns dict hoặc None."""
-        state_path = self.checkpoints_dir / "training_state.pth"
-        if not state_path.exists():
-            # Fallback: chỉ load LoRA weights (backward compat)
-            best_lora = self.checkpoints_dir / "lora_best.safetensors"
-            best_inj = self.checkpoints_dir / "injector_best.safetensors"
-            backup_lora = self.checkpoints_dir / "lora_backup.safetensors"
-            backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
-            load_lora = best_lora if best_lora.exists() else (backup_lora if backup_lora.exists() else None)
-            load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
-            if load_lora and load_inj:
-                from safetensors.torch import load_file as load_safetensors
-                try:
-                    self._load_lora_weights(str(load_lora))
-                    self.injector.load_state_dict(load_safetensors(str(load_inj)))
-                    logger.info(f"🔄 [RESUME] LoRA weights loaded: {load_lora.name} + {load_inj.name}")
-                    logger.warning("  ⚠️ Không có training_state.pth — optimizer/scheduler bắt đầu lại")
-                except Exception as e:
-                    logger.error(f"❌ Lỗi load LoRA weights: {e}")
-            return None
+    def _save_training_state_lightweight(self, epoch, global_step, best_val_loss, best_epoch, loss_history, chunk_index=-1, chunk_names=None, step_in_chunk=0):
+        """Save lightweight training state (JSON only, NO optimizer/scheduler).
+        Dùng cho mid-chunk save — tránh ghi ~300MB optimizer state lên Drive FUSE
+        gây Colab disconnect.
         
+        Khi resume từ lightweight state, optimizer sẽ được khởi tạo lại
+        (mất ~100-200 steps warm up, không ảnh hưởng chất lượng model).
+        """
+        # Đợi pending copies trước khi tạo thêm
+        self._wait_pending_copies()
+        
+        state = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_val_loss": best_val_loss,
+            "best_epoch": best_epoch,
+            "loss_history": loss_history,
+            "chunk_index": chunk_index,
+            "chunk_names": chunk_names or [],
+            "step_in_chunk": step_in_chunk,
+            "lightweight": True,  # Flag để resume logic biết đây là lightweight
+        }
+        
+        state_path = self.checkpoints_dir / "training_state_lite.json"
         try:
-            state = torch.load(str(state_path), map_location=DEVICE, weights_only=False)
+            # JSON rất nhỏ (~1KB) → ghi trực tiếp, không cần background thread
+            # Serialize loss_history values: convert numpy/tensor → float
+            serializable_history = {}
+            for k, v in loss_history.items():
+                if isinstance(v, list):
+                    serializable_history[k] = [float(x) if not isinstance(x, (int, float, str)) else x for x in v]
+                else:
+                    serializable_history[k] = v
+            state["loss_history"] = serializable_history
+            state["best_val_loss"] = float(best_val_loss) if best_val_loss != float('inf') else 1e9
             
-            # Restore LoRA + Injector weights
+            with open(str(state_path), "w", encoding="utf-8") as f:
+                json.dump(state, f, indent=2)
+            
+            chunk_info = f", chunk={chunk_index}" if chunk_index >= 0 else ""
+            step_info = f", step_in_chunk={step_in_chunk}" if step_in_chunk > 0 else ""
+            logger.info(f"💾 Training state (lite) saved: epoch={epoch}, step={global_step}{chunk_info}{step_info}")
+        except Exception as e:
+            logger.warning(f"⚠️ Lỗi save lightweight state: {e}")
+    
+    def _load_training_state(self):
+        """Load full training state để resume. Returns dict hoặc None.
+        Hỗ trợ 3 sources (ưu tiên từ trên xuống):
+            1. training_state.pth (full state — optimizer + metadata)
+            2. training_state_lite.json (lightweight — chỉ metadata)
+            3. LoRA weights only (backward compat)
+        """
+        state_path = self.checkpoints_dir / "training_state.pth"
+        lite_path = self.checkpoints_dir / "training_state_lite.json"
+        
+        # === Helper: load LoRA + Injector weights ===
+        def _load_model_weights():
             best_lora = self.checkpoints_dir / "lora_best.safetensors"
             best_inj = self.checkpoints_dir / "injector_best.safetensors"
             backup_lora = self.checkpoints_dir / "lora_backup.safetensors"
             backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
             load_lora = best_lora if best_lora.exists() else (backup_lora if backup_lora.exists() else None)
             load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
-            
             if load_lora and load_inj:
                 from safetensors.torch import load_file as load_safetensors
                 self._load_lora_weights(str(load_lora))
                 self.injector.load_state_dict(load_safetensors(str(load_inj)))
                 logger.info(f"  🔄 LoRA weights: {load_lora.name} + {load_inj.name}")
-            
-            # Restore optimizer, scheduler, scaler
-            if "optimizer" in state:
-                self.optimizer.load_state_dict(state["optimizer"])
-            if "scheduler" in state:
-                self.scheduler.load_state_dict(state["scheduler"])
-            if "scaler" in state:
-                self.scaler.load_state_dict(state["scaler"])
-            
-            logger.info(f"  🔄 Optimizer + Scheduler + Scaler restored")
-            return state
-        except Exception as e:
-            logger.error(f"❌ Lỗi load training state: {e}")
-            return None
+                return True
+            return False
+        
+        # === Source 1: Full state (training_state.pth) ===
+        if state_path.exists():
+            try:
+                state = torch.load(str(state_path), map_location=DEVICE, weights_only=False)
+                _load_model_weights()
+                
+                # Restore optimizer, scheduler, scaler
+                if "optimizer" in state:
+                    self.optimizer.load_state_dict(state["optimizer"])
+                if "scheduler" in state:
+                    self.scheduler.load_state_dict(state["scheduler"])
+                if "scaler" in state:
+                    self.scaler.load_state_dict(state["scaler"])
+                
+                logger.info(f"  🔄 Optimizer + Scheduler + Scaler restored")
+                return state
+            except Exception as e:
+                logger.error(f"❌ Lỗi load training_state.pth: {e}")
+                logger.info("  → Thử fallback sang lightweight state...")
+        
+        # === Source 2: Lightweight JSON (training_state_lite.json) ===
+        if lite_path.exists():
+            try:
+                with open(str(lite_path), "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                
+                _load_model_weights()
+                
+                # Fix best_val_loss nếu đã serialize thành 1e9
+                if state.get("best_val_loss", 0) >= 1e8:
+                    state["best_val_loss"] = float('inf')
+                
+                logger.info(f"  🔄 Loaded lightweight state (no optimizer — sẽ warm up ~100 steps)")
+                logger.warning(f"  ⚠️ Optimizer/Scheduler bắt đầu lại (mid-chunk resume)")
+                return state
+            except Exception as e:
+                logger.error(f"❌ Lỗi load training_state_lite.json: {e}")
+        
+        # === Source 3: LoRA weights only (backward compat) ===
+        if _load_model_weights():
+            logger.warning("  ⚠️ Không có training state — optimizer/scheduler bắt đầu lại")
+        return None
     
     def _validate_across_chunks(self, chunk_dirs, batch_size, target_size, global_step):
         """Validate qua tối đa 3 chunks CỐ ĐỊNH, lấy mỗi chunk ~30 samples.
@@ -1732,8 +1810,12 @@ class Stage2Trainer:
                     samples_trained = (step + 1) * batch_size
                     if samples_trained % MID_CHUNK_SAVE_INTERVAL == 0 and step + 1 < len(dataloader):
                         logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
+                        # Đợi background copies trước đó hoàn tất
+                        self._wait_pending_copies()
                         self._save_checkpoint("backup", is_best=False)
-                        self._save_training_state(
+                        # Dùng lightweight JSON (~1KB) thay vì full state (~300MB)
+                        # để tránh Drive I/O overload → Colab disconnect
+                        self._save_training_state_lightweight(
                             epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
                             chunk_index=chunk_idx, chunk_names=chunk_names,
                             step_in_chunk=step + 1
