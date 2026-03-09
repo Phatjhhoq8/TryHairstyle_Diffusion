@@ -1241,12 +1241,98 @@ class Stage2Trainer:
             except:
                 pass
     
+    # Drive API service (lazy-initialized, None = chưa init hoặc không phải Colab)
+    _drive_service = None
+    _drive_folder_id = None
+    
+    @staticmethod
+    def _init_drive_api(checkpoints_dir: str):
+        """Khởi tạo Google Drive API client (bypass FUSE, nhanh 3-5x).
+        Chỉ chạy trên Colab. Returns (service, folder_id) hoặc (None, None).
+        """
+        if not IS_COLAB:
+            return None, None
+        try:
+            import google.auth
+            from googleapiclient.discovery import build
+            
+            creds, _ = google.auth.default()
+            service = build('drive', 'v3', credentials=creds, cache_discovery=False)
+            
+            # Resolve checkpoints_dir symlink → Drive path
+            real_path = os.path.realpath(checkpoints_dir)
+            # /content/drive/MyDrive/TryHairStyle/checkpoints → TryHairStyle/checkpoints
+            prefix = '/content/drive/MyDrive/'
+            if real_path.startswith(prefix):
+                relative = real_path[len(prefix):]
+            else:
+                logger.warning(f"⚠️ Drive API: cannot resolve path {real_path}")
+                return None, None
+            
+            # Traverse path to find folder ID
+            folder_id = 'root'
+            for part in relative.split('/'):
+                if not part:
+                    continue
+                query = (
+                    f"name='{part}' and '{folder_id}' in parents "
+                    f"and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                )
+                results = service.files().list(q=query, fields='files(id)', pageSize=1).execute()
+                files = results.get('files', [])
+                if files:
+                    folder_id = files[0]['id']
+                else:
+                    # Create folder if not exists
+                    body = {
+                        'name': part,
+                        'parents': [folder_id],
+                        'mimeType': 'application/vnd.google-apps.folder'
+                    }
+                    folder = service.files().create(body=body, fields='id').execute()
+                    folder_id = folder['id']
+            
+            logger.info(f"  ☁️ Drive API initialized (folder_id={folder_id[:8]}...)")
+            return service, folder_id
+        except Exception as e:
+            logger.warning(f"⚠️ Drive API init failed: {e}, fallback to FUSE")
+            return None, None
+    
+    @staticmethod
+    def _upload_to_drive_api(service, folder_id, local_path, filename):
+        """Upload file lên Drive qua API (bypass FUSE).
+        Nếu file đã tồn tại → update. Nếu chưa → create.
+        """
+        from googleapiclient.http import MediaFileUpload
+        
+        # Check if file already exists
+        query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+        results = service.files().list(q=query, fields='files(id)', pageSize=1).execute()
+        existing = results.get('files', [])
+        
+        media = MediaFileUpload(local_path, resumable=True)
+        
+        if existing:
+            # Update existing file
+            service.files().update(
+                fileId=existing[0]['id'],
+                media_body=media
+            ).execute()
+        else:
+            # Create new file
+            body = {'name': filename, 'parents': [folder_id]}
+            service.files().create(
+                body=body,
+                media_body=media,
+                fields='id'
+            ).execute()
+    
     def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
                               loss_history, chunk_index, chunk_names, step_in_chunk):
         """Fully async mid-chunk save — main thread chỉ snapshot (~0.5s).
-        Tất cả file I/O (save_file, Drive copy, JSON) chạy trong background thread.
+        Tất cả file I/O (save_file, Drive API upload, JSON) chạy trong background thread.
         KHÔNG block training loop. KHÔNG glob/cleanup Drive.
-        Vẫn copy lên Drive để switch account resume được.
+        Dùng Drive API (nhanh 3-5x vs FUSE). Fallback to FUSE nếu API fail.
         """
         # === MAIN THREAD: Snapshot state dicts (quick ~0.5s) ===
         lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
@@ -1278,13 +1364,21 @@ class Stage2Trainer:
         checkpoints_dir = str(self.checkpoints_dir)
         logger.info(f"  💾 State dict snapshot done → background save started...")
         
+        # Lazy-init Drive API (chỉ lần đầu)
+        if IS_COLAB and Stage2Trainer._drive_service is None:
+            Stage2Trainer._drive_service, Stage2Trainer._drive_folder_id = \
+                Stage2Trainer._init_drive_api(checkpoints_dir)
+        
+        drive_service = Stage2Trainer._drive_service
+        drive_folder_id = Stage2Trainer._drive_folder_id
+        
         # === BACKGROUND THREAD: All file I/O ===
         def _bg_save():
             try:
                 tmp_dir = "/tmp/training_saves" if IS_COLAB else checkpoints_dir
                 os.makedirs(tmp_dir, exist_ok=True)
                 
-                # 1. Save safetensors to temp
+                # 1. Save safetensors to /tmp (fast, RAM-backed)
                 lora_tmp = os.path.join(tmp_dir, "lora_backup_tmp.safetensors")
                 inj_tmp = os.path.join(tmp_dir, "injector_backup_tmp.safetensors")
                 save_file(lora_dict, lora_tmp)
@@ -1292,12 +1386,31 @@ class Stage2Trainer:
                 lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
                 
                 if IS_COLAB:
-                    # 2. Copy to Drive (serialized via lock — 1 file at a time)
-                    lora_dst = os.path.join(checkpoints_dir, "lora_backup.safetensors")
-                    inj_dst = os.path.join(checkpoints_dir, "injector_backup.safetensors")
-                    with Stage2Trainer._drive_copy_lock:
-                        shutil.copy2(lora_tmp, lora_dst)
-                        shutil.copy2(inj_tmp, inj_dst)
+                    # 2. Upload to Drive via API (3-5x faster than FUSE)
+                    uploaded_via_api = False
+                    if drive_service and drive_folder_id:
+                        try:
+                            with Stage2Trainer._drive_copy_lock:
+                                Stage2Trainer._upload_to_drive_api(
+                                    drive_service, drive_folder_id,
+                                    lora_tmp, "lora_backup.safetensors"
+                                )
+                                Stage2Trainer._upload_to_drive_api(
+                                    drive_service, drive_folder_id,
+                                    inj_tmp, "injector_backup.safetensors"
+                                )
+                            uploaded_via_api = True
+                        except Exception as api_err:
+                            logger.warning(f"⚠️ Drive API upload failed: {api_err}, fallback FUSE...")
+                    
+                    if not uploaded_via_api:
+                        # Fallback: FUSE copy
+                        lora_dst = os.path.join(checkpoints_dir, "lora_backup.safetensors")
+                        inj_dst = os.path.join(checkpoints_dir, "injector_backup.safetensors")
+                        with Stage2Trainer._drive_copy_lock:
+                            shutil.copy2(lora_tmp, lora_dst)
+                            shutil.copy2(inj_tmp, inj_dst)
+                    
                     try: os.remove(lora_tmp)
                     except: pass
                     try: os.remove(inj_tmp)
@@ -1308,20 +1421,34 @@ class Stage2Trainer:
                     shutil.move(inj_tmp, os.path.join(checkpoints_dir, "injector_backup.safetensors"))
                 
                 # 3. Save lightweight JSON state
-                json_dst = os.path.join(checkpoints_dir, "training_state_lite.json")
+                json_tmp = os.path.join(tmp_dir, "training_state_lite_tmp.json")
+                with open(json_tmp, "w", encoding="utf-8") as f:
+                    json.dump(state_json, f, indent=2)
+                
                 if IS_COLAB:
-                    json_tmp = os.path.join(tmp_dir, "training_state_lite_tmp.json")
-                    with open(json_tmp, "w", encoding="utf-8") as f:
-                        json.dump(state_json, f, indent=2)
-                    with Stage2Trainer._drive_copy_lock:
-                        shutil.copy2(json_tmp, json_dst)
+                    json_uploaded = False
+                    if drive_service and drive_folder_id:
+                        try:
+                            with Stage2Trainer._drive_copy_lock:
+                                Stage2Trainer._upload_to_drive_api(
+                                    drive_service, drive_folder_id,
+                                    json_tmp, "training_state_lite.json"
+                                )
+                            json_uploaded = True
+                        except:
+                            pass
+                    if not json_uploaded:
+                        json_dst = os.path.join(checkpoints_dir, "training_state_lite.json")
+                        with Stage2Trainer._drive_copy_lock:
+                            shutil.copy2(json_tmp, json_dst)
                     try: os.remove(json_tmp)
                     except: pass
                 else:
-                    with open(json_dst, "w", encoding="utf-8") as f:
-                        json.dump(state_json, f, indent=2)
+                    json_dst = os.path.join(checkpoints_dir, "training_state_lite.json")
+                    shutil.move(json_tmp, json_dst)
                 
-                logger.info(f"  ✅ Mid-chunk saved: lora ({lora_size:.1f} MB) + injector + state [async done]")
+                method = "API" if (IS_COLAB and drive_service and drive_folder_id) else "FUSE"
+                logger.info(f"  ✅ Mid-chunk saved: lora ({lora_size:.1f} MB) + injector + state [{method} async done]")
             except Exception as e:
                 logger.warning(f"⚠️ Mid-chunk async save failed: {e}")
         
