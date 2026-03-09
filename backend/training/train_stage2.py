@@ -35,7 +35,7 @@ DEVICE = getDevice()
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
 # Mid-chunk checkpoint: save mỗi N samples để tránh mất progress khi disconnect
-MID_CHUNK_SAVE_INTERVAL = 1000  # samples (với batch_size=2 → mỗi 500 steps)
+MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 250 steps)
 
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
