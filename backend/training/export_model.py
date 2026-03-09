@@ -14,7 +14,7 @@ from backend.app.services.training_utils import setupLogger
 logger = setupLogger("ModelExportVerification")
 
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
-DRIVE_MODELS_DIR = Path("/content/drive/MyDrive/TryHairStyle_Models")
+DRIVE_MODELS_DIR = Path("/content/drive/MyDrive/TryHairStyle/model")
 
 class CheckpointManager:
     """
