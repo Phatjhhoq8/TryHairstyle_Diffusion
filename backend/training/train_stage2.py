@@ -971,16 +971,24 @@ class Stage2Trainer:
         }
 
     def _save_safetensors_safe(self, state_dict, path: str):
-        """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt."""
+        """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt.
+        Trên Colab: ghi vào /tmp/ local trước (nhanh), rồi copy sang Drive (tránh FUSE blocking).
+        """
         import tempfile, shutil
         
-        # Tạo temp file CÙNG thư mục để tránh cross-filesystem move trên WSL
-        target_dir = os.path.dirname(path)
-        fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=target_dir)
+        # Trên Colab: ghi local /tmp/ trước để tránh I/O blocking trên Drive FUSE
+        if IS_COLAB:
+            temp_dir = "/tmp/training_saves"
+            os.makedirs(temp_dir, exist_ok=True)
+        else:
+            temp_dir = os.path.dirname(path)
+        
+        fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=temp_dir)
         os.close(fd)
         try:
             save_file(state_dict, temp_path)
-            shutil.move(temp_path, path)
+            shutil.copy2(temp_path, path)
+            os.remove(temp_path)
             
             # Verify file đã được tạo thành công
             if not os.path.exists(path):
@@ -1339,7 +1347,13 @@ class Stage2Trainer:
         chunk_index: index chunk vừa train xong (-1 = epoch hoàn tất).
         chunk_names: danh sách tên chunks theo thứ tự shuffled của epoch hiện tại.
         step_in_chunk: số batches đã train trong chunk hiện tại (0 = chunk hoàn tất).
+        
+        Trên Colab: ghi vào /tmp/ local trước (nhanh), rồi copy sang Drive.
+        Optimizer state dict rất lớn (~200-400MB), ghi trực tiếp lên Drive FUSE
+        gây I/O blocking → Colab runtime gửi SIGINT → crash.
         """
+        import shutil
+        
         state = {
             "epoch": epoch,
             "global_step": global_step,
@@ -1353,8 +1367,21 @@ class Stage2Trainer:
             "chunk_names": chunk_names or [],
             "step_in_chunk": step_in_chunk,
         }
+        
         state_path = self.checkpoints_dir / "training_state.pth"
-        torch.save(state, str(state_path))
+        
+        if IS_COLAB:
+            # Ghi local trước (nhanh ~1-2s), rồi copy sang Drive (tránh FUSE blocking)
+            local_tmp = "/tmp/training_state.pth"
+            torch.save(state, local_tmp)
+            shutil.copy2(local_tmp, str(state_path))
+            try:
+                os.remove(local_tmp)
+            except:
+                pass
+        else:
+            torch.save(state, str(state_path))
+        
         chunk_info = f", chunk={chunk_index}" if chunk_index >= 0 else ""
         step_info = f", step_in_chunk={step_in_chunk}" if step_in_chunk > 0 else ""
         logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}{chunk_info}{step_info}")
