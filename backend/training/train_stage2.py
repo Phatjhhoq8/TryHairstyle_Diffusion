@@ -8,6 +8,7 @@ import json
 import time
 import random
 import shutil
+import threading
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -970,37 +971,69 @@ class Stage2Trainer:
             'val_lpips': avg_lpips
         }
 
+    # Lock để serialize background Drive writes (tránh race condition)
+    _drive_copy_lock = threading.Lock()
+    
+    @staticmethod
+    def _bg_copy_to_drive(src: str, dst: str):
+        """Background thread: copy file từ local → Drive, rồi cleanup temp."""
+        try:
+            with Stage2Trainer._drive_copy_lock:
+                shutil.copy2(src, dst)
+            try:
+                os.remove(src)
+            except:
+                pass
+        except Exception as e:
+            logger.warning(f"⚠️ Background Drive copy failed ({os.path.basename(src)} → {os.path.basename(dst)}): {e}")
+    
     def _save_safetensors_safe(self, state_dict, path: str):
         """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt.
-        Trên Colab: ghi vào /tmp/ local trước (nhanh), rồi copy sang Drive (tránh FUSE blocking).
+        Trên Colab: ghi local → background thread copy sang Drive (KHÔNG block training).
         """
-        import tempfile, shutil
-        
-        # Trên Colab: ghi local /tmp/ trước để tránh I/O blocking trên Drive FUSE
         if IS_COLAB:
+            # === COLAB: Save local (instant) → background copy to Drive ===
             temp_dir = "/tmp/training_saves"
             os.makedirs(temp_dir, exist_ok=True)
-        else:
-            temp_dir = os.path.dirname(path)
-        
-        fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=temp_dir)
-        os.close(fd)
-        try:
-            save_file(state_dict, temp_path)
-            shutil.copy2(temp_path, path)
-            os.remove(temp_path)
             
-            # Verify file đã được tạo thành công
-            if not os.path.exists(path):
-                logger.error(f"❌ File không tồn tại sau khi save: {path}")
-            else:
-                size_mb = os.path.getsize(path) / (1024 * 1024)
-                logger.info(f"  💾 Saved: {os.path.basename(path)} ({size_mb:.1f} MB)")
-        except Exception as e:
-            logger.error(f"❌ Lỗi khi lưu {path}: {e}")
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-            raise e
+            # Unique temp filename để tránh conflict giữa lora_backup và injector_backup
+            import tempfile
+            fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=temp_dir)
+            os.close(fd)
+            try:
+                save_file(state_dict, temp_path)
+                size_mb = os.path.getsize(temp_path) / (1024 * 1024)
+                logger.info(f"  💾 Saved: {os.path.basename(path)} ({size_mb:.1f} MB) [local, đang copy Drive...]")
+                
+                # Background thread copy → Drive (không block training loop)
+                t = threading.Thread(
+                    target=Stage2Trainer._bg_copy_to_drive,
+                    args=(temp_path, path),
+                    daemon=True
+                )
+                t.start()
+            except Exception as e:
+                logger.error(f"❌ Lỗi khi lưu {path}: {e}")
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise e
+        else:
+            # === LOCAL: ghi trực tiếp (không qua Drive FUSE) ===
+            import tempfile
+            target_dir = os.path.dirname(path)
+            fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=target_dir)
+            os.close(fd)
+            try:
+                save_file(state_dict, temp_path)
+                shutil.move(temp_path, path)
+                if os.path.exists(path):
+                    size_mb = os.path.getsize(path) / (1024 * 1024)
+                    logger.info(f"  💾 Saved: {os.path.basename(path)} ({size_mb:.1f} MB)")
+            except Exception as e:
+                logger.error(f"❌ Lỗi khi lưu {path}: {e}")
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                raise e
 
     def _plot_training_charts(self, history: dict, epoch: int):
         """
@@ -1348,12 +1381,10 @@ class Stage2Trainer:
         chunk_names: danh sách tên chunks theo thứ tự shuffled của epoch hiện tại.
         step_in_chunk: số batches đã train trong chunk hiện tại (0 = chunk hoàn tất).
         
-        Trên Colab: ghi vào /tmp/ local trước (nhanh), rồi copy sang Drive.
+        Trên Colab: ghi local → background thread copy sang Drive.
         Optimizer state dict rất lớn (~200-400MB), ghi trực tiếp lên Drive FUSE
         gây I/O blocking → Colab runtime gửi SIGINT → crash.
         """
-        import shutil
-        
         state = {
             "epoch": epoch,
             "global_step": global_step,
@@ -1371,14 +1402,18 @@ class Stage2Trainer:
         state_path = self.checkpoints_dir / "training_state.pth"
         
         if IS_COLAB:
-            # Ghi local trước (nhanh ~1-2s), rồi copy sang Drive (tránh FUSE blocking)
-            local_tmp = "/tmp/training_state.pth"
+            # Ghi local (nhanh ~1-2s) → background thread copy sang Drive (KHÔNG block)
+            import time as _time
+            local_tmp = f"/tmp/training_state_{int(_time.time())}.pth"
             torch.save(state, local_tmp)
-            shutil.copy2(local_tmp, str(state_path))
-            try:
-                os.remove(local_tmp)
-            except:
-                pass
+            
+            # Background copy → Drive
+            t = threading.Thread(
+                target=Stage2Trainer._bg_copy_to_drive,
+                args=(local_tmp, str(state_path)),
+                daemon=True
+            )
+            t.start()
         else:
             torch.save(state, str(state_path))
         
