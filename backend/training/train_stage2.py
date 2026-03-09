@@ -8,6 +8,7 @@ import json
 import time
 import random
 import shutil
+import signal
 import threading
 import torch
 import torch.nn.functional as F
@@ -607,12 +608,41 @@ class Stage2Trainer:
         # 9. Track background Drive copy threads (tránh quá nhiều copies đồng thời)
         self._pending_drive_copies = []
         
+        # 10. Pre-init Drive API (Colab only) — tránh blocking training loop sau này
+        #     Nếu lazy-init trong mid-chunk save → block main thread 5-15s → Colab SIGINT
+        if IS_COLAB and Stage2Trainer._drive_service is None:
+            Stage2Trainer._drive_service, Stage2Trainer._drive_folder_id = \
+                Stage2Trainer._init_drive_api(str(self.checkpoints_dir))
+        
+        # 11. Setup SIGINT handler cho graceful shutdown
+        self._interrupted = False
+        self._setup_signal_handler()
+        
         logger.info("Trainer khởi tạo thành công (LoRA mode). VRAM sử dụng:")
         if torch.cuda.is_available():
             allocated = torch.cuda.memory_allocated() / 1024**3
             reserved = torch.cuda.memory_reserved() / 1024**3
             logger.info(f"  Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB")
         
+    def _setup_signal_handler(self):
+        """Register SIGINT handler để graceful save khi Colab disconnect.
+        Colab gửi SIGINT khi runtime idle quá lâu hoặc user ngắt kết nối.
+        Handler này bắt signal, set flag để training loop save checkpoint trước khi thoát.
+        """
+        self._original_sigint = signal.getsignal(signal.SIGINT)
+        
+        def _handler(signum, frame):
+            if self._interrupted:
+                # Double Ctrl+C → force quit
+                logger.warning("\n⚠️ Double SIGINT — force quit!")
+                signal.signal(signal.SIGINT, self._original_sigint)
+                raise KeyboardInterrupt
+            self._interrupted = True
+            logger.warning("\n⚠️ SIGINT received — sẽ save checkpoint và thoát sau step hiện tại...")
+        
+        signal.signal(signal.SIGINT, _handler)
+        logger.info("  ⚒️ SIGINT handler registered (graceful shutdown)")
+    
     @torch.no_grad()
     def _encode_to_latents(self, images: torch.Tensor) -> torch.Tensor:
         """Encode ảnh RGB tensor sang latent space qua VAE (CPU↔GPU offload)."""
@@ -1364,11 +1394,7 @@ class Stage2Trainer:
         checkpoints_dir = str(self.checkpoints_dir)
         logger.info(f"  💾 State dict snapshot done → background save started...")
         
-        # Lazy-init Drive API (chỉ lần đầu)
-        if IS_COLAB and Stage2Trainer._drive_service is None:
-            Stage2Trainer._drive_service, Stage2Trainer._drive_folder_id = \
-                Stage2Trainer._init_drive_api(checkpoints_dir)
-        
+        # Drive API đã pre-init trong __init__ — không block ở đây nữa
         drive_service = Stage2Trainer._drive_service
         drive_folder_id = Stage2Trainer._drive_folder_id
         
@@ -2025,13 +2051,27 @@ class Stage2Trainer:
                     samples_trained = (step + 1) * batch_size
                     if samples_trained % MID_CHUNK_SAVE_INTERVAL == 0 and step + 1 < len(dataloader):
                         logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
-                        # V3: Fully async — main thread chỉ snapshot state dict (~0.5s)
-                        # Tất cả file I/O chạy background thread, training tiếp tục ngay
+                        # V4: Fully async — Drive API đã pre-init trong __init__
+                        # Main thread chỉ snapshot state dict (~0.5s), tất cả I/O chạy background
                         self._save_mid_chunk_async(
                             epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
                             chunk_index=chunk_idx, chunk_names=chunk_names,
                             step_in_chunk=step + 1
                         )
+                    
+                    # SIGINT check: graceful shutdown khi Colab disconnect hoặc user Ctrl+C
+                    if self._interrupted:
+                        logger.warning(f"🛑 Graceful shutdown — saving checkpoint...")
+                        self._save_checkpoint("backup", is_best=False)
+                        self._save_training_state(
+                            epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
+                            chunk_index=chunk_idx, chunk_names=chunk_names,
+                            step_in_chunk=step + 1
+                        )
+                        self._wait_pending_copies(timeout=60)
+                        logger.info(f"✅ Checkpoint saved. Resume sẽ tiếp tục từ step {step + 1}.")
+                        logger.info(f"{'='*60}")
+                        return  # Thoát sạch (không raise exception)
                 
                 chunk_time = time.time() - chunk_start
                 chunk_avg = sum(epoch_losses[-len(dataloader):]) / max(1, len(dataloader))
