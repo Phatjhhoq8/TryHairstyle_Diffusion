@@ -1240,6 +1240,94 @@ class Stage2Trainer:
                 logger.info(f"  🗑️ Xóa checkpoint cũ: {p.name}")
             except:
                 pass
+    
+    def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
+                              loss_history, chunk_index, chunk_names, step_in_chunk):
+        """Fully async mid-chunk save — main thread chỉ snapshot (~0.5s).
+        Tất cả file I/O (save_file, Drive copy, JSON) chạy trong background thread.
+        KHÔNG block training loop. KHÔNG glob/cleanup Drive.
+        Vẫn copy lên Drive để switch account resume được.
+        """
+        # === MAIN THREAD: Snapshot state dicts (quick ~0.5s) ===
+        lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
+        inj_dict = {k: v.cpu().clone() for k, v in self.injector.state_dict().items()}
+        
+        # Serialize training metadata
+        serializable_history = {}
+        for k, v in loss_history.items():
+            if isinstance(v, list):
+                serializable_history[k] = [
+                    float(x) if not isinstance(x, (int, float, str)) else x
+                    for x in v
+                ]
+            else:
+                serializable_history[k] = v
+        
+        state_json = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_val_loss": float(best_val_loss) if best_val_loss != float('inf') else 1e9,
+            "best_epoch": best_epoch,
+            "loss_history": serializable_history,
+            "chunk_index": chunk_index,
+            "chunk_names": chunk_names or [],
+            "step_in_chunk": step_in_chunk,
+            "lightweight": True,
+        }
+        
+        checkpoints_dir = str(self.checkpoints_dir)
+        logger.info(f"  💾 State dict snapshot done → background save started...")
+        
+        # === BACKGROUND THREAD: All file I/O ===
+        def _bg_save():
+            try:
+                tmp_dir = "/tmp/training_saves" if IS_COLAB else checkpoints_dir
+                os.makedirs(tmp_dir, exist_ok=True)
+                
+                # 1. Save safetensors to temp
+                lora_tmp = os.path.join(tmp_dir, "lora_backup_tmp.safetensors")
+                inj_tmp = os.path.join(tmp_dir, "injector_backup_tmp.safetensors")
+                save_file(lora_dict, lora_tmp)
+                save_file(inj_dict, inj_tmp)
+                lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
+                
+                if IS_COLAB:
+                    # 2. Copy to Drive (serialized via lock — 1 file at a time)
+                    lora_dst = os.path.join(checkpoints_dir, "lora_backup.safetensors")
+                    inj_dst = os.path.join(checkpoints_dir, "injector_backup.safetensors")
+                    with Stage2Trainer._drive_copy_lock:
+                        shutil.copy2(lora_tmp, lora_dst)
+                        shutil.copy2(inj_tmp, inj_dst)
+                    try: os.remove(lora_tmp)
+                    except: pass
+                    try: os.remove(inj_tmp)
+                    except: pass
+                else:
+                    # Local: just move
+                    shutil.move(lora_tmp, os.path.join(checkpoints_dir, "lora_backup.safetensors"))
+                    shutil.move(inj_tmp, os.path.join(checkpoints_dir, "injector_backup.safetensors"))
+                
+                # 3. Save lightweight JSON state
+                json_dst = os.path.join(checkpoints_dir, "training_state_lite.json")
+                if IS_COLAB:
+                    json_tmp = os.path.join(tmp_dir, "training_state_lite_tmp.json")
+                    with open(json_tmp, "w", encoding="utf-8") as f:
+                        json.dump(state_json, f, indent=2)
+                    with Stage2Trainer._drive_copy_lock:
+                        shutil.copy2(json_tmp, json_dst)
+                    try: os.remove(json_tmp)
+                    except: pass
+                else:
+                    with open(json_dst, "w", encoding="utf-8") as f:
+                        json.dump(state_json, f, indent=2)
+                
+                logger.info(f"  ✅ Mid-chunk saved: lora ({lora_size:.1f} MB) + injector + state [async done]")
+            except Exception as e:
+                logger.warning(f"⚠️ Mid-chunk async save failed: {e}")
+        
+        t = threading.Thread(target=_bg_save, daemon=True)
+        t.start()
+        self._pending_drive_copies.append(t)
 
     def _save_to_drive(self, epoch: int, is_best: bool, loss_history: dict):
         """
@@ -1810,12 +1898,9 @@ class Stage2Trainer:
                     samples_trained = (step + 1) * batch_size
                     if samples_trained % MID_CHUNK_SAVE_INTERVAL == 0 and step + 1 < len(dataloader):
                         logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
-                        # Đợi background copies trước đó hoàn tất
-                        self._wait_pending_copies()
-                        self._save_checkpoint("backup", is_best=False)
-                        # Dùng lightweight JSON (~1KB) thay vì full state (~300MB)
-                        # để tránh Drive I/O overload → Colab disconnect
-                        self._save_training_state_lightweight(
+                        # V3: Fully async — main thread chỉ snapshot state dict (~0.5s)
+                        # Tất cả file I/O chạy background thread, training tiếp tục ngay
+                        self._save_mid_chunk_async(
                             epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
                             chunk_index=chunk_idx, chunk_names=chunk_names,
                             step_in_chunk=step + 1
