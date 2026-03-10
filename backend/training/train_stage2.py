@@ -9,6 +9,7 @@ import time
 import random
 import shutil
 import signal
+import atexit
 import threading
 import torch
 import torch.nn.functional as F
@@ -36,8 +37,8 @@ DEVICE = getDevice()
 # Auto-detect Google Colab environment
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
-# Mid-chunk checkpoint: save mỗi N samples để tránh mất progress khi disconnect
-MID_CHUNK_SAVE_INTERVAL = 1000  # samples (với batch_size=2 → mỗi 500 steps)
+# Auto-save timer: background thread tự save mỗi N giây (không block training loop)
+AUTO_SAVE_INTERVAL_SECONDS = 30 * 60  # 30 phút
 
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
@@ -625,23 +626,96 @@ class Stage2Trainer:
             logger.info(f"  Allocated: {allocated:.2f} GB | Reserved: {reserved:.2f} GB")
         
     def _setup_signal_handler(self):
-        """Register SIGINT handler để graceful save khi Colab disconnect.
-        Colab gửi SIGINT khi runtime idle quá lâu hoặc user ngắt kết nối.
-        Handler này bắt signal, set flag để training loop save checkpoint trước khi thoát.
+        """Register SIGINT + SIGTERM + atexit handler cho graceful shutdown.
+        Colab gửi SIGINT/SIGTERM khi runtime idle quá lâu hoặc user ngắt kết nối.
+        Handler bắt signal, set flag để training loop save checkpoint trước khi thoát.
+        atexit đảm bảo save ngay cả khi signal bị miss.
         """
         self._original_sigint = signal.getsignal(signal.SIGINT)
+        self._original_sigterm = signal.getsignal(signal.SIGTERM)
         
         def _handler(signum, frame):
+            sig_name = 'SIGINT' if signum == signal.SIGINT.value else 'SIGTERM'
             if self._interrupted:
-                # Double Ctrl+C → force quit
-                logger.warning("\n⚠️ Double SIGINT — force quit!")
+                # Double signal → force quit
+                logger.warning(f"\n⚠️ Double {sig_name} — force quit!")
                 signal.signal(signal.SIGINT, self._original_sigint)
                 raise KeyboardInterrupt
             self._interrupted = True
-            logger.warning("\n⚠️ SIGINT received — sẽ save checkpoint và thoát sau step hiện tại...")
+            logger.warning(f"\n⚠️ {sig_name} received — sẽ save checkpoint và thoát sau step hiện tại...")
         
         signal.signal(signal.SIGINT, _handler)
-        logger.info("  ⚒️ SIGINT handler registered (graceful shutdown)")
+        signal.signal(signal.SIGTERM, _handler)
+        
+        # atexit: last resort — save nếu process thoát mà signal handler chưa kịp save
+        def _atexit_save():
+            if hasattr(self, '_auto_save_state') and self._auto_save_state:
+                state = self._auto_save_state
+                try:
+                    logger.info("🔚 atexit: saving checkpoint trước khi thoát...")
+                    self._save_mid_chunk_async(
+                        state['epoch'], state['global_step'],
+                        state['best_val_loss'], state['best_epoch'],
+                        state['loss_history'],
+                        chunk_index=state['chunk_index'],
+                        chunk_names=state['chunk_names'],
+                        step_in_chunk=state['step_in_chunk']
+                    )
+                    # Đợi background save hoàn tất
+                    self._wait_pending_copies(timeout=30)
+                except Exception as e:
+                    logger.warning(f"⚠️ atexit save failed: {e}")
+        
+        atexit.register(_atexit_save)
+        logger.info("  ⚒️ Signal handlers registered (SIGINT + SIGTERM + atexit)")
+    
+    # ==============================================================================
+    # AUTO-SAVE TIMER — Background thread tự save mỗi N phút
+    # ==============================================================================
+    
+    def _start_auto_save_timer(self):
+        """Khởi động background timer thread auto-save mỗi AUTO_SAVE_INTERVAL_SECONDS.
+        Thread này hoàn toàn độc lập với training loop — không block gì cả.
+        Nó đọc self._auto_save_state (được cập nhật bởi training loop mỗi step)
+        và gọi _save_mid_chunk_async() nếu có state mới.
+        """
+        self._auto_save_stop = threading.Event()
+        self._auto_save_state = None  # Được training loop cập nhật mỗi step
+        self._auto_save_last_step = -1  # Tránh save trùng
+        
+        def _auto_save_loop():
+            while not self._auto_save_stop.wait(timeout=AUTO_SAVE_INTERVAL_SECONDS):
+                state = self._auto_save_state
+                if state is None:
+                    continue
+                if state['global_step'] == self._auto_save_last_step:
+                    continue  # Chưa có step mới
+                
+                try:
+                    self._auto_save_last_step = state['global_step']
+                    logger.info(f"\n  ⏰ Auto-save timer: saving at step {state['global_step']}...")
+                    self._save_mid_chunk_async(
+                        state['epoch'], state['global_step'],
+                        state['best_val_loss'], state['best_epoch'],
+                        state['loss_history'],
+                        chunk_index=state['chunk_index'],
+                        chunk_names=state['chunk_names'],
+                        step_in_chunk=state['step_in_chunk']
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Auto-save failed: {e}")
+        
+        self._auto_save_thread = threading.Thread(target=_auto_save_loop, daemon=True)
+        self._auto_save_thread.start()
+        logger.info(f"  ⏰ Auto-save timer started (mỗi {AUTO_SAVE_INTERVAL_SECONDS // 60} phút)")
+    
+    def _stop_auto_save_timer(self):
+        """Dừng auto-save timer thread."""
+        if hasattr(self, '_auto_save_stop'):
+            self._auto_save_stop.set()
+            if hasattr(self, '_auto_save_thread'):
+                self._auto_save_thread.join(timeout=5)
+            logger.info("  ⏰ Auto-save timer stopped")
     
     @torch.no_grad()
     def _encode_to_latents(self, images: torch.Tensor) -> torch.Tensor:
@@ -1679,51 +1753,6 @@ class Stage2Trainer:
         step_info = f", step_in_chunk={step_in_chunk}" if step_in_chunk > 0 else ""
         logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}{chunk_info}{step_info}")
     
-    def _save_training_state_lightweight(self, epoch, global_step, best_val_loss, best_epoch, loss_history, chunk_index=-1, chunk_names=None, step_in_chunk=0):
-        """Save lightweight training state (JSON only, NO optimizer/scheduler).
-        Dùng cho mid-chunk save — tránh ghi ~300MB optimizer state lên Drive FUSE
-        gây Colab disconnect.
-        
-        Khi resume từ lightweight state, optimizer sẽ được khởi tạo lại
-        (mất ~100-200 steps warm up, không ảnh hưởng chất lượng model).
-        """
-        # Đợi pending copies trước khi tạo thêm
-        self._wait_pending_copies()
-        
-        state = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_val_loss": best_val_loss,
-            "best_epoch": best_epoch,
-            "loss_history": loss_history,
-            "chunk_index": chunk_index,
-            "chunk_names": chunk_names or [],
-            "step_in_chunk": step_in_chunk,
-            "lightweight": True,  # Flag để resume logic biết đây là lightweight
-        }
-        
-        state_path = self.checkpoints_dir / "training_state_lite.json"
-        try:
-            # JSON rất nhỏ (~1KB) → ghi trực tiếp, không cần background thread
-            # Serialize loss_history values: convert numpy/tensor → float
-            serializable_history = {}
-            for k, v in loss_history.items():
-                if isinstance(v, list):
-                    serializable_history[k] = [float(x) if not isinstance(x, (int, float, str)) else x for x in v]
-                else:
-                    serializable_history[k] = v
-            state["loss_history"] = serializable_history
-            state["best_val_loss"] = float(best_val_loss) if best_val_loss != float('inf') else 1e9
-            
-            with open(str(state_path), "w", encoding="utf-8") as f:
-                json.dump(state, f, indent=2)
-            
-            chunk_info = f", chunk={chunk_index}" if chunk_index >= 0 else ""
-            step_info = f", step_in_chunk={step_in_chunk}" if step_in_chunk > 0 else ""
-            logger.info(f"💾 Training state (lite) saved: epoch={epoch}, step={global_step}{chunk_info}{step_info}")
-        except Exception as e:
-            logger.warning(f"⚠️ Lỗi save lightweight state: {e}")
-    
     def _load_training_state(self):
         """Load full training state để resume. Returns dict hoặc None.
         Hỗ trợ 3 sources (ưu tiên từ trên xuống):
@@ -1945,6 +1974,8 @@ class Stage2Trainer:
         # ==================================================
         # 4. TRAINING LOOP — 1 epoch = TẤT CẢ chunks
         # ==================================================
+        # Khởi động auto-save timer (background thread save mỗi 30 phút)
+        self._start_auto_save_timer()
         for epoch in range(start_epoch, num_epochs):
             epoch_start = time.time()
             epoch_losses = []
@@ -2047,21 +2078,23 @@ class Stage2Trainer:
                     })
                     global_step += 1
                     
-                    # Mid-chunk checkpoint: save mỗi MID_CHUNK_SAVE_INTERVAL samples
-                    samples_trained = (step + 1) * batch_size
-                    if samples_trained % MID_CHUNK_SAVE_INTERVAL == 0 and step + 1 < len(dataloader):
-                        logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
-                        # V4: Fully async — Drive API đã pre-init trong __init__
-                        # Main thread chỉ snapshot state dict (~0.5s), tất cả I/O chạy background
-                        self._save_mid_chunk_async(
-                            epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
-                            chunk_index=chunk_idx, chunk_names=chunk_names,
-                            step_in_chunk=step + 1
-                        )
+                    # Cập nhật auto-save state (training loop KHÔNG save trực tiếp)
+                    # Background timer thread sẽ đọc state này và save mỗi 30 phút
+                    self._auto_save_state = {
+                        'epoch': epoch + 1,
+                        'global_step': global_step,
+                        'best_val_loss': best_val_loss,
+                        'best_epoch': best_epoch,
+                        'loss_history': loss_history,
+                        'chunk_index': chunk_idx,
+                        'chunk_names': chunk_names,
+                        'step_in_chunk': step + 1,
+                    }
                     
-                    # SIGINT check: graceful shutdown khi Colab disconnect hoặc user Ctrl+C
+                    # SIGINT/SIGTERM check: graceful shutdown
                     if self._interrupted:
                         logger.warning(f"🛑 Graceful shutdown — saving checkpoint...")
+                        self._stop_auto_save_timer()
                         self._save_checkpoint("backup", is_best=False)
                         self._save_training_state(
                             epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
@@ -2141,6 +2174,9 @@ class Stage2Trainer:
         # ==================================================
         # FINAL: Save latest LoRA model
         # ==================================================
+        # Dừng auto-save timer trước khi save cuối cùng
+        self._stop_auto_save_timer()
+        
         final_lora_path = self.checkpoints_dir / "lora_latest.safetensors"
         self._save_safetensors_safe(self._get_lora_state_dict(), str(final_lora_path))
         final_inj_path = self.checkpoints_dir / "injector_latest.safetensors"
