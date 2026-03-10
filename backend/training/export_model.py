@@ -16,6 +16,13 @@ logger = setupLogger("ModelExportVerification")
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 DRIVE_MODELS_DIR = Path("/content/drive/MyDrive/TryHairStyle/model")
 
+# HuggingFace Hub config (checkpoint + export)
+HF_TOKEN = os.environ.get("HUGFACE_TOKEN", "")
+HF_REPO_ID = os.environ.get("HF_REPO_ID", "")
+HF_REPO_TYPE = "dataset"
+HF_SUBFOLDER = "checkpoints"
+HF_EXPORT_SUBFOLDER = "exported"  # subfolder cho model export
+
 class CheckpointManager:
     """
     Quản lý, đánh giá và xuất LoRA Checkpoints sau khi Train Stage 2.
@@ -29,19 +36,78 @@ class CheckpointManager:
         self.production_models_dir = self.project_dir / "backend" / "models"
         
         os.makedirs(self.checkpoints_dir, exist_ok=True)
+        
+        # Download checkpoint từ HF Hub nếu local trống (Colab)
+        if IS_COLAB and HF_TOKEN and HF_REPO_ID:
+            self._download_checkpoints_from_hf()
+    
+    def _download_checkpoints_from_hf(self):
+        """Download checkpoint files từ HF Hub về local nếu chưa có."""
+        try:
+            from huggingface_hub import hf_hub_download
+            hf_files = [
+                "lora_best.safetensors",
+                "lora_latest.safetensors",
+                "lora_backup.safetensors",
+                "injector_best.safetensors",
+                "injector_latest.safetensors",
+                "injector_backup.safetensors",
+            ]
+            downloaded = []
+            for fname in hf_files:
+                local_path = self.checkpoints_dir / fname
+                if local_path.exists():
+                    continue
+                try:
+                    hf_hub_download(
+                        repo_id=HF_REPO_ID,
+                        repo_type=HF_REPO_TYPE,
+                        filename=f"{HF_SUBFOLDER}/{fname}",
+                        token=HF_TOKEN,
+                        local_dir=str(self.checkpoints_dir),
+                        local_dir_use_symlinks=False,
+                    )
+                    # Move từ subfolder về root
+                    hf_path = self.checkpoints_dir / HF_SUBFOLDER / fname
+                    if hf_path.exists():
+                        shutil.move(str(hf_path), str(local_path))
+                    downloaded.append(fname)
+                except Exception:
+                    pass
+            if downloaded:
+                logger.info(f"  ☁️ Downloaded từ HF Hub: {downloaded}")
+            else:
+                logger.info(f"  ☁️ HF Hub: không có checkpoint mới")
+        except ImportError:
+            logger.warning("  ⚠️ huggingface_hub chưa cài")
+        except Exception as e:
+            logger.warning(f"  ⚠️ HF download failed: {e}")
     
     def _copy_to_drive(self, local_path):
-        """Copy file production lên Google Drive (chỉ Colab)."""
+        """Upload file lên HF Hub (primary) và copy Drive (fallback). Chỉ Colab."""
         if not IS_COLAB:
             return
-        try:
-            os.makedirs(str(DRIVE_MODELS_DIR), exist_ok=True)
-            dest = DRIVE_MODELS_DIR / os.path.basename(local_path)
-            shutil.copy2(str(local_path), str(dest))
-            size_mb = os.path.getsize(str(dest)) / (1024 * 1024)
-            logger.info(f"  ☁️ Drive: {dest.name} ({size_mb:.1f} MB) → {DRIVE_MODELS_DIR}")
-        except Exception as e:
-            logger.warning(f"  ⚠️ Không thể copy lên Drive: {e}")
+        
+        filename = os.path.basename(str(local_path))
+        
+        # Primary: HuggingFace Hub
+        if HF_TOKEN and HF_REPO_ID:
+            try:
+                from huggingface_hub import upload_file
+                upload_file(
+                    path_or_fileobj=str(local_path),
+                    path_in_repo=f"{HF_EXPORT_SUBFOLDER}/{filename}",
+                    repo_id=HF_REPO_ID,
+                    repo_type=HF_REPO_TYPE,
+                    token=HF_TOKEN,
+                    commit_message=f"export: {filename}",
+                )
+                size_mb = os.path.getsize(str(local_path)) / (1024 * 1024)
+                logger.info(f"  ☁️ HF: {filename} ({size_mb:.1f} MB) → {HF_REPO_ID}/{HF_EXPORT_SUBFOLDER}/")
+            except Exception as hf_err:
+                logger.error(f"  ❌ HF upload failed ({filename}): {hf_err}")
+        else:
+            logger.warning(f"  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload {filename}")
         
     def find_latest_checkpoint(self, stage="stage2"):
         """ 
