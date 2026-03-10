@@ -40,6 +40,10 @@ IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 # Mid-chunk checkpoint: save mỗi N samples
 MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 250 steps)
 
+# Flag: tắt mid-chunk save hoàn toàn (hữu ích khi muốn chạy nhanh, không lo Colab crash)
+# Đặt True để skip toàn bộ mid-chunk checkpoint, chỉ save cuối mỗi epoch
+SKIP_MID_CHUNK_SAVE = False
+
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
 
@@ -619,6 +623,25 @@ class Stage2Trainer:
         self._interrupted = False
         self._last_save_state = None  # Cho atexit handler
         self._setup_signal_handler()
+        
+        # 12. Pre-download VGG16 + InceptionResnet — tránh download 635MB giữa lúc train
+        #     Chỉ cần download 1 lần, PyTorch cache vào ~/.cache/torch/hub/
+        try:
+            from torchvision import models as tv_models
+            logger.info("  → Pre-downloading VGG16 weights (nếu chưa cache)...")
+            _vgg = tv_models.vgg16(weights=tv_models.VGG16_Weights.IMAGENET1K_V1)
+            del _vgg
+            logger.info("  → VGG16 weights cached ✅")
+        except Exception as e:
+            logger.warning(f"  ⚠️ VGG16 pre-download failed: {e} (sẽ download khi cần)")
+        try:
+            from facenet_pytorch import InceptionResnetV1
+            logger.info("  → Pre-downloading InceptionResnetV1 weights (nếu chưa cache)...")
+            _face = InceptionResnetV1(pretrained='vggface2')
+            del _face
+            logger.info("  → InceptionResnetV1 weights cached ✅")
+        except Exception as e:
+            logger.warning(f"  ⚠️ InceptionResnetV1 pre-download failed: {e} (sẽ download khi cần)")
         
         logger.info("Trainer khởi tạo thành công (LoRA mode). VRAM sử dụng:")
         if torch.cuda.is_available():
@@ -1444,8 +1467,9 @@ class Stage2Trainer:
     
     def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
                               loss_history, chunk_index, chunk_names, step_in_chunk):
-        """Mid-chunk save: main thread ghi file vào /tmp (đồng bộ, instant).
-        Chỉ async phần upload Drive. Đảm bảo file tồn tại dù process bị kill.
+        """Mid-chunk save: ghi /tmp (instant) rồi upload Drive API ĐỒNG BỘ.
+        V5: Bỏ daemon thread — đảm bảo file chắc chắn trên Drive trước khi training tiếp.
+        Block ~3-5s mỗi 500 samples (chấp nhận được, tương đương 1 training step).
         """
         # === MAIN THREAD: Snapshot + ghi /tmp (đồng bộ) ===
         lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
@@ -1488,53 +1512,50 @@ class Stage2Trainer:
             json.dump(state_json, f, indent=2)
         
         lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
-        logger.info(f"  💾 Files saved to local ({lora_size:.1f} MB) — uploading to Drive async...")
         
-        # === BACKGROUND THREAD: Chỉ upload Drive (file đã tồn tại local) ===
+        # === UPLOAD LÊN DRIVE — ĐỒNG BỘ (V5: không dùng daemon thread) ===
         if not IS_COLAB:
+            logger.info(f"  💾 Mid-chunk saved locally ({lora_size:.1f} MB)")
             return  # Local: file đã ở đúng chỗ, không cần copy
         
-        checkpoints_dir = str(self.checkpoints_dir)
         drive_service = Stage2Trainer._drive_service
         drive_folder_id = Stage2Trainer._drive_folder_id
         
-        def _bg_upload():
-            try:
-                uploaded_via_api = False
-                if drive_service and drive_folder_id:
-                    try:
-                        with Stage2Trainer._drive_copy_lock:
-                            Stage2Trainer._upload_to_drive_api(
-                                drive_service, drive_folder_id,
-                                lora_tmp, "lora_backup.safetensors"
-                            )
-                            Stage2Trainer._upload_to_drive_api(
-                                drive_service, drive_folder_id,
-                                inj_tmp, "injector_backup.safetensors"
-                            )
-                            Stage2Trainer._upload_to_drive_api(
-                                drive_service, drive_folder_id,
-                                json_tmp, "training_state_lite.json"
-                            )
-                        uploaded_via_api = True
-                    except Exception as api_err:
-                        logger.warning(f"⚠️ Drive API upload failed: {api_err}, fallback FUSE...")
-                
-                if not uploaded_via_api:
-                    # Fallback: FUSE copy
-                    with Stage2Trainer._drive_copy_lock:
-                        shutil.copy2(lora_tmp, os.path.join(checkpoints_dir, "lora_backup.safetensors"))
-                        shutil.copy2(inj_tmp, os.path.join(checkpoints_dir, "injector_backup.safetensors"))
-                        shutil.copy2(json_tmp, os.path.join(checkpoints_dir, "training_state_lite.json"))
-                
-                method = "API" if uploaded_via_api else "FUSE"
-                logger.info(f"  ✅ Drive upload done [{method}]")
-            except Exception as e:
-                logger.warning(f"⚠️ Drive upload failed: {e} (local files vẫn an toàn)")
+        upload_start = time.time()
+        uploaded_via_api = False
         
-        t = threading.Thread(target=_bg_upload, daemon=True)
-        t.start()
-        self._pending_drive_copies.append(t)
+        if drive_service and drive_folder_id:
+            try:
+                Stage2Trainer._upload_to_drive_api(
+                    drive_service, drive_folder_id,
+                    lora_tmp, "lora_backup.safetensors"
+                )
+                Stage2Trainer._upload_to_drive_api(
+                    drive_service, drive_folder_id,
+                    inj_tmp, "injector_backup.safetensors"
+                )
+                Stage2Trainer._upload_to_drive_api(
+                    drive_service, drive_folder_id,
+                    json_tmp, "training_state_lite.json"
+                )
+                uploaded_via_api = True
+            except Exception as api_err:
+                logger.warning(f"⚠️ Drive API upload failed: {api_err}, fallback FUSE...")
+        
+        if not uploaded_via_api:
+            # Fallback: FUSE copy (đồng bộ — chậm hơn nhưng vẫn đảm bảo)
+            checkpoints_dir = str(self.checkpoints_dir)
+            try:
+                shutil.copy2(lora_tmp, os.path.join(checkpoints_dir, "lora_backup.safetensors"))
+                shutil.copy2(inj_tmp, os.path.join(checkpoints_dir, "injector_backup.safetensors"))
+                shutil.copy2(json_tmp, os.path.join(checkpoints_dir, "training_state_lite.json"))
+            except Exception as fuse_err:
+                logger.error(f"❌ FUSE fallback cũng failed: {fuse_err}")
+                return
+        
+        upload_time = time.time() - upload_start
+        method = "API" if uploaded_via_api else "FUSE"
+        logger.info(f"  💾 Mid-chunk saved ({lora_size:.1f} MB) → Drive [{method}] in {upload_time:.1f}s ✅")
 
     def _save_to_drive(self, epoch: int, is_best: bool, loss_history: dict):
         """
@@ -2059,8 +2080,11 @@ class Stage2Trainer:
                     # Mid-chunk checkpoint: save mỗi MID_CHUNK_SAVE_INTERVAL samples
                     # Ghi file vào /tmp đồng bộ (instant), async copy Drive
                     # File luôn tồn tại dù process bị kill
+                    # Đặt SKIP_MID_CHUNK_SAVE = True ở đầu file để tắt hoàn toàn
                     samples_trained = (step + 1) * batch_size
-                    if samples_trained % MID_CHUNK_SAVE_INTERVAL == 0 and step + 1 < len(dataloader):
+                    if (not SKIP_MID_CHUNK_SAVE
+                            and samples_trained % MID_CHUNK_SAVE_INTERVAL == 0
+                            and step + 1 < len(dataloader)):
                         logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
                         self._save_mid_chunk_async(
                             epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
@@ -2189,7 +2213,14 @@ if __name__ == "__main__":
     parser.add_argument("--resolution", type=int, default=512, help="Kích thước ảnh (512 hoặc 1024)")
     parser.add_argument("--accumulation", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--fresh", action="store_true", help="Train từ đầu, KHÔNG load checkpoint cũ")
+    parser.add_argument("--skip-mid-chunk-save", action="store_true",
+                        help="Tắt mid-chunk checkpointing (chạy nhanh hơn, mất progress nếu crash giữa chunk)")
     args = parser.parse_args()
+    
+    # Override global flag nếu được truyền qua CLI
+    if args.skip_mid_chunk_save:
+        globals()['SKIP_MID_CHUNK_SAVE'] = True
+        logger.info("⚡ SKIP_MID_CHUNK_SAVE = True (mid-chunk save bị tắt)")
     
     trainer = Stage2Trainer()
     trainer.train_loop(
