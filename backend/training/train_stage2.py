@@ -1302,6 +1302,20 @@ class Stage2Trainer:
         plt.close(fig)
         
         logger.info(f"📊 Loss Chart đã lưu: {chartPath.name}")
+        
+        # Upload chart lên HF Hub
+        if HF_TOKEN and HF_REPO_ID:
+            try:
+                from huggingface_hub import upload_file
+                upload_file(
+                    path_or_fileobj=str(latestPath),
+                    path_in_repo=f"{HF_SUBFOLDER}/charts/loss_chart_latest.png",
+                    repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, token=HF_TOKEN,
+                    commit_message=f"chart: epoch {epoch}",
+                )
+                logger.info(f"  ☁️ HF: loss_chart_latest.png → {HF_REPO_ID}/{HF_SUBFOLDER}/charts/")
+            except Exception as e:
+                logger.warning(f"  ⚠️ HF upload chart failed: {e}")
 
     def _save_checkpoint(self, suffix: str, is_best: bool = False):
         """
@@ -1608,6 +1622,20 @@ class Stage2Trainer:
             with open(str(history_path), "w", encoding="utf-8") as f:
                 json.dump(loss_history, f, indent=2)
             
+            # 3. Upload training_history.json lên HF Hub
+            if HF_TOKEN and HF_REPO_ID:
+                try:
+                    from huggingface_hub import upload_file
+                    upload_file(
+                        path_or_fileobj=str(history_path),
+                        path_in_repo=f"{HF_SUBFOLDER}/training_history.json",
+                        repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, token=HF_TOKEN,
+                        commit_message=f"history: epoch {epoch}",
+                    )
+                    logger.info(f"  ☁️ HF: training_history.json → {HF_REPO_ID}/{HF_SUBFOLDER}/")
+                except Exception as e:
+                    logger.warning(f"  ⚠️ HF upload training_history.json failed: {e}")
+            
             best_str = '✓' if is_best else '✗'
             logger.info(f"☁️ Drive: epoch_{epoch} | best={best_str} | history ✓")
         except Exception as e:
@@ -1804,6 +1832,7 @@ class Stage2Trainer:
                     "injector_backup.safetensors",
                     "lora_best.safetensors",
                     "injector_best.safetensors",
+                    "training_history.json",
                 ]
                 downloaded = []
                 for fname in hf_files:
