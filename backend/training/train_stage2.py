@@ -48,6 +48,7 @@ SKIP_MID_CHUNK_SAVE = False
 # Đọc từ environment variable (.env hoặc Colab secret)
 HF_TOKEN = os.environ.get("HUGFACE_TOKEN", "")   # token write permission
 HF_REPO_ID = os.environ.get("HF_REPO_ID", "")    # vd: halogenbr/tryhairstyle
+HF_REPO_TYPE = "dataset"                           # loại repo trên HF Hub
 HF_SUBFOLDER = "checkpoints"                       # subfolder trong repo
 
 # Đường dẫn SDXL local model
@@ -1085,7 +1086,7 @@ class Stage2Trainer:
             try:
                 from huggingface_hub import upload_file, create_repo
                 try:
-                    create_repo(HF_REPO_ID, token=HF_TOKEN, exist_ok=True, private=True)
+                    create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
                 except Exception:
                     pass
                 
@@ -1093,6 +1094,7 @@ class Stage2Trainer:
                     path_or_fileobj=src,
                     path_in_repo=f"{HF_SUBFOLDER}/{filename}",
                     repo_id=HF_REPO_ID,
+                    repo_type=HF_REPO_TYPE,
                     token=HF_TOKEN,
                     commit_message=f"checkpoint: {filename}",
                 )
@@ -1555,7 +1557,7 @@ class Stage2Trainer:
                 try:
                     from huggingface_hub import upload_file, create_repo
                     try:
-                        create_repo(HF_REPO_ID, token=HF_TOKEN, exist_ok=True, private=True)
+                        create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
                     except Exception:
                         pass
                     
@@ -1568,6 +1570,7 @@ class Stage2Trainer:
                             path_or_fileobj=local_file,
                             path_in_repo=f"{HF_SUBFOLDER}/{remote_name}",
                             repo_id=HF_REPO_ID,
+                            repo_type=HF_REPO_TYPE,
                             token=HF_TOKEN,
                             commit_message=f"mid-chunk: {remote_name}",
                         )
@@ -1810,6 +1813,7 @@ class Stage2Trainer:
                     try:
                         hf_hub_download(
                             repo_id=HF_REPO_ID,
+                            repo_type=HF_REPO_TYPE,
                             filename=f"{HF_SUBFOLDER}/{fname}",
                             token=HF_TOKEN,
                             local_dir=str(self.checkpoints_dir),
