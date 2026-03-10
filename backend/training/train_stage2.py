@@ -37,8 +37,8 @@ DEVICE = getDevice()
 # Auto-detect Google Colab environment
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
-# Auto-save timer: background thread tự save mỗi N giây (không block training loop)
-AUTO_SAVE_INTERVAL_SECONDS = 30 * 60  # 30 phút
+# Mid-chunk checkpoint: save mỗi N samples
+MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 250 steps)
 
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
@@ -617,6 +617,7 @@ class Stage2Trainer:
         
         # 11. Setup SIGINT handler cho graceful shutdown
         self._interrupted = False
+        self._last_save_state = None  # Cho atexit handler
         self._setup_signal_handler()
         
         logger.info("Trainer khởi tạo thành công (LoRA mode). VRAM sử dụng:")
@@ -649,8 +650,8 @@ class Stage2Trainer:
         
         # atexit: last resort — save nếu process thoát mà signal handler chưa kịp save
         def _atexit_save():
-            if hasattr(self, '_auto_save_state') and self._auto_save_state:
-                state = self._auto_save_state
+            if hasattr(self, '_last_save_state') and self._last_save_state:
+                state = self._last_save_state
                 try:
                     logger.info("🔚 atexit: saving checkpoint trước khi thoát...")
                     self._save_mid_chunk_async(
@@ -661,7 +662,7 @@ class Stage2Trainer:
                         chunk_names=state['chunk_names'],
                         step_in_chunk=state['step_in_chunk']
                     )
-                    # Đợi background save hoàn tất
+                    # Đợi background Drive upload hoàn tất
                     self._wait_pending_copies(timeout=30)
                 except Exception as e:
                     logger.warning(f"⚠️ atexit save failed: {e}")
@@ -669,37 +670,7 @@ class Stage2Trainer:
         atexit.register(_atexit_save)
         logger.info("  ⚒️ Signal handlers registered (SIGINT + SIGTERM + atexit)")
     
-    # ==============================================================================
-    # AUTO-SAVE TIMER — Background thread tự save mỗi N phút
-    # ==============================================================================
-    
-    def _start_auto_save_timer(self):
-        """Khởi động background timer thread — chỉ SET FLAG mỗi N phút.
-        KHÔNG làm GPU operations — tránh block main thread's CUDA access.
-        Training loop (main thread) check flag và tự save.
-        """
-        self._auto_save_stop = threading.Event()
-        self._auto_save_state = None  # Được training loop cập nhật mỗi step
-        self._should_auto_save = False  # Flag: timer set True, training loop check
-        
-        def _auto_save_loop():
-            while not self._auto_save_stop.wait(timeout=AUTO_SAVE_INTERVAL_SECONDS):
-                if self._auto_save_state is not None:
-                    # Chỉ set flag — MAIN THREAD sẽ làm GPU snapshot
-                    self._should_auto_save = True
-                    logger.info(f"\n  ⏰ Auto-save timer: flag set — sẽ save ở step tiếp theo...")
-        
-        self._auto_save_thread = threading.Thread(target=_auto_save_loop, daemon=True)
-        self._auto_save_thread.start()
-        logger.info(f"  ⏰ Auto-save timer started (mỗi {AUTO_SAVE_INTERVAL_SECONDS // 60} phút)")
-    
-    def _stop_auto_save_timer(self):
-        """Dừng auto-save timer thread."""
-        if hasattr(self, '_auto_save_stop'):
-            self._auto_save_stop.set()
-            if hasattr(self, '_auto_save_thread'):
-                self._auto_save_thread.join(timeout=5)
-            logger.info("  ⏰ Auto-save timer stopped")
+
     
     @torch.no_grad()
     def _encode_to_latents(self, images: torch.Tensor) -> torch.Tensor:
@@ -1417,14 +1388,21 @@ class Stage2Trainer:
     
     def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
                               loss_history, chunk_index, chunk_names, step_in_chunk):
-        """Fully async mid-chunk save — main thread chỉ snapshot (~0.5s).
-        Tất cả file I/O (save_file, Drive API upload, JSON) chạy trong background thread.
-        KHÔNG block training loop. KHÔNG glob/cleanup Drive.
-        Dùng Drive API (nhanh 3-5x vs FUSE). Fallback to FUSE nếu API fail.
+        """Mid-chunk save: main thread ghi file vào /tmp (đồng bộ, instant).
+        Chỉ async phần upload Drive. Đảm bảo file tồn tại dù process bị kill.
         """
-        # === MAIN THREAD: Snapshot state dicts (quick ~0.5s) ===
+        # === MAIN THREAD: Snapshot + ghi /tmp (đồng bộ) ===
         lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
         inj_dict = {k: v.cpu().clone() for k, v in self.injector.state_dict().items()}
+        
+        # Ghi file vào /tmp (RAM-backed, instant) — ĐỒNG BỘ
+        tmp_dir = "/tmp/training_saves" if IS_COLAB else str(self.checkpoints_dir)
+        os.makedirs(tmp_dir, exist_ok=True)
+        
+        lora_tmp = os.path.join(tmp_dir, "lora_backup.safetensors")
+        inj_tmp = os.path.join(tmp_dir, "injector_backup.safetensors")
+        save_file(lora_dict, lora_tmp)
+        save_file(inj_dict, inj_tmp)
         
         # Serialize training metadata
         serializable_history = {}
@@ -1449,94 +1427,56 @@ class Stage2Trainer:
             "lightweight": True,
         }
         
-        checkpoints_dir = str(self.checkpoints_dir)
-        logger.info(f"  💾 State dict snapshot done → background save started...")
+        json_tmp = os.path.join(tmp_dir, "training_state_lite.json")
+        with open(json_tmp, "w", encoding="utf-8") as f:
+            json.dump(state_json, f, indent=2)
         
-        # Drive API đã pre-init trong __init__ — không block ở đây nữa
+        lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
+        logger.info(f"  💾 Files saved to local ({lora_size:.1f} MB) — uploading to Drive async...")
+        
+        # === BACKGROUND THREAD: Chỉ upload Drive (file đã tồn tại local) ===
+        if not IS_COLAB:
+            return  # Local: file đã ở đúng chỗ, không cần copy
+        
+        checkpoints_dir = str(self.checkpoints_dir)
         drive_service = Stage2Trainer._drive_service
         drive_folder_id = Stage2Trainer._drive_folder_id
         
-        # === BACKGROUND THREAD: All file I/O ===
-        def _bg_save():
+        def _bg_upload():
             try:
-                tmp_dir = "/tmp/training_saves" if IS_COLAB else checkpoints_dir
-                os.makedirs(tmp_dir, exist_ok=True)
-                
-                # 1. Save safetensors to /tmp (fast, RAM-backed)
-                lora_tmp = os.path.join(tmp_dir, "lora_backup_tmp.safetensors")
-                inj_tmp = os.path.join(tmp_dir, "injector_backup_tmp.safetensors")
-                save_file(lora_dict, lora_tmp)
-                save_file(inj_dict, inj_tmp)
-                lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
-                
-                if IS_COLAB:
-                    # 2. Upload to Drive via API (3-5x faster than FUSE)
-                    uploaded_via_api = False
-                    if drive_service and drive_folder_id:
-                        try:
-                            with Stage2Trainer._drive_copy_lock:
-                                Stage2Trainer._upload_to_drive_api(
-                                    drive_service, drive_folder_id,
-                                    lora_tmp, "lora_backup.safetensors"
-                                )
-                                Stage2Trainer._upload_to_drive_api(
-                                    drive_service, drive_folder_id,
-                                    inj_tmp, "injector_backup.safetensors"
-                                )
-                            uploaded_via_api = True
-                        except Exception as api_err:
-                            logger.warning(f"⚠️ Drive API upload failed: {api_err}, fallback FUSE...")
-                    
-                    if not uploaded_via_api:
-                        # Fallback: FUSE copy
-                        lora_dst = os.path.join(checkpoints_dir, "lora_backup.safetensors")
-                        inj_dst = os.path.join(checkpoints_dir, "injector_backup.safetensors")
+                uploaded_via_api = False
+                if drive_service and drive_folder_id:
+                    try:
                         with Stage2Trainer._drive_copy_lock:
-                            shutil.copy2(lora_tmp, lora_dst)
-                            shutil.copy2(inj_tmp, inj_dst)
-                    
-                    try: os.remove(lora_tmp)
-                    except: pass
-                    try: os.remove(inj_tmp)
-                    except: pass
-                else:
-                    # Local: just move
-                    shutil.move(lora_tmp, os.path.join(checkpoints_dir, "lora_backup.safetensors"))
-                    shutil.move(inj_tmp, os.path.join(checkpoints_dir, "injector_backup.safetensors"))
+                            Stage2Trainer._upload_to_drive_api(
+                                drive_service, drive_folder_id,
+                                lora_tmp, "lora_backup.safetensors"
+                            )
+                            Stage2Trainer._upload_to_drive_api(
+                                drive_service, drive_folder_id,
+                                inj_tmp, "injector_backup.safetensors"
+                            )
+                            Stage2Trainer._upload_to_drive_api(
+                                drive_service, drive_folder_id,
+                                json_tmp, "training_state_lite.json"
+                            )
+                        uploaded_via_api = True
+                    except Exception as api_err:
+                        logger.warning(f"⚠️ Drive API upload failed: {api_err}, fallback FUSE...")
                 
-                # 3. Save lightweight JSON state
-                json_tmp = os.path.join(tmp_dir, "training_state_lite_tmp.json")
-                with open(json_tmp, "w", encoding="utf-8") as f:
-                    json.dump(state_json, f, indent=2)
+                if not uploaded_via_api:
+                    # Fallback: FUSE copy
+                    with Stage2Trainer._drive_copy_lock:
+                        shutil.copy2(lora_tmp, os.path.join(checkpoints_dir, "lora_backup.safetensors"))
+                        shutil.copy2(inj_tmp, os.path.join(checkpoints_dir, "injector_backup.safetensors"))
+                        shutil.copy2(json_tmp, os.path.join(checkpoints_dir, "training_state_lite.json"))
                 
-                if IS_COLAB:
-                    json_uploaded = False
-                    if drive_service and drive_folder_id:
-                        try:
-                            with Stage2Trainer._drive_copy_lock:
-                                Stage2Trainer._upload_to_drive_api(
-                                    drive_service, drive_folder_id,
-                                    json_tmp, "training_state_lite.json"
-                                )
-                            json_uploaded = True
-                        except:
-                            pass
-                    if not json_uploaded:
-                        json_dst = os.path.join(checkpoints_dir, "training_state_lite.json")
-                        with Stage2Trainer._drive_copy_lock:
-                            shutil.copy2(json_tmp, json_dst)
-                    try: os.remove(json_tmp)
-                    except: pass
-                else:
-                    json_dst = os.path.join(checkpoints_dir, "training_state_lite.json")
-                    shutil.move(json_tmp, json_dst)
-                
-                method = "API" if (IS_COLAB and drive_service and drive_folder_id) else "FUSE"
-                logger.info(f"  ✅ Mid-chunk saved: lora ({lora_size:.1f} MB) + injector + state [{method} async done]")
+                method = "API" if uploaded_via_api else "FUSE"
+                logger.info(f"  ✅ Drive upload done [{method}]")
             except Exception as e:
-                logger.warning(f"⚠️ Mid-chunk async save failed: {e}")
+                logger.warning(f"⚠️ Drive upload failed: {e} (local files vẫn an toàn)")
         
-        t = threading.Thread(target=_bg_save, daemon=True)
+        t = threading.Thread(target=_bg_upload, daemon=True)
         t.start()
         self._pending_drive_copies.append(t)
 
@@ -1958,8 +1898,6 @@ class Stage2Trainer:
         # ==================================================
         # 4. TRAINING LOOP — 1 epoch = TẤT CẢ chunks
         # ==================================================
-        # Khởi động auto-save timer (background thread save mỗi 30 phút)
-        self._start_auto_save_timer()
         for epoch in range(start_epoch, num_epochs):
             epoch_start = time.time()
             epoch_losses = []
@@ -2062,33 +2000,29 @@ class Stage2Trainer:
                     })
                     global_step += 1
                     
-                    # Cập nhật auto-save state (cho timer thread và atexit)
-                    self._auto_save_state = {
-                        'epoch': epoch + 1,
-                        'global_step': global_step,
-                        'best_val_loss': best_val_loss,
-                        'best_epoch': best_epoch,
-                        'loss_history': loss_history,
-                        'chunk_index': chunk_idx,
-                        'chunk_names': chunk_names,
-                        'step_in_chunk': step + 1,
-                    }
-                    
-                    # Auto-save check: timer thread set flag, main thread save ở đây
-                    # GPU snapshot chạy trên MAIN THREAD (~0.5s) — an toàn với CUDA
-                    if self._should_auto_save:
-                        self._should_auto_save = False
-                        logger.info(f"  💾 Auto-save: snapshot at step {global_step}...")
+                    # Mid-chunk checkpoint: save mỗi MID_CHUNK_SAVE_INTERVAL samples
+                    # Ghi file vào /tmp đồng bộ (instant), async copy Drive
+                    # File luôn tồn tại dù process bị kill
+                    samples_trained = (step + 1) * batch_size
+                    if samples_trained % MID_CHUNK_SAVE_INTERVAL == 0 and step + 1 < len(dataloader):
+                        logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
                         self._save_mid_chunk_async(
                             epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
                             chunk_index=chunk_idx, chunk_names=chunk_names,
                             step_in_chunk=step + 1
                         )
+                        # Cập nhật state cho atexit handler
+                        self._last_save_state = {
+                            'epoch': epoch + 1, 'global_step': global_step,
+                            'best_val_loss': best_val_loss, 'best_epoch': best_epoch,
+                            'loss_history': loss_history,
+                            'chunk_index': chunk_idx, 'chunk_names': chunk_names,
+                            'step_in_chunk': step + 1,
+                        }
                     
                     # SIGINT/SIGTERM check: graceful shutdown
                     if self._interrupted:
                         logger.warning(f"🛑 Graceful shutdown — saving checkpoint...")
-                        self._stop_auto_save_timer()
                         self._save_checkpoint("backup", is_best=False)
                         self._save_training_state(
                             epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
@@ -2168,9 +2102,6 @@ class Stage2Trainer:
         # ==================================================
         # FINAL: Save latest LoRA model
         # ==================================================
-        # Dừng auto-save timer trước khi save cuối cùng
-        self._stop_auto_save_timer()
-        
         final_lora_path = self.checkpoints_dir / "lora_latest.safetensors"
         self._save_safetensors_safe(self._get_lora_state_dict(), str(final_lora_path))
         final_inj_path = self.checkpoints_dir / "injector_latest.safetensors"
