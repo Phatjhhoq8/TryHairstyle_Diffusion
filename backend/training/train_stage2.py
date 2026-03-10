@@ -44,6 +44,12 @@ MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 250 steps
 # Đặt True để skip toàn bộ mid-chunk checkpoint, chỉ save cuối mỗi epoch
 SKIP_MID_CHUNK_SAVE = False
 
+# HuggingFace Hub — lưu checkpoint ngoài Drive (reliable, không phụ thuộc FUSE)
+# Đọc từ environment variable (.env hoặc Colab secret)
+HF_TOKEN = os.environ.get("HUGFACE_TOKEN", "")   # token write permission
+HF_REPO_ID = os.environ.get("HF_REPO_ID", "")    # vd: halogenbr/tryhairstyle
+HF_SUBFOLDER = "checkpoints"                       # subfolder trong repo
+
 # Đường dẫn SDXL local model
 LOCAL_SDXL_PATH = str(PROJECT_DIR / "backend" / "models" / "stable-diffusion" / "sd_xl_inpainting")
 
@@ -1070,16 +1076,37 @@ class Stage2Trainer:
     
     @staticmethod
     def _bg_copy_to_drive(src: str, dst: str):
-        """Background thread: copy file từ local → Drive, rồi cleanup temp."""
-        try:
-            with Stage2Trainer._drive_copy_lock:
-                shutil.copy2(src, dst)
+        """Background thread: upload file lên HuggingFace Hub.
+        File src tạm (/tmp) sẽ được cleanup sau khi upload xong.
+        """
+        filename = os.path.basename(dst)
+        
+        if HF_TOKEN and HF_REPO_ID:
             try:
-                os.remove(src)
-            except:
-                pass
-        except Exception as e:
-            logger.warning(f"⚠️ Background Drive copy failed ({os.path.basename(src)} → {os.path.basename(dst)}): {e}")
+                from huggingface_hub import upload_file, create_repo
+                try:
+                    create_repo(HF_REPO_ID, token=HF_TOKEN, exist_ok=True, private=True)
+                except Exception:
+                    pass
+                
+                upload_file(
+                    path_or_fileobj=src,
+                    path_in_repo=f"{HF_SUBFOLDER}/{filename}",
+                    repo_id=HF_REPO_ID,
+                    token=HF_TOKEN,
+                    commit_message=f"checkpoint: {filename}",
+                )
+                logger.info(f"  ☁️ HF: {filename} → {HF_REPO_ID}/{HF_SUBFOLDER}/")
+            except Exception as hf_err:
+                logger.error(f"  ❌ HF upload failed ({filename}): {hf_err}")
+        else:
+            logger.warning(f"  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload {filename}")
+        
+        # Cleanup temp file
+        try:
+            os.remove(src)
+        except Exception:
+            pass
     
     def _save_safetensors_safe(self, state_dict, path: str):
         """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt.
@@ -1522,37 +1549,34 @@ class Stage2Trainer:
         drive_folder_id = Stage2Trainer._drive_folder_id
 
         def _bg_upload():
+            """Background thread: upload 3 file lên HuggingFace Hub."""
             t_start = time.time()
-            uploaded_via_api = False
-            if drive_service and drive_folder_id:
+            if HF_TOKEN and HF_REPO_ID:
                 try:
-                    Stage2Trainer._upload_to_drive_api(
-                        drive_service, drive_folder_id,
-                        lora_tmp, "lora_backup.safetensors"
-                    )
-                    Stage2Trainer._upload_to_drive_api(
-                        drive_service, drive_folder_id,
-                        inj_tmp, "injector_backup.safetensors"
-                    )
-                    Stage2Trainer._upload_to_drive_api(
-                        drive_service, drive_folder_id,
-                        json_tmp, "training_state_lite.json"
-                    )
-                    uploaded_via_api = True
-                except Exception as api_err:
-                    logger.warning(f"⚠️ Drive API upload failed: {api_err}, fallback FUSE...")
-
-            if not uploaded_via_api:
-                try:
-                    shutil.copy2(lora_tmp, os.path.join(checkpoints_dir, "lora_backup.safetensors"))
-                    shutil.copy2(inj_tmp, os.path.join(checkpoints_dir, "injector_backup.safetensors"))
-                    shutil.copy2(json_tmp, os.path.join(checkpoints_dir, "training_state_lite.json"))
-                except Exception as fuse_err:
-                    logger.error(f"❌ FUSE fallback failed: {fuse_err}")
-                    return
-
-            method = "API" if uploaded_via_api else "FUSE"
-            logger.info(f"  ✅ Mid-chunk saved → Drive [{method}] in {time.time()-t_start:.1f}s")
+                    from huggingface_hub import upload_file, create_repo
+                    try:
+                        create_repo(HF_REPO_ID, token=HF_TOKEN, exist_ok=True, private=True)
+                    except Exception:
+                        pass
+                    
+                    for local_file, remote_name in [
+                        (lora_tmp, "lora_backup.safetensors"),
+                        (inj_tmp, "injector_backup.safetensors"),
+                        (json_tmp, "training_state_lite.json"),
+                    ]:
+                        upload_file(
+                            path_or_fileobj=local_file,
+                            path_in_repo=f"{HF_SUBFOLDER}/{remote_name}",
+                            repo_id=HF_REPO_ID,
+                            token=HF_TOKEN,
+                            commit_message=f"mid-chunk: {remote_name}",
+                        )
+                    
+                    logger.info(f"  ✅ Mid-chunk saved → HF Hub in {time.time()-t_start:.1f}s")
+                except Exception as hf_err:
+                    logger.error(f"  ❌ HF upload failed: {hf_err}")
+            else:
+                logger.warning("  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload mid-chunk")
 
         # daemon=False: Python đợi thread này xong trước khi exit
         t = threading.Thread(target=_bg_upload, daemon=False)
@@ -1759,13 +1783,58 @@ class Stage2Trainer:
     
     def _load_training_state(self):
         """Load full training state để resume. Returns dict hoặc None.
-        Hỗ trợ 3 sources (ưu tiên từ trên xuống):
+        Hỗ trợ 4 sources (ưu tiên từ trên xuống):
+            0. HuggingFace Hub (download về local nếu Drive không có)
             1. training_state.pth (full state — optimizer + metadata)
             2. training_state_lite.json (lightweight — chỉ metadata)
             3. LoRA weights only (backward compat)
         """
+        # === Source 0: Download từ HF Hub nếu local thiếu file ===
+        if HF_TOKEN and HF_REPO_ID and IS_COLAB:
+            try:
+                from huggingface_hub import hf_hub_download, list_repo_files
+                # Danh sách file cần check
+                hf_files = [
+                    "training_state.pth",
+                    "training_state_lite.json",
+                    "lora_backup.safetensors",
+                    "injector_backup.safetensors",
+                    "lora_best.safetensors",
+                    "injector_best.safetensors",
+                ]
+                downloaded = []
+                for fname in hf_files:
+                    local_path = self.checkpoints_dir / fname
+                    if local_path.exists():
+                        continue  # Đã có local → không cần download
+                    try:
+                        hf_hub_download(
+                            repo_id=HF_REPO_ID,
+                            filename=f"{HF_SUBFOLDER}/{fname}",
+                            token=HF_TOKEN,
+                            local_dir=str(self.checkpoints_dir),
+                            local_dir_use_symlinks=False,
+                        )
+                        # hf_hub_download lưu vào subfolder, move về root checkpoints
+                        hf_path = self.checkpoints_dir / HF_SUBFOLDER / fname
+                        if hf_path.exists():
+                            import shutil as _shutil
+                            _shutil.move(str(hf_path), str(local_path))
+                        downloaded.append(fname)
+                    except Exception:
+                        pass  # File không tồn tại trên HF hoặc lỗi → bỏ qua
+                if downloaded:
+                    logger.info(f"  ☁️ Downloaded từ HF Hub: {downloaded}")
+                else:
+                    logger.info(f"  ☁️ HF Hub: không có file mới cần download")
+            except ImportError:
+                logger.warning("  ⚠️ huggingface_hub chưa cài — bỏ qua HF resume fallback")
+            except Exception as hf_err:
+                logger.warning(f"  ⚠️ HF Hub resume check failed: {hf_err}")
+
         state_path = self.checkpoints_dir / "training_state.pth"
         lite_path = self.checkpoints_dir / "training_state_lite.json"
+
         
         # === Helper: load LoRA + Injector weights ===
         def _load_model_weights():
