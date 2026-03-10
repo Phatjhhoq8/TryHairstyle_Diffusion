@@ -674,36 +674,20 @@ class Stage2Trainer:
     # ==============================================================================
     
     def _start_auto_save_timer(self):
-        """Khởi động background timer thread auto-save mỗi AUTO_SAVE_INTERVAL_SECONDS.
-        Thread này hoàn toàn độc lập với training loop — không block gì cả.
-        Nó đọc self._auto_save_state (được cập nhật bởi training loop mỗi step)
-        và gọi _save_mid_chunk_async() nếu có state mới.
+        """Khởi động background timer thread — chỉ SET FLAG mỗi N phút.
+        KHÔNG làm GPU operations — tránh block main thread's CUDA access.
+        Training loop (main thread) check flag và tự save.
         """
         self._auto_save_stop = threading.Event()
         self._auto_save_state = None  # Được training loop cập nhật mỗi step
-        self._auto_save_last_step = -1  # Tránh save trùng
+        self._should_auto_save = False  # Flag: timer set True, training loop check
         
         def _auto_save_loop():
             while not self._auto_save_stop.wait(timeout=AUTO_SAVE_INTERVAL_SECONDS):
-                state = self._auto_save_state
-                if state is None:
-                    continue
-                if state['global_step'] == self._auto_save_last_step:
-                    continue  # Chưa có step mới
-                
-                try:
-                    self._auto_save_last_step = state['global_step']
-                    logger.info(f"\n  ⏰ Auto-save timer: saving at step {state['global_step']}...")
-                    self._save_mid_chunk_async(
-                        state['epoch'], state['global_step'],
-                        state['best_val_loss'], state['best_epoch'],
-                        state['loss_history'],
-                        chunk_index=state['chunk_index'],
-                        chunk_names=state['chunk_names'],
-                        step_in_chunk=state['step_in_chunk']
-                    )
-                except Exception as e:
-                    logger.warning(f"⚠️ Auto-save failed: {e}")
+                if self._auto_save_state is not None:
+                    # Chỉ set flag — MAIN THREAD sẽ làm GPU snapshot
+                    self._should_auto_save = True
+                    logger.info(f"\n  ⏰ Auto-save timer: flag set — sẽ save ở step tiếp theo...")
         
         self._auto_save_thread = threading.Thread(target=_auto_save_loop, daemon=True)
         self._auto_save_thread.start()
@@ -2078,8 +2062,7 @@ class Stage2Trainer:
                     })
                     global_step += 1
                     
-                    # Cập nhật auto-save state (training loop KHÔNG save trực tiếp)
-                    # Background timer thread sẽ đọc state này và save mỗi 30 phút
+                    # Cập nhật auto-save state (cho timer thread và atexit)
                     self._auto_save_state = {
                         'epoch': epoch + 1,
                         'global_step': global_step,
@@ -2090,6 +2073,17 @@ class Stage2Trainer:
                         'chunk_names': chunk_names,
                         'step_in_chunk': step + 1,
                     }
+                    
+                    # Auto-save check: timer thread set flag, main thread save ở đây
+                    # GPU snapshot chạy trên MAIN THREAD (~0.5s) — an toàn với CUDA
+                    if self._should_auto_save:
+                        self._should_auto_save = False
+                        logger.info(f"  💾 Auto-save: snapshot at step {global_step}...")
+                        self._save_mid_chunk_async(
+                            epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
+                            chunk_index=chunk_idx, chunk_names=chunk_names,
+                            step_in_chunk=step + 1
+                        )
                     
                     # SIGINT/SIGTERM check: graceful shutdown
                     if self._interrupted:
