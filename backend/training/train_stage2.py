@@ -1320,12 +1320,68 @@ class Stage2Trainer:
             
             # Resolve checkpoints_dir symlink → Drive path
             real_path = os.path.realpath(checkpoints_dir)
-            # /content/drive/MyDrive/TryHairStyle/checkpoints → TryHairStyle/checkpoints
-            prefix = '/content/drive/MyDrive/'
-            if real_path.startswith(prefix):
-                relative = real_path[len(prefix):]
-            else:
-                logger.warning(f"⚠️ Drive API: cannot resolve path {real_path}")
+            
+            # Hỗ trợ nhiều dạng path trên Colab:
+            # 1. /content/drive/MyDrive/TryHairStyle/checkpoints
+            # 2. /content/drive/.shortcut-targets-by-id/ID/TryHairStyle/checkpoints
+            # 3. /content/drive/Shareddrives/Name/...
+            relative = None
+            prefixes = [
+                '/content/drive/MyDrive/',
+                '/content/drive/My Drive/',
+            ]
+            
+            # Check standard prefixes
+            for prefix in prefixes:
+                if real_path.startswith(prefix):
+                    relative = real_path[len(prefix):]
+                    break
+            
+            # Handle shortcut paths: extract relative path after the ID
+            # /content/drive/.shortcut-targets-by-id/SOME_ID/TryHairStyle/checkpoints
+            if relative is None and '/.shortcut-targets-by-id/' in real_path:
+                # Skip the ID segment, get path after it
+                parts = real_path.split('/.shortcut-targets-by-id/')[1]
+                # parts = "SOME_ID/TryHairStyle/checkpoints" → skip ID
+                slash_idx = parts.find('/')
+                if slash_idx >= 0:
+                    relative = parts[slash_idx + 1:]
+            
+            if relative is None:
+                logger.warning(f"⚠️ Drive API: cannot resolve path {real_path}, trying folder search...")
+                # Fallback: tìm folder "checkpoints" trực tiếp trên Drive
+                folder_name = os.path.basename(checkpoints_dir)
+                parent_name = os.path.basename(os.path.dirname(os.path.dirname(checkpoints_dir)))
+                # Tìm parent folder (VD: "TryHairStyle")
+                query = f"name='{parent_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                results = service.files().list(q=query, fields='files(id)', pageSize=5).execute()
+                parent_files = results.get('files', [])
+                if parent_files:
+                    parent_id = parent_files[0]['id']
+                    # Tìm con đường training/checkpoints
+                    for sub in ['backend/training', 'training']:
+                        current_id = parent_id
+                        found = True
+                        for sub_part in sub.split('/'):
+                            q = f"name='{sub_part}' and '{current_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                            r = service.files().list(q=q, fields='files(id)', pageSize=1).execute()
+                            ff = r.get('files', [])
+                            if ff:
+                                current_id = ff[0]['id']
+                            else:
+                                found = False
+                                break
+                        if found:
+                            # Tìm checkpoints folder
+                            q = f"name='{folder_name}' and '{current_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
+                            r = service.files().list(q=q, fields='files(id)', pageSize=1).execute()
+                            ff = r.get('files', [])
+                            if ff:
+                                folder_id = ff[0]['id']
+                                logger.info(f"  ☁️ Drive API initialized via search (folder_id={folder_id[:8]}...)")
+                                return service, folder_id
+                
+                logger.warning(f"⚠️ Drive API: folder search failed, fallback to FUSE")
                 return None, None
             
             # Traverse path to find folder ID
