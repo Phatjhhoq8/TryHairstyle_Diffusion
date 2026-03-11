@@ -1510,24 +1510,26 @@ class Stage2Trainer:
     
     def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
                               loss_history, chunk_index, chunk_names, step_in_chunk):
-        """Mid-chunk save V7: snapshot nhanh trên main thread → file I/O + upload trong background.
+        """Mid-chunk save V8: GPU clone trên main thread → CPU transfer + file I/O trong background.
         
-        Main thread CHỈ làm 2 việc (tổng ~0.5-1s):
+        Main thread CHỈ làm (tổng ~vài ms):
           1. torch.cuda.synchronize() — đợi GPU xong pending ops
-          2. state_dict → CPU clone — snapshot weights
+          2. state_dict → GPU clone (.detach().clone()) — snapshot trên VRAM
         
         Background thread (non-daemon) làm phần còn lại:
+          - GPU → CPU transfer (.cpu())
           - save_file() → ghi safetensors ra /tmp/
           - json.dump() → ghi training state
           - upload_file() → đẩy lên HF Hub
         
-        → Main thread trở lại training loop gần như ngay lập tức
-        → Colab không thấy idle → không gửi SIGINT
+        → Main thread trở lại training loop gần như ngay lập tức (~ms)
+        → Tạm tốn thêm ~94MB VRAM cho GPU clone, giải phóng khi thread chuyển xong CPU
         """
-        # === MAIN THREAD: Snapshot weights (nhanh, ~0.5-1s) ===
-        torch.cuda.synchronize()  # Đợi GPU xong → snapshot nhanh, không bị CUDA sync block
-        lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
-        inj_dict = {k: v.cpu().clone() for k, v in self.injector.state_dict().items()}
+        # === MAIN THREAD: GPU clone (cực nhanh, ~ms) ===
+        torch.cuda.synchronize()  # Đợi GPU xong → clone nhất quán
+        # GPU→GPU clone: chỉ copy trong VRAM, không qua PCIe bus → rất nhanh
+        lora_gpu = {k: v.detach().clone() for k, v in self._get_lora_state_dict().items()}
+        inj_gpu = {k: v.detach().clone() for k, v in self.injector.state_dict().items()}
         
         # Serialize loss_history trước khi truyền vào thread (tránh race condition)
         serializable_history = {}
@@ -1552,7 +1554,7 @@ class Stage2Trainer:
             "lightweight": True,
         }
         
-        logger.info(f"  💾 Snapshot done → saving + uploading in background...")
+        logger.info(f"  💾 GPU snapshot done → saving + uploading in background...")
         
         # === BACKGROUND THREAD: File I/O + Upload (5-15s, không block training) ===
         is_colab = IS_COLAB
@@ -1560,6 +1562,14 @@ class Stage2Trainer:
         
         def _bg_save_and_upload():
             try:
+                # GPU → CPU transfer (trong background thread, không block training)
+                lora_dict = {k: v.cpu() for k, v in lora_gpu.items()}
+                inj_dict = {k: v.cpu() for k, v in inj_gpu.items()}
+                # Giải phóng GPU clone → trả VRAM
+                lora_gpu.clear()
+                inj_gpu.clear()
+                torch.cuda.empty_cache()
+                
                 tmp_dir = "/tmp/training_saves" if is_colab else checkpoints_dir
                 os.makedirs(tmp_dir, exist_ok=True)
                 
