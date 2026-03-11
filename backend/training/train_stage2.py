@@ -1662,7 +1662,7 @@ class Stage2Trainer:
     # MAIN TRAINING LOOP — Chunked Loading, Global Epoch
     # ==============================================================================
     
-    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True):
+    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True, chunk_names=None):
         """
         Chunked Loading – Global Epoch Training.
         1 epoch = model nhìn thấy TẤT CẢ chunks đúng 1 lần.
@@ -1675,6 +1675,8 @@ class Stage2Trainer:
             target_size: Kích thước ảnh (512x512)
             accumulation_steps: Gradient accumulation steps
             resume: Resume từ checkpoint nếu có
+            chunk_names: List tên các chunk cụ thể để train (vd: ['processed_001', 'processed_002']). 
+                         Nếu None, train trên TẤT CẢ chunks tìm thấy.
         """
         logger.info(f"Khởi động Chunked Loading – Global Epoch Training")
         logger.info(f"  📐 Resolution: {target_size[0]}x{target_size[1]}")
@@ -1685,8 +1687,15 @@ class Stage2Trainer:
         # 1. DISCOVER CHUNKS
         # ==================================================
         chunk_dirs = self._discover_chunk_dirs()
+        if chunk_names:
+            # Lọc chỉ lấy các chunks có tên trong chunk_names
+            chunk_dirs = [d for d in chunk_dirs if d.name in chunk_names]
+            if not chunk_dirs:
+                logger.error(f"❌ Không tìm thấy chunk nào khớp với list: {chunk_names}")
+                return
+        
         if not chunk_dirs:
-            logger.error("Không tìm thấy chunk nào! Hãy chạy prepare_dataset_deephair.py trước.")
+            logger.error("❌ Không tìm thấy bất kỳ thư mục processed_NNN nào! Hãy chạy prepare_dataset_deephair.py trước.")
             return
         
         logger.info(f"  📂 Found {len(chunk_dirs)} chunk(s): {[d.name for d in chunk_dirs]}")
@@ -2030,7 +2039,10 @@ if __name__ == "__main__":
     parser.add_argument("--resolution", type=int, default=512, help="Kích thước ảnh (512 hoặc 1024)")
     parser.add_argument("--accumulation", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--fresh", action="store_true", help="Train từ đầu, KHÔNG load checkpoint cũ")
+    parser.add_argument("--chunk-names", type=str, default="", help="Chỉ định cụ thể chunks để train, cách nhau bằng dấu phẩy (vd: processed_001,processed_002)")
     args = parser.parse_args()
+    
+    chunk_names_list = [name.strip() for name in args.chunk_names.split(",")] if args.chunk_names else None
     
     trainer = Stage2Trainer()
     trainer.train_loop(
@@ -2039,6 +2051,6 @@ if __name__ == "__main__":
         max_samples_per_chunk=args.max_samples_per_chunk,
         target_size=(args.resolution, args.resolution),
         accumulation_steps=args.accumulation,
-        resume=not args.fresh
+        resume=not args.fresh,
+        chunk_names=chunk_names_list
     )
-
