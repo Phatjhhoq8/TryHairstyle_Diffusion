@@ -190,56 +190,12 @@ class HairInpaintingDataset(Dataset):
                     self.metadata.append(json.loads(line.strip()))
         
         # ================================================================
-        # VALIDATION: Lọc bỏ sample thiếu file trước khi train
-        # Kiểm tra: ground_truth, hair_only, identity, style
+        # SKIP VALIDATION — tin tưởng metadata.jsonl (đã validate ở Stage 1)
+        # Nếu file thiếu → __getitem__ sẽ catch + retry sample khác
+        # Lý do: os.path.exists() trên Google Drive FUSE mount cực chậm
+        #         (~14 phút / 5000 samples). Bỏ bước này tiết kiệm rất nhiều.
         # ================================================================
-        original_count = len(self.metadata)
-        valid_metadata = []
-        skipped_reasons = {}  # {reason: count}
-        
-        for item in self.metadata:
-            img_id = item["id"]
-            missing = []
-            
-            # 1. Ground Truth image
-            gt_dir = data_dir / "ground_truth_images"
-            gt_found = list(gt_dir.glob(f"{img_id}.*")) if gt_dir.exists() else []
-            if not gt_found:
-                gt_found = list(gt_dir.glob(f"{img_id.replace('_', '-')}.*")) if gt_dir.exists() else []
-            if not gt_found:
-                missing.append("ground_truth")
-            
-            # 2. Hair-only image (mask)
-            hair_only_path = data_dir / item.get("hair_only", "")
-            if not hair_only_path.exists() or not item.get("hair_only"):
-                missing.append("hair_only")
-            
-            # 3. Identity embedding
-            identity_path = data_dir / item.get("identity", "")
-            if not identity_path.exists() or not item.get("identity"):
-                missing.append("identity")
-            
-            # 4. Style vector
-            style_path = data_dir / item.get("style", "")
-            if not style_path.exists() or not item.get("style"):
-                missing.append("style")
-            
-            if missing:
-                reason = ",".join(missing)
-                skipped_reasons[reason] = skipped_reasons.get(reason, 0) + 1
-            else:
-                valid_metadata.append(item)
-        
-        skipped_count = original_count - len(valid_metadata)
-        if skipped_count > 0:
-            logger.warning(f"⚠️  Đã bỏ qua {skipped_count}/{original_count} samples do thiếu file:")
-            for reason, count in sorted(skipped_reasons.items(), key=lambda x: -x[1]):
-                logger.warning(f"   ❌ Thiếu [{reason}]: {count} samples")
-            logger.info(f"✅ Dataset hợp lệ: {len(valid_metadata)}/{original_count} samples")
-        else:
-            logger.info(f"✅ Tất cả {original_count} samples đều đầy đủ file")
-        
-        self.metadata = valid_metadata
+        logger.info(f"📋 Loaded {len(self.metadata)} samples từ metadata (skip file validation)")
         
         # Giới hạn dataset size nếu cần
         if max_samples > 0 and len(self.metadata) > max_samples:
@@ -397,29 +353,20 @@ class HairInpaintingDataset(Dataset):
         return len(self.metadata)
 
     def __getitem__(self, idx):
-        max_retries = 3
+        max_retries = 10  # Thử tối đa 10 sample khác nhau
         for attempt in range(max_retries + 1):
             try:
                 target_idx = idx if attempt == 0 else random.randint(0, len(self.metadata) - 1)
                 return self._load_sample(target_idx)
             except Exception as e:
-                logger.warning(f"⚠️ Lỗi load sample (attempt {attempt+1}/{max_retries+1}, idx={target_idx}): {e}")
+                if attempt < 3 or attempt == max_retries:
+                    # Log 3 lần đầu + lần cuối, tránh spam log
+                    logger.warning(f"⚠️ Skip sample idx={target_idx}: {e}")
                 if attempt == max_retries:
-                    # Return zero tensors để tránh crash DataLoader
-                    logger.error(f"❌ Đã thử {max_retries+1} lần, trả về zero sample.")
-                    return {
-                        "image": torch.zeros(3, *self.target_size),
-                        "mask": torch.zeros(1, *self.target_size),
-                        "style_embed": torch.zeros(2048),
-                        "identity_embed": torch.zeros(512),
-                        "text_embeds": torch.zeros(77, 2048),
-                        "pooled_text_embeds": torch.zeros(1280),
-                        "time_ids": torch.tensor([
-                            1024, 1024,   # SDXL native resolution (khớp inference)
-                            0, 0,
-                            1024, 1024
-                        ], dtype=torch.float32)
-                    }
+                    raise RuntimeError(
+                        f"❌ Đã thử {max_retries+1} samples ngẫu nhiên, tất cả đều lỗi. "
+                        f"Dataset có thể bị hỏng hoặc thiếu file."
+                    )
     
     def _load_sample(self, idx):
         item = self.metadata[idx]
