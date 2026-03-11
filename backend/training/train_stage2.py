@@ -1560,10 +1560,16 @@ class Stage2Trainer:
         def _bg_save_and_upload():
             try:
                 # Snapshot weights trong background thread
+                # KHÔNG gọi cuda.empty_cache() — gây conflict với main thread!
+                # sleep(0.1) cho main thread yield GIL giữa các tensor copy
                 with torch.no_grad():
-                    torch.cuda.empty_cache()  # Giải phóng VRAM cache trước
-                    lora_dict = {k: v.cpu().clone() for k, v in model._get_lora_state_dict().items()}
-                    inj_dict = {k: v.cpu().clone() for k, v in model.injector.state_dict().items()}
+                    lora_dict = {}
+                    for k, v in model._get_lora_state_dict().items():
+                        lora_dict[k] = v.cpu().clone()
+                    time.sleep(0.1)  # yield cho main thread
+                    inj_dict = {}
+                    for k, v in model.injector.state_dict().items():
+                        inj_dict[k] = v.cpu().clone()
                 
                 tmp_dir = "/tmp/training_saves" if is_colab else checkpoints_dir
                 os.makedirs(tmp_dir, exist_ok=True)
