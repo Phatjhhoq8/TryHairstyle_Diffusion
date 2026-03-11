@@ -37,12 +37,8 @@ DEVICE = getDevice()
 # Auto-detect Google Colab environment
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
-# Mid-chunk checkpoint: save mỗi N samples
-MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 500 steps)
-
-# Flag: tắt mid-chunk save hoàn toàn (hữu ích khi muốn chạy nhanh, không lo Colab crash)
-# Đặt True để skip toàn bộ mid-chunk checkpoint, chỉ save cuối mỗi epoch
-SKIP_MID_CHUNK_SAVE = False
+# CHỈ save cuối cùng khi training hoàn tất (lora_latest + injector_latest)
+# Không save mid-chunk, end-of-chunk, hay end-of-epoch → tránh Colab SIGINT
 
 # HuggingFace Hub — lưu checkpoint ngoài Drive (reliable, không phụ thuộc FUSE)
 # Đọc từ environment variable (.env hoặc Colab secret)
@@ -1517,15 +1513,13 @@ class Stage2Trainer:
           - Start background thread
         
         Background thread (non-daemon) làm TẤT CẢ:
-          - torch.cuda.empty_cache() → giải phóng VRAM cache
-          - .cpu().clone() → snapshot weights (GPU→CPU)
+          - .cpu().clone() → snapshot weights (GPU→CPU), từng tensor một
           - save_file() → ghi safetensors ra /tmp/
           - json.dump() → ghi training state
           - upload_file() → đẩy lên HF Hub
         
         Trade-off: snapshot có thể hơi "xé" nếu optimizer.step() chạy cùng lúc,
         nhưng cho backup checkpoint → chấp nhận được.
-        Python GIL đảm bảo dict comprehension chạy atomic ở mức bytecode.
         """
         # === MAIN THREAD: Chỉ chuẩn bị JSON (instant, không GPU) ===
         serializable_history = {}
@@ -2211,40 +2205,9 @@ class Stage2Trainer:
                     })
                     global_step += 1
                     
-                    # Mid-chunk checkpoint: save mỗi MID_CHUNK_SAVE_INTERVAL samples
-                    # Ghi file vào /tmp đồng bộ (instant), async copy Drive
-                    # File luôn tồn tại dù process bị kill
-                    # Đặt SKIP_MID_CHUNK_SAVE = True ở đầu file để tắt hoàn toàn
-                    samples_trained = (step + 1) * batch_size
-                    if (not SKIP_MID_CHUNK_SAVE
-                            and samples_trained % MID_CHUNK_SAVE_INTERVAL == 0
-                            and step + 1 < len(dataloader)):
-                        logger.info(f"  💾 Mid-chunk save: {samples_trained} samples trained...")
-                        self._save_mid_chunk_async(
-                            epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
-                            chunk_index=chunk_idx, chunk_names=chunk_names,
-                            step_in_chunk=step + 1
-                        )
-                        # Cập nhật state cho atexit handler
-                        self._last_save_state = {
-                            'epoch': epoch + 1, 'global_step': global_step,
-                            'best_val_loss': best_val_loss, 'best_epoch': best_epoch,
-                            'loss_history': loss_history,
-                            'chunk_index': chunk_idx, 'chunk_names': chunk_names,
-                            'step_in_chunk': step + 1,
-                        }
-                    
                     # SIGINT/SIGTERM check: graceful shutdown
                     if self._interrupted:
-                        logger.warning(f"🛑 Graceful shutdown — saving checkpoint...")
-                        self._save_checkpoint("backup", is_best=False)
-                        self._save_training_state(
-                            epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
-                            chunk_index=chunk_idx, chunk_names=chunk_names,
-                            step_in_chunk=step + 1
-                        )
-                        self._wait_pending_copies(timeout=60)
-                        logger.info(f"✅ Checkpoint saved. Resume sẽ tiếp tục từ step {step + 1}.")
+                        logger.warning(f"🛑 Graceful shutdown — thoát training...")
                         logger.info(f"{'='*60}")
                         return  # Thoát sạch (không raise exception)
                 
@@ -2256,36 +2219,7 @@ class Stage2Trainer:
                 del dataset, dataloader
                 torch.cuda.empty_cache()
                 
-                # Backup checkpoint + training state sau mỗi chunk (Colab safety)
-                # Chạy trong background thread để main thread không bị block → Colab không kill
-                if not SKIP_MID_CHUNK_SAVE:
-                    _save_epoch = epoch + 1
-                    _save_global_step = global_step
-                    _save_best_val = best_val_loss
-                    _save_best_epoch = best_epoch
-                    _save_history = {k: (list(v) if isinstance(v, list) else v) for k, v in loss_history.items()}
-                    _save_chunk_idx = chunk_idx
-                    _save_chunk_names = list(chunk_names) if chunk_names else []
-                    _save_self = self
-                    
-                    def _bg_end_of_chunk_save():
-                        try:
-                            _save_self._save_checkpoint("backup", is_best=False)
-                            _save_self._save_training_state(
-                                _save_epoch, _save_global_step, _save_best_val, _save_best_epoch,
-                                _save_history, chunk_index=_save_chunk_idx,
-                                chunk_names=_save_chunk_names, step_in_chunk=0
-                            )
-                            logger.info("  ✅ End-of-chunk save done (background)")
-                        except Exception as e:
-                            logger.error(f"  ❌ End-of-chunk save failed: {e}")
-                    
-                    t = threading.Thread(target=_bg_end_of_chunk_save, daemon=False)
-                    t.start()
-                    self._pending_drive_copies.append(t)
-                    logger.info("  💾 End-of-chunk save started in background...")
-                else:
-                    logger.info("  ⏩ SKIP_MID_CHUNK_SAVE=True — bỏ qua save sau chunk")
+                # Không save giữa chừng — chỉ save cuối cùng khi training hoàn tất
                 
                 # Reset mid-chunk resume flag sau khi chunk resume xong
                 if resume_step_in_chunk > 0:
@@ -2314,24 +2248,15 @@ class Stage2Trainer:
             else:
                 logger.info(f"Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} (Best: Ep{best_epoch}, {best_val_loss:.6f}) — Time: {epoch_time/60:.1f}min")
             
-            # Save model checkpoint (best hoặc backup)
-            self._save_checkpoint(f"epoch_{epoch+1}", is_best=is_new_best)
-            
-            # Ghi epoch loss history
+            # Ghi epoch loss history (không save file)
             loss_history['epoch_avg_loss'].append(avg_epoch_loss)
             loss_history['val_loss'].append(val_loss)
             loss_history['val_lpips'].append(val_lpips if val_lpips >= 0 else 0.0)
-            
-            # Save FULL training state — chunk_index=-1 nghĩa là epoch hoàn tất
-            self._save_training_state(epoch + 1, global_step, best_val_loss, best_epoch, loss_history, chunk_index=-1)
             
             # Reset resume flags sau epoch đầu tiên
             resume_chunk_index = -1
             resume_chunk_names = []
             skip_until = 0
-            
-            # Save to Google Drive (Colab)
-            self._save_to_drive(epoch + 1, is_new_best, loss_history)
             
             # Plot training charts
             self._plot_training_charts(loss_history, epoch + 1)
@@ -2370,14 +2295,7 @@ if __name__ == "__main__":
     parser.add_argument("--resolution", type=int, default=512, help="Kích thước ảnh (512 hoặc 1024)")
     parser.add_argument("--accumulation", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--fresh", action="store_true", help="Train từ đầu, KHÔNG load checkpoint cũ")
-    parser.add_argument("--skip-mid-chunk-save", action="store_true",
-                        help="Tắt mid-chunk checkpointing (chạy nhanh hơn, mất progress nếu crash giữa chunk)")
     args = parser.parse_args()
-    
-    # Override global flag nếu được truyền qua CLI
-    if args.skip_mid_chunk_save:
-        globals()['SKIP_MID_CHUNK_SAVE'] = True
-        logger.info("⚡ SKIP_MID_CHUNK_SAVE = True (mid-chunk save bị tắt)")
     
     trainer = Stage2Trainer()
     trainer.train_loop(
