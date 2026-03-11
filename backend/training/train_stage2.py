@@ -1510,119 +1510,111 @@ class Stage2Trainer:
     
     def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
                               loss_history, chunk_index, chunk_names, step_in_chunk):
-        """Mid-chunk save V6: snapshot trên main thread → upload trong non-daemon thread.
-        - Non-daemon: Python đợi thread xong trước khi exit → file chắc chắn lên Drive
-        - GPU không bị block (training loop tiếp tục) → Colab không idle → không bị SIGINT
-        - Tổng upload ~94MB via Drive API ≈ 5-10s → nằm trong cửa sổ 30-60s SIGINT→SIGKILL
+        """Mid-chunk save V7: snapshot nhanh trên main thread → file I/O + upload trong background.
+        
+        Main thread CHỈ làm 2 việc (tổng ~0.5-1s):
+          1. torch.cuda.synchronize() — đợi GPU xong pending ops
+          2. state_dict → CPU clone — snapshot weights
+        
+        Background thread (non-daemon) làm phần còn lại:
+          - save_file() → ghi safetensors ra /tmp/
+          - json.dump() → ghi training state
+          - upload_file() → đẩy lên HF Hub
+        
+        → Main thread trở lại training loop gần như ngay lập tức
+        → Colab không thấy idle → không gửi SIGINT
         """
-        # === MAIN THREAD: Snapshot + ghi /tmp (đồng bộ, instant) ===
-        # Heartbeat thread: in liên tục mỗi 0.5s để Colab watchdog thấy kernel còn sống
-        _heartbeat_stop = threading.Event()
-        _save_status = ["starting"]  # mutable — để heartbeat thread đọc trạng thái hiện tại
+        # === MAIN THREAD: Snapshot weights (nhanh, ~0.5-1s) ===
+        torch.cuda.synchronize()  # Đợi GPU xong → snapshot nhanh, không bị CUDA sync block
+        lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
+        inj_dict = {k: v.cpu().clone() for k, v in self.injector.state_dict().items()}
         
-        def _heartbeat():
-            tick = 0
-            while not _heartbeat_stop.is_set():
-                print(f"[save] ♥ alive ({_save_status[0]}) [{tick}]", flush=True)
-                tick += 1
-                _heartbeat_stop.wait(0.5)  # ngủ 0.5s, thoát ngay khi stop
-        
-        hb_thread = threading.Thread(target=_heartbeat, daemon=True)
-        hb_thread.start()
-        
-        try:
-            _save_status[0] = "snapshot LoRA"
-            lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
-            _save_status[0] = "snapshot Injector"
-            inj_dict = {k: v.cpu().clone() for k, v in self.injector.state_dict().items()}
-
-            tmp_dir = "/tmp/training_saves" if IS_COLAB else str(self.checkpoints_dir)
-            os.makedirs(tmp_dir, exist_ok=True)
-
-            lora_tmp = os.path.join(tmp_dir, "lora_backup.safetensors")
-            inj_tmp = os.path.join(tmp_dir, "injector_backup.safetensors")
-            _save_status[0] = "writing LoRA"
-            save_file(lora_dict, lora_tmp)
-            _save_status[0] = "writing Injector"
-            save_file(inj_dict, inj_tmp)
-
-            _save_status[0] = "serializing state"
-            serializable_history = {}
-            for k, v in loss_history.items():
-                if isinstance(v, list):
-                    serializable_history[k] = [
-                        float(x) if not isinstance(x, (int, float, str)) else x
-                        for x in v
-                    ]
-                else:
-                    serializable_history[k] = v
-
-            state_json = {
-                "epoch": epoch,
-                "global_step": global_step,
-                "best_val_loss": float(best_val_loss) if best_val_loss != float('inf') else 1e9,
-                "best_epoch": best_epoch,
-                "loss_history": serializable_history,
-                "chunk_index": chunk_index,
-                "chunk_names": chunk_names or [],
-                "step_in_chunk": step_in_chunk,
-                "lightweight": True,
-            }
-
-            json_tmp = os.path.join(tmp_dir, "training_state_lite.json")
-            _save_status[0] = "writing JSON"
-            with open(json_tmp, "w", encoding="utf-8") as f:
-                json.dump(state_json, f, indent=2)
-
-            lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
-        finally:
-            _heartbeat_stop.set()
-            hb_thread.join(timeout=1)
-        
-        print(f"[save] ✅ Local save done ({lora_size:.1f} MB)", flush=True)
-        logger.info(f"  💾 Snapshot done ({lora_size:.1f} MB) → uploading HF nền...")
-
-        if not IS_COLAB:
-            logger.info(f"  💾 Mid-chunk saved locally ({lora_size:.1f} MB)")
-            return
-
-        checkpoints_dir = str(self.checkpoints_dir)
-        drive_service = Stage2Trainer._drive_service
-        drive_folder_id = Stage2Trainer._drive_folder_id
-
-        def _bg_upload():
-            """Background thread: upload 3 file lên HuggingFace Hub."""
-            t_start = time.time()
-            if HF_TOKEN and HF_REPO_ID:
-                try:
-                    from huggingface_hub import upload_file, create_repo
-                    try:
-                        create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
-                    except Exception:
-                        pass
-                    
-                    for local_file, remote_name in [
-                        (lora_tmp, "lora_backup.safetensors"),
-                        (inj_tmp, "injector_backup.safetensors"),
-                        (json_tmp, "training_state_lite.json"),
-                    ]:
-                        upload_file(
-                            path_or_fileobj=local_file,
-                            path_in_repo=f"{HF_SUBFOLDER}/{remote_name}",
-                            repo_id=HF_REPO_ID,
-                            repo_type=HF_REPO_TYPE,
-                            token=HF_TOKEN,
-                            commit_message=f"mid-chunk: {remote_name}",
-                        )
-                    
-                    logger.info(f"  ✅ Mid-chunk saved → HF Hub in {time.time()-t_start:.1f}s")
-                except Exception as hf_err:
-                    logger.error(f"  ❌ HF upload failed: {hf_err}")
+        # Serialize loss_history trước khi truyền vào thread (tránh race condition)
+        serializable_history = {}
+        for k, v in loss_history.items():
+            if isinstance(v, list):
+                serializable_history[k] = [
+                    float(x) if not isinstance(x, (int, float, str)) else x
+                    for x in v
+                ]
             else:
-                logger.warning("  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload mid-chunk")
+                serializable_history[k] = v
+        
+        state_json = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_val_loss": float(best_val_loss) if best_val_loss != float('inf') else 1e9,
+            "best_epoch": best_epoch,
+            "loss_history": serializable_history,
+            "chunk_index": chunk_index,
+            "chunk_names": chunk_names or [],
+            "step_in_chunk": step_in_chunk,
+            "lightweight": True,
+        }
+        
+        logger.info(f"  💾 Snapshot done → saving + uploading in background...")
+        
+        # === BACKGROUND THREAD: File I/O + Upload (5-15s, không block training) ===
+        is_colab = IS_COLAB
+        checkpoints_dir = str(self.checkpoints_dir)
+        
+        def _bg_save_and_upload():
+            try:
+                tmp_dir = "/tmp/training_saves" if is_colab else checkpoints_dir
+                os.makedirs(tmp_dir, exist_ok=True)
+                
+                lora_tmp = os.path.join(tmp_dir, "lora_backup.safetensors")
+                inj_tmp = os.path.join(tmp_dir, "injector_backup.safetensors")
+                json_tmp = os.path.join(tmp_dir, "training_state_lite.json")
+                
+                # Ghi safetensors
+                save_file(lora_dict, lora_tmp)
+                save_file(inj_dict, inj_tmp)
+                
+                # Ghi JSON
+                with open(json_tmp, "w", encoding="utf-8") as f:
+                    json.dump(state_json, f, indent=2)
+                
+                lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
+                logger.info(f"  💾 Local save done ({lora_size:.1f} MB)")
+                
+                if not is_colab:
+                    return
+                
+                # Upload lên HF Hub
+                t_start = time.time()
+                if HF_TOKEN and HF_REPO_ID:
+                    try:
+                        from huggingface_hub import upload_file, create_repo
+                        try:
+                            create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
+                        except Exception:
+                            pass
+                        
+                        for local_file, remote_name in [
+                            (lora_tmp, "lora_backup.safetensors"),
+                            (inj_tmp, "injector_backup.safetensors"),
+                            (json_tmp, "training_state_lite.json"),
+                        ]:
+                            upload_file(
+                                path_or_fileobj=local_file,
+                                path_in_repo=f"{HF_SUBFOLDER}/{remote_name}",
+                                repo_id=HF_REPO_ID,
+                                repo_type=HF_REPO_TYPE,
+                                token=HF_TOKEN,
+                                commit_message=f"mid-chunk: {remote_name}",
+                            )
+                        
+                        logger.info(f"  ✅ Mid-chunk saved → HF Hub in {time.time()-t_start:.1f}s")
+                    except Exception as hf_err:
+                        logger.error(f"  ❌ HF upload failed: {hf_err}")
+                else:
+                    logger.warning("  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload mid-chunk")
+            except Exception as e:
+                logger.error(f"  ❌ Background save failed: {e}")
 
         # daemon=False: Python đợi thread này xong trước khi exit
-        t = threading.Thread(target=_bg_upload, daemon=False)
+        t = threading.Thread(target=_bg_save_and_upload, daemon=False)
         t.start()
         self._pending_drive_copies.append(t)
 
