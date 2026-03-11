@@ -674,27 +674,7 @@ class Stage2Trainer:
         signal.signal(signal.SIGINT, _handler)
         signal.signal(signal.SIGTERM, _handler)
         
-        # atexit: last resort — save nếu process thoát mà signal handler chưa kịp save
-        def _atexit_save():
-            if hasattr(self, '_last_save_state') and self._last_save_state:
-                state = self._last_save_state
-                try:
-                    logger.info("🔚 atexit: saving checkpoint trước khi thoát...")
-                    self._save_mid_chunk_async(
-                        state['epoch'], state['global_step'],
-                        state['best_val_loss'], state['best_epoch'],
-                        state['loss_history'],
-                        chunk_index=state['chunk_index'],
-                        chunk_names=state['chunk_names'],
-                        step_in_chunk=state['step_in_chunk']
-                    )
-                    # Đợi background Drive upload hoàn tất
-                    self._wait_pending_copies(timeout=30)
-                except Exception as e:
-                    logger.warning(f"⚠️ atexit save failed: {e}")
-        
-        atexit.register(_atexit_save)
-        logger.info("  ⚒️ Signal handlers registered (SIGINT + SIGTERM + atexit)")
+        logger.info("  ⚒️ Signal handlers registered (SIGINT + SIGTERM)")
     
 
     
@@ -1504,165 +1484,10 @@ class Stage2Trainer:
                 fields='id'
             ).execute()
     
-    def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
-                              loss_history, chunk_index, chunk_names, step_in_chunk):
-        """Mid-chunk save V9: Main thread = 0ms block.
-        
-        Main thread CHỈ làm:
-          - Serialize JSON state (pure Python, instant)
-          - Start background thread
-        
-        Background thread (non-daemon) làm TẤT CẢ:
-          - .cpu().clone() → snapshot weights (GPU→CPU), từng tensor một
-          - save_file() → ghi safetensors ra /tmp/
-          - json.dump() → ghi training state
-          - upload_file() → đẩy lên HF Hub
-        
-        Trade-off: snapshot có thể hơi "xé" nếu optimizer.step() chạy cùng lúc,
-        nhưng cho backup checkpoint → chấp nhận được.
-        """
-        # === MAIN THREAD: Chỉ chuẩn bị JSON (instant, không GPU) ===
-        serializable_history = {}
-        for k, v in loss_history.items():
-            if isinstance(v, list):
-                serializable_history[k] = [
-                    float(x) if not isinstance(x, (int, float, str)) else x
-                    for x in v
-                ]
-            else:
-                serializable_history[k] = v
-        
-        state_json = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_val_loss": float(best_val_loss) if best_val_loss != float('inf') else 1e9,
-            "best_epoch": best_epoch,
-            "loss_history": serializable_history,
-            "chunk_index": chunk_index,
-            "chunk_names": chunk_names or [],
-            "step_in_chunk": step_in_chunk,
-            "lightweight": True,
-        }
-        
-        logger.info(f"  💾 Starting background save thread...")
-        
-        # === Capture references (không copy, không GPU) ===
-        is_colab = IS_COLAB
-        checkpoints_dir = str(self.checkpoints_dir)
-        model = self  # reference để background thread đọc weights
-        
-        def _bg_save_and_upload():
-            try:
-                # Snapshot weights trong background thread
-                # KHÔNG gọi cuda.empty_cache() — gây conflict với main thread!
-                # sleep(0.1) cho main thread yield GIL giữa các tensor copy
-                with torch.no_grad():
-                    lora_dict = {}
-                    for k, v in model._get_lora_state_dict().items():
-                        lora_dict[k] = v.cpu().clone()
-                    time.sleep(0.1)  # yield cho main thread
-                    inj_dict = {}
-                    for k, v in model.injector.state_dict().items():
-                        inj_dict[k] = v.cpu().clone()
-                
-                tmp_dir = "/tmp/training_saves" if is_colab else checkpoints_dir
-                os.makedirs(tmp_dir, exist_ok=True)
-                
-                lora_tmp = os.path.join(tmp_dir, "lora_backup.safetensors")
-                inj_tmp = os.path.join(tmp_dir, "injector_backup.safetensors")
-                json_tmp = os.path.join(tmp_dir, "training_state_lite.json")
-                
-                # Ghi safetensors
-                save_file(lora_dict, lora_tmp)
-                save_file(inj_dict, inj_tmp)
-                
-                # Ghi JSON
-                with open(json_tmp, "w", encoding="utf-8") as f:
-                    json.dump(state_json, f, indent=2)
-                
-                lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
-                logger.info(f"  💾 Local save done ({lora_size:.1f} MB)")
-                
-                if not is_colab:
-                    return
-                
-                # Upload lên HF Hub
-                t_start = time.time()
-                if HF_TOKEN and HF_REPO_ID:
-                    try:
-                        from huggingface_hub import upload_file, create_repo
-                        try:
-                            create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
-                        except Exception:
-                            pass
-                        
-                        for local_file, remote_name in [
-                            (lora_tmp, "lora_backup.safetensors"),
-                            (inj_tmp, "injector_backup.safetensors"),
-                            (json_tmp, "training_state_lite.json"),
-                        ]:
-                            upload_file(
-                                path_or_fileobj=local_file,
-                                path_in_repo=f"{HF_SUBFOLDER}/{remote_name}",
-                                repo_id=HF_REPO_ID,
-                                repo_type=HF_REPO_TYPE,
-                                token=HF_TOKEN,
-                                commit_message=f"mid-chunk: {remote_name}",
-                            )
-                        
-                        logger.info(f"  ✅ Mid-chunk saved → HF Hub in {time.time()-t_start:.1f}s")
-                    except Exception as hf_err:
-                        logger.error(f"  ❌ HF upload failed: {hf_err}")
-                else:
-                    logger.warning("  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload mid-chunk")
-            except Exception as e:
-                logger.error(f"  ❌ Background save failed: {e}")
-        
-        # daemon=False: Python đợi thread này xong trước khi exit
-        t = threading.Thread(target=_bg_save_and_upload, daemon=False)
-        t.start()
-        self._pending_drive_copies.append(t)
 
 
-    def _save_to_drive(self, epoch: int, is_best: bool, loss_history: dict):
-        """
-        Lưu checkpoint epoch lên Drive — CHỈ chạy khi IS_COLAB=True.
-        Trên Colab, checkpoints/ đã symlink → Drive, nên lưu trực tiếp vào checkpoints_dir.
-        Lưu tất cả epoch (không xóa), cập nhật best nếu tốt hơn, và lưu training history.
-        """
-        if not IS_COLAB:
-            return
-        
-        try:
-            # 1. Lưu LoRA epoch checkpoint trực tiếp
-            epoch_lora = self.checkpoints_dir / f"lora_epoch_{epoch}.safetensors"
-            epoch_inj = self.checkpoints_dir / f"injector_epoch_{epoch}.safetensors"
-            self._save_safetensors_safe(self._get_lora_state_dict(), str(epoch_lora))
-            self._save_safetensors_safe(self.injector.state_dict(), str(epoch_inj))
-            
-            # 2. Lưu training history JSON (cập nhật mỗi epoch)
-            history_path = self.checkpoints_dir / "training_history.json"
-            with open(str(history_path), "w", encoding="utf-8") as f:
-                json.dump(loss_history, f, indent=2)
-            
-            # 3. Upload training_history.json lên HF Hub
-            if HF_TOKEN and HF_REPO_ID:
-                try:
-                    from huggingface_hub import upload_file
-                    upload_file(
-                        path_or_fileobj=str(history_path),
-                        path_in_repo=f"{HF_SUBFOLDER}/training_history.json",
-                        repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, token=HF_TOKEN,
-                        commit_message=f"history: epoch {epoch}",
-                    )
-                    logger.info(f"  ☁️ HF: training_history.json → {HF_REPO_ID}/{HF_SUBFOLDER}/")
-                except Exception as e:
-                    logger.warning(f"  ⚠️ HF upload training_history.json failed: {e}")
-            
-            best_str = '✓' if is_best else '✗'
-            logger.info(f"☁️ Drive: epoch_{epoch} | best={best_str} | history ✓")
-        except Exception as e:
-            logger.error(f"❌ Lỗi khi lưu epoch lên Drive: {e}")
+
+
 
     # ==============================================================================
     # CHUNKED LOADING — GLOBAL EPOCH TRAINING
@@ -1785,171 +1610,7 @@ class Stage2Trainer:
         else:
             logger.info("✅ Tất cả embeddings đã cache đầy đủ — skip pre-caching")
     
-    def _save_training_state(self, epoch, global_step, best_val_loss, best_epoch, loss_history, chunk_index=-1, chunk_names=None, step_in_chunk=0):
-        """Save full training state cho Colab resume.
-        chunk_index: index chunk vừa train xong (-1 = epoch hoàn tất).
-        chunk_names: danh sách tên chunks theo thứ tự shuffled của epoch hiện tại.
-        step_in_chunk: số batches đã train trong chunk hiện tại (0 = chunk hoàn tất).
-        
-        Trên Colab: ghi local → background thread copy sang Drive.
-        Optimizer state dict rất lớn (~200-400MB), ghi trực tiếp lên Drive FUSE
-        gây I/O blocking → Colab runtime gửi SIGINT → crash.
-        """
-        # Đợi pending copies trước khi tạo thêm
-        self._wait_pending_copies()
-        
-        state = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_val_loss": best_val_loss,
-            "best_epoch": best_epoch,
-            "loss_history": loss_history,
-            "optimizer": self.optimizer.state_dict(),
-            "scheduler": self.scheduler.state_dict(),
-            "scaler": self.scaler.state_dict(),
-            "chunk_index": chunk_index,
-            "chunk_names": chunk_names or [],
-            "step_in_chunk": step_in_chunk,
-        }
-        
-        state_path = self.checkpoints_dir / "training_state.pth"
-        
-        if IS_COLAB:
-            # Ghi local (nhanh ~1-2s) → background thread copy sang Drive (KHÔNG block)
-            import time as _time
-            local_tmp = f"/tmp/training_state_{int(_time.time())}.pth"
-            torch.save(state, local_tmp)
-            
-            # Background copy → Drive
-            t = threading.Thread(
-                target=Stage2Trainer._bg_copy_to_drive,
-                args=(local_tmp, str(state_path)),
-                daemon=False  # Non-daemon: Python đợi upload xong trước khi exit
-            )
-            t.start()
-            self._pending_drive_copies.append(t)
-        else:
-            torch.save(state, str(state_path))
-        
-        chunk_info = f", chunk={chunk_index}" if chunk_index >= 0 else ""
-        step_info = f", step_in_chunk={step_in_chunk}" if step_in_chunk > 0 else ""
-        logger.info(f"💾 Training state saved: epoch={epoch}, step={global_step}{chunk_info}{step_info}")
-    
-    def _load_training_state(self):
-        """Load full training state để resume. Returns dict hoặc None.
-        Hỗ trợ 4 sources (ưu tiên từ trên xuống):
-            0. HuggingFace Hub (download về local nếu Drive không có)
-            1. training_state.pth (full state — optimizer + metadata)
-            2. training_state_lite.json (lightweight — chỉ metadata)
-            3. LoRA weights only (backward compat)
-        """
-        # === Source 0: Download từ HF Hub nếu local thiếu file ===
-        if HF_TOKEN and HF_REPO_ID and IS_COLAB:
-            try:
-                from huggingface_hub import hf_hub_download, list_repo_files
-                # Danh sách file cần check
-                hf_files = [
-                    "training_state.pth",
-                    "training_state_lite.json",
-                    "lora_backup.safetensors",
-                    "injector_backup.safetensors",
-                    "lora_best.safetensors",
-                    "injector_best.safetensors",
-                    "training_history.json",
-                ]
-                downloaded = []
-                for fname in hf_files:
-                    local_path = self.checkpoints_dir / fname
-                    if local_path.exists():
-                        continue  # Đã có local → không cần download
-                    try:
-                        hf_hub_download(
-                            repo_id=HF_REPO_ID,
-                            repo_type=HF_REPO_TYPE,
-                            filename=f"{HF_SUBFOLDER}/{fname}",
-                            token=HF_TOKEN,
-                            local_dir=str(self.checkpoints_dir),
-                            local_dir_use_symlinks=False,
-                        )
-                        # hf_hub_download lưu vào subfolder, move về root checkpoints
-                        hf_path = self.checkpoints_dir / HF_SUBFOLDER / fname
-                        if hf_path.exists():
-                            import shutil as _shutil
-                            _shutil.move(str(hf_path), str(local_path))
-                        downloaded.append(fname)
-                    except Exception:
-                        pass  # File không tồn tại trên HF hoặc lỗi → bỏ qua
-                if downloaded:
-                    logger.info(f"  ☁️ Downloaded từ HF Hub: {downloaded}")
-                else:
-                    logger.info(f"  ☁️ HF Hub: không có file mới cần download")
-            except ImportError:
-                logger.warning("  ⚠️ huggingface_hub chưa cài — bỏ qua HF resume fallback")
-            except Exception as hf_err:
-                logger.warning(f"  ⚠️ HF Hub resume check failed: {hf_err}")
 
-        state_path = self.checkpoints_dir / "training_state.pth"
-        lite_path = self.checkpoints_dir / "training_state_lite.json"
-
-        
-        # === Helper: load LoRA + Injector weights ===
-        def _load_model_weights():
-            best_lora = self.checkpoints_dir / "lora_best.safetensors"
-            best_inj = self.checkpoints_dir / "injector_best.safetensors"
-            backup_lora = self.checkpoints_dir / "lora_backup.safetensors"
-            backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
-            load_lora = best_lora if best_lora.exists() else (backup_lora if backup_lora.exists() else None)
-            load_inj = best_inj if best_inj.exists() else (backup_inj if backup_inj.exists() else None)
-            if load_lora and load_inj:
-                from safetensors.torch import load_file as load_safetensors
-                self._load_lora_weights(str(load_lora))
-                self.injector.load_state_dict(load_safetensors(str(load_inj)))
-                logger.info(f"  🔄 LoRA weights: {load_lora.name} + {load_inj.name}")
-                return True
-            return False
-        
-        # === Source 1: Full state (training_state.pth) ===
-        if state_path.exists():
-            try:
-                state = torch.load(str(state_path), map_location=DEVICE, weights_only=False)
-                _load_model_weights()
-                
-                # Restore optimizer, scheduler, scaler
-                if "optimizer" in state:
-                    self.optimizer.load_state_dict(state["optimizer"])
-                if "scheduler" in state:
-                    self.scheduler.load_state_dict(state["scheduler"])
-                if "scaler" in state:
-                    self.scaler.load_state_dict(state["scaler"])
-                
-                logger.info(f"  🔄 Optimizer + Scheduler + Scaler restored")
-                return state
-            except Exception as e:
-                logger.error(f"❌ Lỗi load training_state.pth: {e}")
-                logger.info("  → Thử fallback sang lightweight state...")
-        
-        # === Source 2: Lightweight JSON (training_state_lite.json) ===
-        if lite_path.exists():
-            try:
-                with open(str(lite_path), "r", encoding="utf-8") as f:
-                    state = json.load(f)
-                
-                _load_model_weights()
-                
-                # Fix best_val_loss nếu đã serialize thành 1e9
-                if state.get("best_val_loss", 0) >= 1e8:
-                    state["best_val_loss"] = float('inf')
-                
-                logger.info(f"  🔄 Loaded lightweight state (no optimizer — sẽ warm up ~100 steps)")
-                logger.warning(f"  ⚠️ Optimizer/Scheduler bắt đầu lại (mid-chunk resume)")
-                return state
-            except Exception as e:
-                logger.error(f"❌ Lỗi load training_state_lite.json: {e}")
-        
-        # === Source 3: LoRA weights only (backward compat) ===
-        if _load_model_weights():
-            logger.warning("  ⚠️ Không có training state — optimizer/scheduler bắt đầu lại")
-        return None
     
     def _validate_across_chunks(self, chunk_dirs, batch_size, target_size, global_step):
         """Validate qua tối đa 3 chunks CỐ ĐỊNH, lấy mỗi chunk ~30 samples.
@@ -2051,25 +1712,37 @@ class Stage2Trainer:
         resume_chunk_names = []   # thứ tự chunks đã shuffle của epoch bị interrupt
         resume_step_in_chunk = 0  # số batches đã train trong chunk bị interrupt
         
+        # === LOAD PREVIOUS WEIGHTS (nếu có) ===
+        # Ưu tiên: best > latest > train từ đầu
+        # Chỉ load weights (không load optimizer/scheduler — bắt đầu fresh)
         if resume:
-            loaded = self._load_training_state()
-            if loaded:
-                start_epoch = loaded['epoch']
-                global_step = loaded['global_step']
-                best_val_loss = loaded['best_val_loss']
-                best_epoch = loaded.get('best_epoch', -1)
-                loss_history = loaded.get('loss_history', loss_history)
-                resume_chunk_index = loaded.get('chunk_index', -1)
-                resume_chunk_names = loaded.get('chunk_names', [])
-                resume_step_in_chunk = loaded.get('step_in_chunk', 0)
-                
-                if resume_chunk_index >= 0:
-                    step_info = f", Step-in-chunk {resume_step_in_chunk}" if resume_step_in_chunk > 0 else ""
-                    logger.info(f"🔄 [RESUME] Epoch {start_epoch}, Step {global_step}, Chunk {resume_chunk_index+1}/{len(resume_chunk_names)}{step_info}, Best Val: {best_val_loss:.6f}")
-                    # Epoch chưa hoàn tất → lùi epoch lại 1 để tiếp tục
-                    start_epoch = max(0, start_epoch - 1)
-                else:
-                    logger.info(f"🔄 [RESUME] Epoch {start_epoch}, Step {global_step}, Best Val: {best_val_loss:.6f}")
+            best_lora = self.checkpoints_dir / "lora_best.safetensors"
+            best_inj = self.checkpoints_dir / "injector_best.safetensors"
+            latest_lora = self.checkpoints_dir / "lora_latest.safetensors"
+            latest_inj = self.checkpoints_dir / "injector_latest.safetensors"
+            
+            loaded_from = None
+            if best_lora.exists() and best_inj.exists():
+                loaded_from = "best"
+                load_lora, load_inj = best_lora, best_inj
+            elif latest_lora.exists() and latest_inj.exists():
+                loaded_from = "latest"
+                load_lora, load_inj = latest_lora, latest_inj
+            
+            if loaded_from:
+                try:
+                    from safetensors.torch import load_file as load_safetensors
+                    self._load_lora_weights(str(load_lora))
+                    self.injector.load_state_dict(load_safetensors(str(load_inj)))
+                    lora_size = load_lora.stat().st_size / (1024**2)
+                    logger.info(f"🔄 [RESUME] Loaded {loaded_from} weights: {load_lora.name} ({lora_size:.1f} MB) + {load_inj.name}")
+                    logger.info(f"  ⚠️ Optimizer/Scheduler bắt đầu fresh (chỉ load model weights)")
+                except Exception as e:
+                    logger.error(f"❌ Load weights failed: {e} — train từ đầu")
+            else:
+                logger.info("🆕 Không tìm thấy checkpoint — train từ đầu")
+        else:
+            logger.info("🆕 --fresh flag — train từ đầu (bỏ qua checkpoint cũ)")
         
         # ==================================================
         # 3. RECONFIGURE LR SCHEDULER dựa trên dataset size thực tế
@@ -2248,10 +1921,72 @@ class Stage2Trainer:
             else:
                 logger.info(f"Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} (Best: Ep{best_epoch}, {best_val_loss:.6f}) — Time: {epoch_time/60:.1f}min")
             
-            # Ghi epoch loss history (không save file)
+            # Ghi epoch loss history
             loss_history['epoch_avg_loss'].append(avg_epoch_loss)
             loss_history['val_loss'].append(val_loss)
             loss_history['val_lpips'].append(val_lpips if val_lpips >= 0 else 0.0)
+            
+            # === SAVE WEIGHTS SAU MỖI EPOCH ===
+            # An toàn vì training loop đã dừng, không có GPU conflict
+            logger.info(f"  💾 Saving epoch {epoch+1} weights...")
+            
+            # Save latest (luôn luôn)
+            self._save_safetensors_safe(self._get_lora_state_dict(),
+                                       str(self.checkpoints_dir / "lora_latest.safetensors"))
+            self._save_safetensors_safe(self.injector.state_dict(),
+                                       str(self.checkpoints_dir / "injector_latest.safetensors"))
+            
+            # Save best (chỉ khi val_loss tốt hơn)
+            if is_new_best:
+                self._save_safetensors_safe(self._get_lora_state_dict(),
+                                           str(self.checkpoints_dir / "lora_best.safetensors"))
+                self._save_safetensors_safe(self.injector.state_dict(),
+                                           str(self.checkpoints_dir / "injector_best.safetensors"))
+                logger.info(f"  🏆 Best weights saved (Val: {val_loss:.6f})")
+            
+            # Save training history JSON
+            history_path = self.checkpoints_dir / "training_history.json"
+            with open(str(history_path), "w", encoding="utf-8") as f:
+                json.dump(loss_history, f, indent=2)
+            
+            # Upload lên HF Hub (đồng bộ — an toàn vì không training)
+            if HF_TOKEN and HF_REPO_ID:
+                try:
+                    from huggingface_hub import upload_file, create_repo
+                    try:
+                        create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
+                    except Exception:
+                        pass
+                    
+                    upload_files = [
+                        ("lora_latest.safetensors", "lora_latest.safetensors"),
+                        ("injector_latest.safetensors", "injector_latest.safetensors"),
+                        ("training_history.json", "training_history.json"),
+                    ]
+                    if is_new_best:
+                        upload_files.extend([
+                            ("lora_best.safetensors", "lora_best.safetensors"),
+                            ("injector_best.safetensors", "injector_best.safetensors"),
+                        ])
+                    
+                    t_upload = time.time()
+                    for local_name, remote_name in upload_files:
+                        local_path = self.checkpoints_dir / local_name
+                        if local_path.exists():
+                            upload_file(
+                                path_or_fileobj=str(local_path),
+                                path_in_repo=f"{HF_SUBFOLDER}/{remote_name}",
+                                repo_id=HF_REPO_ID,
+                                repo_type=HF_REPO_TYPE,
+                                token=HF_TOKEN,
+                                commit_message=f"epoch {epoch+1}: {remote_name}",
+                            )
+                    logger.info(f"  ☁️ HF Hub upload done in {time.time()-t_upload:.1f}s")
+                except Exception as e:
+                    logger.warning(f"  ⚠️ HF upload failed: {e}")
+            
+            lora_size = (self.checkpoints_dir / "lora_latest.safetensors").stat().st_size / (1024**2)
+            logger.info(f"  ✅ Epoch {epoch+1} saved: lora ({lora_size:.1f} MB) + injector → local + Drive + HF Hub")
             
             # Reset resume flags sau epoch đầu tiên
             resume_chunk_index = -1
