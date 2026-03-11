@@ -1035,52 +1035,24 @@ class Stage2Trainer:
     
     def _save_safetensors_safe(self, state_dict, path: str):
         """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt.
-        Trên Colab: ghi local → background thread copy sang Drive (KHÔNG block training).
+        HF Hub upload được xử lý riêng ở end-of-epoch (đồng bộ).
         """
-        if IS_COLAB:
-            # === COLAB: Save local (instant) → background copy to Drive ===
-            temp_dir = "/tmp/training_saves"
-            os.makedirs(temp_dir, exist_ok=True)
-            
-            # Unique temp filename để tránh conflict giữa lora_backup và injector_backup
-            import tempfile
-            fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=temp_dir)
-            os.close(fd)
-            try:
-                save_file(state_dict, temp_path)
-                size_mb = os.path.getsize(temp_path) / (1024 * 1024)
-                logger.info(f"  💾 Saved: {os.path.basename(path)} ({size_mb:.1f} MB) [local, đang copy Drive...]")
-                
-                # Background thread copy → Drive (không block training loop)
-                t = threading.Thread(
-                    target=Stage2Trainer._bg_copy_to_drive,
-                    args=(temp_path, path),
-                    daemon=False  # Non-daemon: Python đợi upload xong trước khi exit
-                )
-                t.start()
-                self._pending_drive_copies.append(t)
-            except Exception as e:
-                logger.error(f"❌ Lỗi khi lưu {path}: {e}")
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise e
-        else:
-            # === LOCAL: ghi trực tiếp (không qua Drive FUSE) ===
-            import tempfile
-            target_dir = os.path.dirname(path)
-            fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=target_dir)
-            os.close(fd)
-            try:
-                save_file(state_dict, temp_path)
-                shutil.move(temp_path, path)
-                if os.path.exists(path):
-                    size_mb = os.path.getsize(path) / (1024 * 1024)
-                    logger.info(f"  💾 Saved: {os.path.basename(path)} ({size_mb:.1f} MB)")
-            except Exception as e:
-                logger.error(f"❌ Lỗi khi lưu {path}: {e}")
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-                raise e
+        import tempfile
+        target_dir = os.path.dirname(path)
+        os.makedirs(target_dir, exist_ok=True)
+        fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=target_dir)
+        os.close(fd)
+        try:
+            save_file(state_dict, temp_path)
+            shutil.move(temp_path, path)
+            if os.path.exists(path):
+                size_mb = os.path.getsize(path) / (1024 * 1024)
+                logger.info(f"  💾 Saved: {os.path.basename(path)} ({size_mb:.1f} MB)")
+        except Exception as e:
+            logger.error(f"❌ Lỗi khi lưu {path}: {e}")
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+            raise e
 
     def _plot_training_charts(self, history: dict, epoch: int):
         """
@@ -1886,18 +1858,18 @@ class Stage2Trainer:
             # An toàn vì training loop đã dừng, không có GPU conflict
             logger.info(f"  💾 Saving epoch {epoch+1} weights...")
             
-            # Save latest (luôn luôn)
-            self._save_safetensors_safe(self._get_lora_state_dict(),
-                                       str(self.checkpoints_dir / "lora_latest.safetensors"))
+            # Save latest (luôn luôn) — injector trước (nhỏ, nhanh), lora sau (lớn, lâu)
             self._save_safetensors_safe(self.injector.state_dict(),
                                        str(self.checkpoints_dir / "injector_latest.safetensors"))
+            self._save_safetensors_safe(self._get_lora_state_dict(),
+                                       str(self.checkpoints_dir / "lora_latest.safetensors"))
             
             # Save best (chỉ khi val_loss tốt hơn)
             if is_new_best:
-                self._save_safetensors_safe(self._get_lora_state_dict(),
-                                           str(self.checkpoints_dir / "lora_best.safetensors"))
                 self._save_safetensors_safe(self.injector.state_dict(),
                                            str(self.checkpoints_dir / "injector_best.safetensors"))
+                self._save_safetensors_safe(self._get_lora_state_dict(),
+                                           str(self.checkpoints_dir / "lora_best.safetensors"))
                 logger.info(f"  🏆 Best weights saved (Val: {val_loss:.6f})")
             
             # Save training history JSON
