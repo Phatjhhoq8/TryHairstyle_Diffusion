@@ -1516,45 +1516,71 @@ class Stage2Trainer:
         - Tổng upload ~94MB via Drive API ≈ 5-10s → nằm trong cửa sổ 30-60s SIGINT→SIGKILL
         """
         # === MAIN THREAD: Snapshot + ghi /tmp (đồng bộ, instant) ===
-        lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
-        inj_dict = {k: v.cpu().clone() for k, v in self.injector.state_dict().items()}
+        # Heartbeat thread: in liên tục mỗi 0.5s để Colab watchdog thấy kernel còn sống
+        _heartbeat_stop = threading.Event()
+        _save_status = ["starting"]  # mutable — để heartbeat thread đọc trạng thái hiện tại
+        
+        def _heartbeat():
+            tick = 0
+            while not _heartbeat_stop.is_set():
+                print(f"[save] ♥ alive ({_save_status[0]}) [{tick}]", flush=True)
+                tick += 1
+                _heartbeat_stop.wait(0.5)  # ngủ 0.5s, thoát ngay khi stop
+        
+        hb_thread = threading.Thread(target=_heartbeat, daemon=True)
+        hb_thread.start()
+        
+        try:
+            _save_status[0] = "snapshot LoRA"
+            lora_dict = {k: v.cpu().clone() for k, v in self._get_lora_state_dict().items()}
+            _save_status[0] = "snapshot Injector"
+            inj_dict = {k: v.cpu().clone() for k, v in self.injector.state_dict().items()}
 
-        tmp_dir = "/tmp/training_saves" if IS_COLAB else str(self.checkpoints_dir)
-        os.makedirs(tmp_dir, exist_ok=True)
+            tmp_dir = "/tmp/training_saves" if IS_COLAB else str(self.checkpoints_dir)
+            os.makedirs(tmp_dir, exist_ok=True)
 
-        lora_tmp = os.path.join(tmp_dir, "lora_backup.safetensors")
-        inj_tmp = os.path.join(tmp_dir, "injector_backup.safetensors")
-        save_file(lora_dict, lora_tmp)
-        save_file(inj_dict, inj_tmp)
+            lora_tmp = os.path.join(tmp_dir, "lora_backup.safetensors")
+            inj_tmp = os.path.join(tmp_dir, "injector_backup.safetensors")
+            _save_status[0] = "writing LoRA"
+            save_file(lora_dict, lora_tmp)
+            _save_status[0] = "writing Injector"
+            save_file(inj_dict, inj_tmp)
 
-        serializable_history = {}
-        for k, v in loss_history.items():
-            if isinstance(v, list):
-                serializable_history[k] = [
-                    float(x) if not isinstance(x, (int, float, str)) else x
-                    for x in v
-                ]
-            else:
-                serializable_history[k] = v
+            _save_status[0] = "serializing state"
+            serializable_history = {}
+            for k, v in loss_history.items():
+                if isinstance(v, list):
+                    serializable_history[k] = [
+                        float(x) if not isinstance(x, (int, float, str)) else x
+                        for x in v
+                    ]
+                else:
+                    serializable_history[k] = v
 
-        state_json = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_val_loss": float(best_val_loss) if best_val_loss != float('inf') else 1e9,
-            "best_epoch": best_epoch,
-            "loss_history": serializable_history,
-            "chunk_index": chunk_index,
-            "chunk_names": chunk_names or [],
-            "step_in_chunk": step_in_chunk,
-            "lightweight": True,
-        }
+            state_json = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "best_val_loss": float(best_val_loss) if best_val_loss != float('inf') else 1e9,
+                "best_epoch": best_epoch,
+                "loss_history": serializable_history,
+                "chunk_index": chunk_index,
+                "chunk_names": chunk_names or [],
+                "step_in_chunk": step_in_chunk,
+                "lightweight": True,
+            }
 
-        json_tmp = os.path.join(tmp_dir, "training_state_lite.json")
-        with open(json_tmp, "w", encoding="utf-8") as f:
-            json.dump(state_json, f, indent=2)
+            json_tmp = os.path.join(tmp_dir, "training_state_lite.json")
+            _save_status[0] = "writing JSON"
+            with open(json_tmp, "w", encoding="utf-8") as f:
+                json.dump(state_json, f, indent=2)
 
-        lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
-        logger.info(f"  💾 Snapshot done ({lora_size:.1f} MB) → uploading Drive nền...")
+            lora_size = os.path.getsize(lora_tmp) / (1024 * 1024)
+        finally:
+            _heartbeat_stop.set()
+            hb_thread.join(timeout=1)
+        
+        print(f"[save] ✅ Local save done ({lora_size:.1f} MB)", flush=True)
+        logger.info(f"  💾 Snapshot done ({lora_size:.1f} MB) → uploading HF nền...")
 
         if not IS_COLAB:
             logger.info(f"  💾 Mid-chunk saved locally ({lora_size:.1f} MB)")
