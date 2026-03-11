@@ -2251,13 +2251,33 @@ class Stage2Trainer:
                 torch.cuda.empty_cache()
                 
                 # Backup checkpoint + training state sau mỗi chunk (Colab safety)
+                # Chạy trong background thread để main thread không bị block → Colab không kill
                 if not SKIP_MID_CHUNK_SAVE:
-                    self._save_checkpoint("backup", is_best=False)
-                    self._save_training_state(
-                        epoch + 1, global_step, best_val_loss, best_epoch, loss_history,
-                        chunk_index=chunk_idx, chunk_names=chunk_names,
-                        step_in_chunk=0  # 0 = chunk hoàn tất
-                    )
+                    _save_epoch = epoch + 1
+                    _save_global_step = global_step
+                    _save_best_val = best_val_loss
+                    _save_best_epoch = best_epoch
+                    _save_history = {k: (list(v) if isinstance(v, list) else v) for k, v in loss_history.items()}
+                    _save_chunk_idx = chunk_idx
+                    _save_chunk_names = list(chunk_names) if chunk_names else []
+                    _save_self = self
+                    
+                    def _bg_end_of_chunk_save():
+                        try:
+                            _save_self._save_checkpoint("backup", is_best=False)
+                            _save_self._save_training_state(
+                                _save_epoch, _save_global_step, _save_best_val, _save_best_epoch,
+                                _save_history, chunk_index=_save_chunk_idx,
+                                chunk_names=_save_chunk_names, step_in_chunk=0
+                            )
+                            logger.info("  ✅ End-of-chunk save done (background)")
+                        except Exception as e:
+                            logger.error(f"  ❌ End-of-chunk save failed: {e}")
+                    
+                    t = threading.Thread(target=_bg_end_of_chunk_save, daemon=False)
+                    t.start()
+                    self._pending_drive_copies.append(t)
+                    logger.info("  💾 End-of-chunk save started in background...")
                 else:
                     logger.info("  ⏩ SKIP_MID_CHUNK_SAVE=True — bỏ qua save sau chunk")
                 
