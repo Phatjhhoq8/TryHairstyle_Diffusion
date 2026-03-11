@@ -38,7 +38,7 @@ DEVICE = getDevice()
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
 # Mid-chunk checkpoint: save mỗi N samples
-MID_CHUNK_SAVE_INTERVAL = 250  # samples (với batch_size=2 → mỗi 250 steps)
+MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 500 steps)
 
 # Flag: tắt mid-chunk save hoàn toàn (hữu ích khi muốn chạy nhanh, không lo Colab crash)
 # Đặt True để skip toàn bộ mid-chunk checkpoint, chỉ save cuối mỗi epoch
@@ -1510,28 +1510,24 @@ class Stage2Trainer:
     
     def _save_mid_chunk_async(self, epoch, global_step, best_val_loss, best_epoch,
                               loss_history, chunk_index, chunk_names, step_in_chunk):
-        """Mid-chunk save V8: GPU clone trên main thread → GPU→CPU + file I/O trong background.
+        """Mid-chunk save V9: Main thread = 0ms block.
         
-        Main thread CHỈ làm (tổng ~vài ms):
-          1. torch.cuda.synchronize() — đợi GPU xong pending ops
-          2. detach().clone() — clone weights TRÊN GPU (GPU→GPU, cực nhanh)
+        Main thread CHỈ làm:
+          - Serialize JSON state (pure Python, instant)
+          - Start background thread
         
-        Background thread (non-daemon) làm phần còn lại:
-          - .cpu() — chuyển GPU clone sang CPU RAM
+        Background thread (non-daemon) làm TẤT CẢ:
+          - torch.cuda.empty_cache() → giải phóng VRAM cache
+          - .cpu().clone() → snapshot weights (GPU→CPU)
           - save_file() → ghi safetensors ra /tmp/
           - json.dump() → ghi training state
           - upload_file() → đẩy lên HF Hub
-          - del gpu tensors → giải phóng VRAM
         
-        → Main thread trở lại training loop gần như ngay lập tức (~ms)
-        → VRAM tạm tốn thêm ~94MB (giải phóng sau khi background thread copy xong CPU)
+        Trade-off: snapshot có thể hơi "xé" nếu optimizer.step() chạy cùng lúc,
+        nhưng cho backup checkpoint → chấp nhận được.
+        Python GIL đảm bảo dict comprehension chạy atomic ở mức bytecode.
         """
-        # === MAIN THREAD: GPU clone (cực nhanh, ~vài ms) ===
-        torch.cuda.synchronize()  # Đợi GPU xong → clone nhanh, consistent
-        lora_dict_gpu = {k: v.detach().clone() for k, v in self._get_lora_state_dict().items()}
-        inj_dict_gpu = {k: v.detach().clone() for k, v in self.injector.state_dict().items()}
-        
-        # Serialize loss_history trước khi truyền vào thread (tránh race condition)
+        # === MAIN THREAD: Chỉ chuẩn bị JSON (instant, không GPU) ===
         serializable_history = {}
         for k, v in loss_history.items():
             if isinstance(v, list):
@@ -1554,22 +1550,20 @@ class Stage2Trainer:
             "lightweight": True,
         }
         
-        logger.info(f"  💾 GPU snapshot done → background thread saving...")
+        logger.info(f"  💾 Starting background save thread...")
         
-        # === BACKGROUND THREAD: GPU→CPU + File I/O + Upload ===
+        # === Capture references (không copy, không GPU) ===
         is_colab = IS_COLAB
         checkpoints_dir = str(self.checkpoints_dir)
+        model = self  # reference để background thread đọc weights
         
         def _bg_save_and_upload():
             try:
-                # GPU→CPU transfer (trong background, không block training)
-                lora_dict = {k: v.cpu() for k, v in lora_dict_gpu.items()}
-                inj_dict = {k: v.cpu() for k, v in inj_dict_gpu.items()}
-                
-                # Giải phóng VRAM ngay sau khi copy xong CPU
-                lora_dict_gpu.clear()
-                inj_dict_gpu.clear()
-                torch.cuda.empty_cache()
+                # Snapshot weights trong background thread
+                with torch.no_grad():
+                    torch.cuda.empty_cache()  # Giải phóng VRAM cache trước
+                    lora_dict = {k: v.cpu().clone() for k, v in model._get_lora_state_dict().items()}
+                    inj_dict = {k: v.cpu().clone() for k, v in model.injector.state_dict().items()}
                 
                 tmp_dir = "/tmp/training_saves" if is_colab else checkpoints_dir
                 os.makedirs(tmp_dir, exist_ok=True)
@@ -1623,7 +1617,7 @@ class Stage2Trainer:
                     logger.warning("  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload mid-chunk")
             except Exception as e:
                 logger.error(f"  ❌ Background save failed: {e}")
-
+        
         # daemon=False: Python đợi thread này xong trước khi exit
         t = threading.Thread(target=_bg_save_and_upload, daemon=False)
         t.start()
