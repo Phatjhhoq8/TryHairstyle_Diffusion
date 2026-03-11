@@ -38,7 +38,7 @@ DEVICE = getDevice()
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
 # Mid-chunk checkpoint: save mỗi N samples
-MID_CHUNK_SAVE_INTERVAL = 250  # samples (với batch_size=2 → mỗi 250 steps)
+MID_CHUNK_SAVE_INTERVAL = 500  # samples (với batch_size=2 → mỗi 500 steps)
 
 # Flag: tắt mid-chunk save hoàn toàn (hữu ích khi muốn chạy nhanh, không lo Colab crash)
 # Đặt True để skip toàn bộ mid-chunk checkpoint, chỉ save cuối mỗi epoch
