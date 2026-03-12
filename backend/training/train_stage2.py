@@ -10,7 +10,7 @@ import random
 import shutil
 import signal
 import atexit
-import threading
+
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -557,17 +557,13 @@ class Stage2Trainer:
         )
         
         # 8. Tạo thư mục checkpoints
-        self.checkpoints_dir = PROJECT_DIR / "backend" / "training" / "checkpoints"
+        #    Colab: save vào /tmp/ (SSD local, instant) — KHÔNG dùng Drive FUSE (chậm, bị ^C kill)
+        #    HF Hub upload xử lý persistence
+        if IS_COLAB:
+            self.checkpoints_dir = Path("/tmp/training_checkpoints")
+        else:
+            self.checkpoints_dir = PROJECT_DIR / "backend" / "training" / "checkpoints"
         ensureDir(str(self.checkpoints_dir))
-        
-        # 9. Track background Drive copy threads (tránh quá nhiều copies đồng thời)
-        self._pending_drive_copies = []
-        
-        # 10. Pre-init Drive API (Colab only) — tránh blocking training loop sau này
-        #     Nếu lazy-init trong mid-chunk save → block main thread 5-15s → Colab SIGINT
-        if IS_COLAB and Stage2Trainer._drive_service is None:
-            Stage2Trainer._drive_service, Stage2Trainer._drive_folder_id = \
-                Stage2Trainer._init_drive_api(str(self.checkpoints_dir))
         
         # 11. Setup SIGINT handler cho graceful shutdown
         self._interrupted = False
@@ -986,53 +982,6 @@ class Stage2Trainer:
             'val_lpips': avg_lpips
         }
 
-    # Lock để serialize background Drive writes (tránh race condition)
-    _drive_copy_lock = threading.Lock()
-    
-    def _wait_pending_copies(self, timeout=120):
-        """Đợi tất cả background Drive copies hoàn tất trước khi save tiếp."""
-        alive = [t for t in self._pending_drive_copies if t.is_alive()]
-        if alive:
-            logger.info(f"  ⏳ Đợi {len(alive)} background copy(s) hoàn tất...")
-            for t in alive:
-                t.join(timeout=timeout)
-        self._pending_drive_copies = [t for t in self._pending_drive_copies if t.is_alive()]
-    
-    @staticmethod
-    def _bg_copy_to_drive(src: str, dst: str):
-        """Background thread: upload file lên HuggingFace Hub.
-        File src tạm (/tmp) sẽ được cleanup sau khi upload xong.
-        """
-        filename = os.path.basename(dst)
-        
-        if HF_TOKEN and HF_REPO_ID:
-            try:
-                from huggingface_hub import upload_file, create_repo
-                try:
-                    create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
-                except Exception:
-                    pass
-                
-                upload_file(
-                    path_or_fileobj=src,
-                    path_in_repo=f"{HF_SUBFOLDER}/{filename}",
-                    repo_id=HF_REPO_ID,
-                    repo_type=HF_REPO_TYPE,
-                    token=HF_TOKEN,
-                    commit_message=f"checkpoint: {filename}",
-                )
-                logger.info(f"  ☁️ HF: {filename} → {HF_REPO_ID}/{HF_SUBFOLDER}/")
-            except Exception as hf_err:
-                logger.error(f"  ❌ HF upload failed ({filename}): {hf_err}")
-        else:
-            logger.warning(f"  ⚠️ HF_TOKEN/HF_REPO_ID chưa cấu hình — không thể upload {filename}")
-        
-        # Cleanup temp file
-        try:
-            os.remove(src)
-        except Exception:
-            pass
-    
     def _save_safetensors_safe(self, state_dict, path: str):
         """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt.
         HF Hub upload được xử lý riêng ở end-of-epoch (đồng bộ).
@@ -1261,151 +1210,6 @@ class Stage2Trainer:
             except:
                 pass
     
-    # Drive API service (lazy-initialized, None = chưa init hoặc không phải Colab)
-    _drive_service = None
-    _drive_folder_id = None
-    
-    @staticmethod
-    def _init_drive_api(checkpoints_dir: str):
-        """Khởi tạo Google Drive API client (bypass FUSE, nhanh 3-5x).
-        Chỉ chạy trên Colab. Returns (service, folder_id) hoặc (None, None).
-        """
-        if not IS_COLAB:
-            return None, None
-        try:
-            import google.auth
-            from googleapiclient.discovery import build
-            
-            creds, _ = google.auth.default()
-            service = build('drive', 'v3', credentials=creds, cache_discovery=False)
-            
-            # Resolve checkpoints_dir symlink → Drive path
-            real_path = os.path.realpath(checkpoints_dir)
-            
-            # Hỗ trợ nhiều dạng path trên Colab:
-            # 1. /content/drive/MyDrive/TryHairStyle/checkpoints
-            # 2. /content/drive/.shortcut-targets-by-id/ID/TryHairStyle/checkpoints
-            # 3. /content/drive/Shareddrives/Name/...
-            relative = None
-            prefixes = [
-                '/content/drive/MyDrive/',
-                '/content/drive/My Drive/',
-            ]
-            
-            # Check standard prefixes
-            for prefix in prefixes:
-                if real_path.startswith(prefix):
-                    relative = real_path[len(prefix):]
-                    break
-            
-            # Handle shortcut paths: extract relative path after the ID
-            # /content/drive/.shortcut-targets-by-id/SOME_ID/TryHairStyle/checkpoints
-            if relative is None and '/.shortcut-targets-by-id/' in real_path:
-                # Skip the ID segment, get path after it
-                parts = real_path.split('/.shortcut-targets-by-id/')[1]
-                # parts = "SOME_ID/TryHairStyle/checkpoints" → skip ID
-                slash_idx = parts.find('/')
-                if slash_idx >= 0:
-                    relative = parts[slash_idx + 1:]
-            
-            if relative is None:
-                logger.warning(f"⚠️ Drive API: cannot resolve path {real_path}, trying folder search...")
-                # Fallback: tìm folder "checkpoints" trực tiếp trên Drive
-                folder_name = os.path.basename(checkpoints_dir)
-                parent_name = os.path.basename(os.path.dirname(os.path.dirname(checkpoints_dir)))
-                # Tìm parent folder (VD: "TryHairStyle")
-                query = f"name='{parent_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                results = service.files().list(q=query, fields='files(id)', pageSize=5).execute()
-                parent_files = results.get('files', [])
-                if parent_files:
-                    parent_id = parent_files[0]['id']
-                    # Tìm con đường training/checkpoints
-                    for sub in ['backend/training', 'training']:
-                        current_id = parent_id
-                        found = True
-                        for sub_part in sub.split('/'):
-                            q = f"name='{sub_part}' and '{current_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                            r = service.files().list(q=q, fields='files(id)', pageSize=1).execute()
-                            ff = r.get('files', [])
-                            if ff:
-                                current_id = ff[0]['id']
-                            else:
-                                found = False
-                                break
-                        if found:
-                            # Tìm checkpoints folder
-                            q = f"name='{folder_name}' and '{current_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                            r = service.files().list(q=q, fields='files(id)', pageSize=1).execute()
-                            ff = r.get('files', [])
-                            if ff:
-                                folder_id = ff[0]['id']
-                                logger.info(f"  ☁️ Drive API initialized via search (folder_id={folder_id[:8]}...)")
-                                return service, folder_id
-                
-                logger.warning(f"⚠️ Drive API: folder search failed, fallback to FUSE")
-                return None, None
-            
-            # Traverse path to find folder ID
-            folder_id = 'root'
-            for part in relative.split('/'):
-                if not part:
-                    continue
-                query = (
-                    f"name='{part}' and '{folder_id}' in parents "
-                    f"and mimeType='application/vnd.google-apps.folder' and trashed=false"
-                )
-                results = service.files().list(q=query, fields='files(id)', pageSize=1).execute()
-                files = results.get('files', [])
-                if files:
-                    folder_id = files[0]['id']
-                else:
-                    # Create folder if not exists
-                    body = {
-                        'name': part,
-                        'parents': [folder_id],
-                        'mimeType': 'application/vnd.google-apps.folder'
-                    }
-                    folder = service.files().create(body=body, fields='id').execute()
-                    folder_id = folder['id']
-            
-            logger.info(f"  ☁️ Drive API initialized (folder_id={folder_id[:8]}...)")
-            return service, folder_id
-        except Exception as e:
-            logger.warning(f"⚠️ Drive API init failed: {e}, fallback to FUSE")
-            return None, None
-    
-    @staticmethod
-    def _upload_to_drive_api(service, folder_id, local_path, filename):
-        """Upload file lên Drive qua API (bypass FUSE).
-        Nếu file đã tồn tại → update. Nếu chưa → create.
-        """
-        from googleapiclient.http import MediaFileUpload
-        
-        # Check if file already exists
-        query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
-        results = service.files().list(q=query, fields='files(id)', pageSize=1).execute()
-        existing = results.get('files', [])
-        
-        media = MediaFileUpload(local_path, resumable=True)
-        
-        if existing:
-            # Update existing file
-            service.files().update(
-                fileId=existing[0]['id'],
-                media_body=media
-            ).execute()
-        else:
-            # Create new file
-            body = {'name': filename, 'parents': [folder_id]}
-            service.files().create(
-                body=body,
-                media_body=media,
-                fields='id'
-            ).execute()
-    
-
-
-
 
 
     # ==============================================================================

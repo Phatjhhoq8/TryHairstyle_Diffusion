@@ -14,7 +14,6 @@ from backend.app.services.training_utils import setupLogger
 logger = setupLogger("ModelExportVerification")
 
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
-DRIVE_MODELS_DIR = Path("/content/drive/MyDrive/TryHairStyle/model")
 
 # HuggingFace Hub config (checkpoint + export)
 HF_TOKEN = os.environ.get("HUGFACE_TOKEN", "")
@@ -32,7 +31,12 @@ class CheckpointManager:
     """
     def __init__(self):
         self.project_dir = Path(__file__).resolve().parent.parent.parent
-        self.checkpoints_dir = self.project_dir / "backend" / "training" / "checkpoints"
+        # Colab: checkpoints nằm trong /tmp/ (matching train_stage2.py)
+        # Local: checkpoints nằm trong project dir
+        if IS_COLAB:
+            self.checkpoints_dir = Path("/tmp/training_checkpoints")
+        else:
+            self.checkpoints_dir = self.project_dir / "backend" / "training" / "checkpoints"
         self.production_models_dir = self.project_dir / "backend" / "models"
         
         os.makedirs(self.checkpoints_dir, exist_ok=True)
