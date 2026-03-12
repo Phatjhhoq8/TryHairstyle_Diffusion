@@ -526,7 +526,7 @@ class Stage2Trainer:
         # 5. Optimizer — CHỈ train LoRA + conv_in + Injector
         self._trainable_params = (
             [p for p in self.unet.parameters() if p.requires_grad]
-            + list(self.injector.parameters())
+            + [p for p in self.injector.parameters() if p.requires_grad]
         )
         n_train = sum(p.numel() for p in self._trainable_params)
         logger.info(f"  → Total trainable (LoRA+conv_in+Injector): {n_train:,} params")

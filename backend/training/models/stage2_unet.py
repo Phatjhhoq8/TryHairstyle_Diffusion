@@ -104,7 +104,8 @@ class HairInpaintingUNet(nn.Module):
 class CrossAttentionInjector(nn.Module):
     def __init__(self, unet: UNet2DConditionModel, style_dim=2048, identity_dim=512, text_dim=2048):
         super().__init__()
-        self.unet = unet
+        # NOTE: KHÔNG gán self.unet = unet vì nn.Module sẽ đăng ký toàn bộ 2.6B params
+        # của UNet vào Injector → gây duplicate params trong optimizer → OOM crash khi save
         
         # Mạng chiếu (Projection Layer) để map Identity Embedding (vd 512d của AdaFace)
         # vào cùng không gian chiều (Dimensionality) với Text/Style 
