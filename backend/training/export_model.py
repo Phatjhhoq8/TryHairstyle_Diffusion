@@ -41,8 +41,8 @@ class CheckpointManager:
         
         os.makedirs(self.checkpoints_dir, exist_ok=True)
         
-        # Download checkpoint từ HF Hub nếu local trống (Colab)
-        if IS_COLAB and HF_TOKEN and HF_REPO_ID:
+        # LUÔN download checkpoint từ HF Hub (nơi lưu duy nhất)
+        if HF_TOKEN and HF_REPO_ID:
             self._download_checkpoints_from_hf()
     
     def _download_checkpoints_from_hf(self):
@@ -60,8 +60,6 @@ class CheckpointManager:
             downloaded = []
             for fname in hf_files:
                 local_path = self.checkpoints_dir / fname
-                if local_path.exists():
-                    continue
                 try:
                     hf_hub_download(
                         repo_id=HF_REPO_ID,
