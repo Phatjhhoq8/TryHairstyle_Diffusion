@@ -1728,6 +1728,12 @@ class Stage2Trainer:
             
             # === SAVE WEIGHTS SAU MỖI EPOCH ===
             # An toàn vì training loop đã dừng, không có GPU conflict
+            # ⚠️ QUAN TRỌNG: Giải phóng RAM trước khi save!
+            # Sau validation + LPIPS, RAM hệ thống gần hết.
+            # Nếu không dọn → OOM Killer gửi ^C giết process ngay lúc save_file().
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
             logger.info(f"  💾 Saving epoch {epoch+1} weights...")
             
             # Save latest (luôn luôn) — injector trước (nhỏ, nhanh), lora sau (lớn, lâu)
