@@ -1662,18 +1662,18 @@ class Stage2Trainer:
             # An toàn vì training loop đã dừng, không có GPU conflict
             logger.info(f"  💾 Saving epoch {epoch+1} weights...")
             
-            # Save latest (luôn luôn) — injector trước (nhỏ, nhanh), lora sau (lớn, lâu)
-            self._save_safetensors_safe(self.injector.state_dict(),
-                                       str(self.checkpoints_dir / "injector_latest.safetensors"))
+            # Save latest (luôn luôn) — lora trước (quan trọng nhất), injector sau
             self._save_safetensors_safe(self._get_lora_state_dict(),
                                        str(self.checkpoints_dir / "lora_latest.safetensors"))
+            self._save_safetensors_safe(self.injector.state_dict(),
+                                       str(self.checkpoints_dir / "injector_latest.safetensors"))
             
             # Save best (chỉ khi val_loss tốt hơn)
             if is_new_best:
-                self._save_safetensors_safe(self.injector.state_dict(),
-                                           str(self.checkpoints_dir / "injector_best.safetensors"))
                 self._save_safetensors_safe(self._get_lora_state_dict(),
                                            str(self.checkpoints_dir / "lora_best.safetensors"))
+                self._save_safetensors_safe(self.injector.state_dict(),
+                                           str(self.checkpoints_dir / "injector_best.safetensors"))
                 logger.info(f"  🏆 Best weights saved (Val: {val_loss:.6f})")
             
             # Save training history JSON
