@@ -983,25 +983,56 @@ class Stage2Trainer:
         }
 
     def _save_safetensors_safe(self, state_dict, path: str):
-        """Lưu safetensors an toàn — ghi vào temp file rồi move để tránh corrupt.
-        HF Hub upload được xử lý riêng ở end-of-epoch (đồng bộ).
+        """Lưu safetensors an toàn — ghi vào /tmp/ (SSD) rồi upload HF Hub ngay.
+        Giống hệt cơ chế code cũ đã chạy thành công trên Colab.
+        Không dùng background thread, không ghi Drive.
         """
         import tempfile
-        target_dir = os.path.dirname(path)
-        os.makedirs(target_dir, exist_ok=True)
-        fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=target_dir)
+        filename = os.path.basename(path)
+        
+        # === BƯỚC 1: Save vào /tmp/ (SSD local, cực nhanh) ===
+        if IS_COLAB:
+            save_dir = "/tmp/training_saves"
+        else:
+            save_dir = os.path.dirname(path)
+        os.makedirs(save_dir, exist_ok=True)
+        
+        fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=save_dir)
         os.close(fd)
         try:
             save_file(state_dict, temp_path)
-            shutil.move(temp_path, path)
-            if os.path.exists(path):
-                size_mb = os.path.getsize(path) / (1024 * 1024)
-                logger.info(f"  💾 Saved: {os.path.basename(path)} ({size_mb:.1f} MB)")
+            final_path = os.path.join(save_dir, filename)
+            shutil.move(temp_path, final_path)
+            size_mb = os.path.getsize(final_path) / (1024 * 1024)
+            logger.info(f"  💾 Saved: {filename} ({size_mb:.1f} MB) [local]")
         except Exception as e:
-            logger.error(f"❌ Lỗi khi lưu {path}: {e}")
+            logger.error(f"❌ Lỗi khi lưu {filename}: {e}")
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             raise e
+        
+        # Cập nhật path để trỏ đến file thật (có thể khác path ban đầu trên Colab)
+        actual_path = final_path
+        
+        # === BƯỚC 2: Upload lên HF Hub ngay lập tức (đồng bộ) ===
+        if HF_TOKEN and HF_REPO_ID:
+            try:
+                from huggingface_hub import upload_file, create_repo
+                try:
+                    create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
+                except Exception:
+                    pass
+                upload_file(
+                    path_or_fileobj=actual_path,
+                    path_in_repo=f"{HF_SUBFOLDER}/{filename}",
+                    repo_id=HF_REPO_ID,
+                    repo_type=HF_REPO_TYPE,
+                    token=HF_TOKEN,
+                    commit_message=f"checkpoint: {filename}",
+                )
+                logger.info(f"  ☁️ HF: {filename} → {HF_REPO_ID}/{HF_SUBFOLDER}/")
+            except Exception as hf_err:
+                logger.warning(f"  ⚠️ HF upload failed ({filename}): {hf_err}")
 
     def _plot_training_charts(self, history: dict, epoch: int):
         """
@@ -1713,49 +1744,25 @@ class Stage2Trainer:
                                            str(self.checkpoints_dir / "lora_best.safetensors"))
                 logger.info(f"  🏆 Best weights saved (Val: {val_loss:.6f})")
             
-            # Save training history JSON
+            # Save training history JSON (upload riêng, không qua _save_safetensors_safe)
             history_path = self.checkpoints_dir / "training_history.json"
             with open(str(history_path), "w", encoding="utf-8") as f:
                 json.dump(loss_history, f, indent=2)
-            
-            # Upload lên HF Hub (đồng bộ — an toàn vì không training)
             if HF_TOKEN and HF_REPO_ID:
                 try:
-                    from huggingface_hub import upload_file, create_repo
-                    try:
-                        create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
-                    except Exception:
-                        pass
-                    
-                    upload_files = [
-                        ("lora_latest.safetensors", "lora_latest.safetensors"),
-                        ("injector_latest.safetensors", "injector_latest.safetensors"),
-                        ("training_history.json", "training_history.json"),
-                    ]
-                    if is_new_best:
-                        upload_files.extend([
-                            ("lora_best.safetensors", "lora_best.safetensors"),
-                            ("injector_best.safetensors", "injector_best.safetensors"),
-                        ])
-                    
-                    t_upload = time.time()
-                    for local_name, remote_name in upload_files:
-                        local_path = self.checkpoints_dir / local_name
-                        if local_path.exists():
-                            upload_file(
-                                path_or_fileobj=str(local_path),
-                                path_in_repo=f"{HF_SUBFOLDER}/{remote_name}",
-                                repo_id=HF_REPO_ID,
-                                repo_type=HF_REPO_TYPE,
-                                token=HF_TOKEN,
-                                commit_message=f"epoch {epoch+1}: {remote_name}",
-                            )
-                    logger.info(f"  ☁️ HF Hub upload done in {time.time()-t_upload:.1f}s")
-                except Exception as e:
-                    logger.warning(f"  ⚠️ HF upload failed: {e}")
+                    from huggingface_hub import upload_file
+                    upload_file(
+                        path_or_fileobj=str(history_path),
+                        path_in_repo=f"{HF_SUBFOLDER}/training_history.json",
+                        repo_id=HF_REPO_ID,
+                        repo_type=HF_REPO_TYPE,
+                        token=HF_TOKEN,
+                        commit_message=f"epoch {epoch+1}: training_history.json",
+                    )
+                except Exception:
+                    pass
             
-            lora_size = (self.checkpoints_dir / "lora_latest.safetensors").stat().st_size / (1024**2)
-            logger.info(f"  ✅ Epoch {epoch+1} saved: lora ({lora_size:.1f} MB) + injector → local + Drive + HF Hub")
+            logger.info(f"  ✅ Epoch {epoch+1} saved: injector + lora → /tmp/ + HF Hub")
             
             # Reset resume flags sau epoch đầu tiên
             resume_chunk_index = -1
