@@ -3,89 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 
-class SupConLoss(nn.Module):
-    """
-    Supervised Contrastive Learning Loss (SupConLoss).
-    Dành cho Stage 1: Kéo các điểm nhúng (embeddings) của các ảnh patch có cùng nhãn vật lý
-    (VD: cùng độ xoăn 'curly') lại gần nhau trên hypersphere, và đẩy các patch khác nhãn ra xa.
-    Dự trên paper: "Supervised Contrastive Learning" (Khósla et al.)
-    """
-    def __init__(self, temperature=0.07, contrast_mode='all', base_temperature=0.07):
-        super(SupConLoss, self).__init__()
-        self.temperature = temperature
-        self.contrast_mode = contrast_mode
-        self.base_temperature = base_temperature
-
-    def forward(self, features, labels=None, mask=None):
-        """
-        features: shape (B, ... , Embed_dim) - cần được L2-normalize trước khi truyền vào.
-        labels: Nhãn vật lý của tệp (VD: Nhãn curliness). Shape: (B,)
-        mask: Bảng ma trận mask tùy chỉnh n*n nếu labels=None.
-        """
-        device = features.device
-
-        if len(features.shape) < 3:
-            raise ValueError('`features` shape nên là (B, Multi-views, Embed_dim). '
-                             'Nếu chỉ có 1 view, thêm 1 chiều dư ở giữa: features.unsqueeze(1).')
-                             
-        batch_size = features.shape[0]
-        
-        if labels is not None and mask is not None:
-            raise ValueError('Chỉ được nạp 1 trong 2: labels hoặc mask.')
-        elif labels is None and mask is None:
-            mask = torch.eye(batch_size, dtype=torch.float32).to(device)
-        elif labels is not None:
-            labels = labels.contiguous().view(-1, 1)
-            if labels.shape[0] != batch_size:
-                raise ValueError('Số lượng nhãn phải bằng Batch size')
-            mask = torch.eq(labels, labels.T).float().to(device)
-        else:
-            mask = mask.float().to(device)
-
-        contrast_count = features.shape[1]
-        contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
-
-        if self.contrast_mode == 'one':
-            anchor_feature = features[:, 0]
-            anchor_count = 1
-        elif self.contrast_mode == 'all':
-            anchor_feature = contrast_feature
-            anchor_count = contrast_count
-        else:
-            raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
-
-        # Tính toán phép chiếu vô hướng (Cosine Similarity do feature đã đc L2-norm)
-        anchor_dot_contrast = torch.div(
-            torch.matmul(anchor_feature, contrast_feature.T),
-            self.temperature)
-        
-        # Dùng trick trừ phần tử số lớn nhất để tránh tràn số softmax (numerical stability)
-        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
-        logits = anchor_dot_contrast - logits_max.detach()
-
-        # Tạo mask các góc âm đường chéo
-        mask = mask.repeat(anchor_count, contrast_count)
-        logits_mask = torch.scatter(
-            torch.ones_like(mask),
-            1,
-            torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
-            0
-        )
-        mask = mask * logits_mask
-
-        # Exp sum
-        exp_logits = torch.exp(logits) * logits_mask
-        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-6)
-
-        # Trừ tính toán mean của postive logits
-        mask_pos_pairs = mask.sum(1)
-        mask_pos_pairs = torch.where(mask_pos_pairs < 1e-6, 1, mask_pos_pairs)
-        mean_log_prob_pos = (mask * log_prob).sum(1) / mask_pos_pairs
-
-        loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
-        loss = loss.view(anchor_count, batch_size).mean()
-
-        return loss
 
 class VGG16FeatureExtractor(nn.Module):
     def __init__(self, feature_layers=[3, 8, 15, 22]): # relu1_2, relu2_2, relu3_3, relu4_3
@@ -336,12 +253,7 @@ if __name__ == "__main__":
     tex_loss_fn = TextureConsistencyLoss()
     print("Texture Gram-Matrix Loss:", tex_loss_fn(gen, tar).item())
     
-    # Test SupCon Loss
-    # features shape: (B, n_views, embed_dim)
-    feats = torch.nn.functional.normalize(torch.rand(B, 2, 128), dim=2)
-    labels = torch.tensor([0, 0])
-    supcon = SupConLoss()
-    print("SupCon Loss:", supcon(feats, labels).item())
+
 
     # Test Identity Cosine Loss (512-dim, matching FaceFeatureExtractor output)
     id_loss_fn = IdentityCosineLoss()

@@ -518,10 +518,7 @@ class Stage2Trainer:
         # 4. Khởi tạo Loss Functions
         self.mask_aware_loss = MaskAwareLoss(loss_type='l2').to(DEVICE)
         self.identity_loss = IdentityCosineLoss().to(DEVICE)
-        self.texture_loss = None  # LAZY LOAD mỗi 50 steps
-        logger.info("  → TextureConsistencyLoss: LAZY mode (load mỗi 50 steps)")
-        self.face_extractor = None  # LAZY LOAD
-        logger.info("  → Face Feature Extractor: LAZY mode (load mỗi 50 steps)")
+        # Texture/Identity loss: tạo mới inline mỗi 50 steps (không cần lưu vào self)
         
         # 5. Optimizer — CHỈ train LoRA + conv_in + Injector
         self._trainable_params = (
@@ -567,7 +564,7 @@ class Stage2Trainer:
         
         # 11. Setup SIGINT handler cho graceful shutdown
         self._interrupted = False
-        self._last_save_state = None  # Cho atexit handler
+
         self._setup_signal_handler()
         
         # 12. Pre-download VGG16 + InceptionResnet — tránh download 635MB giữa lúc train
@@ -645,15 +642,7 @@ class Stage2Trainer:
         torch.cuda.empty_cache()
         return decoded
     
-    @torch.no_grad()
-    def _decode_latents_no_grad(self, latents: torch.Tensor) -> torch.Tensor:
-        """Decode latents về RGB (validation, CPU↔GPU offload)."""
-        self.vae.to(DEVICE)
-        latents_input = (latents / self.vae_scale_factor).to(self.vae.dtype)
-        decoded = self.vae.decode(latents_input).sample
-        self.vae.to('cpu')
-        torch.cuda.empty_cache()
-        return decoded.float()
+
     
     def _get_lora_state_dict(self):
         """Lấy LoRA adapter weights + conv_in weights để save checkpoint."""
@@ -955,7 +944,7 @@ class Stage2Trainer:
                         sqrt_one_minus_alpha = ((1 - alpha_prod_t) ** 0.5).view(-1, 1, 1, 1)
                         pred_original = (noisy_latents - sqrt_one_minus_alpha * noise_pred) / (sqrt_alpha + 1e-8)
                         
-                        decoded_img = self._decode_latents_no_grad(pred_original)
+                        decoded_img = self._decode_latents(pred_original)
                     
                     # LPIPS cần input [-1, 1] — cả decoded_img và gt_images đều ở range này
                     lpips_val = lpips_evaluator.evaluate_lpips(
