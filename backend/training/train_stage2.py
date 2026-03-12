@@ -1455,7 +1455,7 @@ class Stage2Trainer:
                             )
                             # hf_hub_download lưu vào subfolder, move ra ngoài
                             subfolder_path = self.checkpoints_dir / HF_SUBFOLDER / fname
-                            if subfolder_path.exists() and not local_path.exists():
+                            if subfolder_path.exists():
                                 shutil.move(str(subfolder_path), str(local_path))
                             if local_path.exists():
                                 downloaded.append(fname)
