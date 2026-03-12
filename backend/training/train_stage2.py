@@ -983,20 +983,16 @@ class Stage2Trainer:
         }
 
     def _save_safetensors_safe(self, state_dict, path: str):
-        """Lưu safetensors an toàn — ghi vào /tmp/ (SSD) rồi upload HF Hub ngay.
-        Giống hệt cơ chế code cũ đã chạy thành công trên Colab.
-        Không dùng background thread, không ghi Drive.
+        """Lưu safetensors lên HF Hub (persistent storage duy nhất).
+        Ghi temp file → upload HF Hub đồng bộ → xóa temp.
+        Không giữ file local vì Colab free reset session liên tục.
         """
         import tempfile
         filename = os.path.basename(path)
-        
-        # === BƯỚC 1: Save vào /tmp/ (SSD local, cực nhanh) ===
-        if IS_COLAB:
-            save_dir = "/tmp/training_saves"
-        else:
-            save_dir = os.path.dirname(path)
+        save_dir = "/tmp/training_saves"
         os.makedirs(save_dir, exist_ok=True)
         
+        # BƯỚC 1: Ghi temp file (SSD local, cực nhanh)
         fd, temp_path = tempfile.mkstemp(suffix=".safetensors", dir=save_dir)
         os.close(fd)
         try:
@@ -1004,17 +1000,14 @@ class Stage2Trainer:
             final_path = os.path.join(save_dir, filename)
             shutil.move(temp_path, final_path)
             size_mb = os.path.getsize(final_path) / (1024 * 1024)
-            logger.info(f"  💾 Saved: {filename} ({size_mb:.1f} MB) [local]")
+            logger.info(f"  💾 Saved: {filename} ({size_mb:.1f} MB) [temp]")
         except Exception as e:
             logger.error(f"❌ Lỗi khi lưu {filename}: {e}")
             if os.path.exists(temp_path):
                 os.remove(temp_path)
             raise e
         
-        # Cập nhật path để trỏ đến file thật (có thể khác path ban đầu trên Colab)
-        actual_path = final_path
-        
-        # === BƯỚC 2: Upload lên HF Hub ngay lập tức (đồng bộ) ===
+        # BƯỚC 2: Upload lên HF Hub (đồng bộ — nơi lưu duy nhất)
         if HF_TOKEN and HF_REPO_ID:
             try:
                 from huggingface_hub import upload_file, create_repo
@@ -1023,7 +1016,7 @@ class Stage2Trainer:
                 except Exception:
                     pass
                 upload_file(
-                    path_or_fileobj=actual_path,
+                    path_or_fileobj=final_path,
                     path_in_repo=f"{HF_SUBFOLDER}/{filename}",
                     repo_id=HF_REPO_ID,
                     repo_type=HF_REPO_TYPE,
@@ -1033,6 +1026,15 @@ class Stage2Trainer:
                 logger.info(f"  ☁️ HF: {filename} → {HF_REPO_ID}/{HF_SUBFOLDER}/")
             except Exception as hf_err:
                 logger.warning(f"  ⚠️ HF upload failed ({filename}): {hf_err}")
+        else:
+            logger.warning(f"  ⚠️ HF_TOKEN/HF_REPO_ID chưa set — file chỉ lưu tạm: {final_path}")
+        
+        # BƯỚC 3: Xóa temp file (không cần giữ local)
+        try:
+            if os.path.exists(final_path):
+                os.remove(final_path)
+        except Exception:
+            pass
 
     def _plot_training_charts(self, history: dict, epoch: int):
         """
@@ -1192,55 +1194,6 @@ class Stage2Trainer:
             except Exception as e:
                 logger.warning(f"  ⚠️ HF upload chart failed: {e}")
 
-    def _save_checkpoint(self, suffix: str, is_best: bool = False):
-        """
-        Lưu LoRA checkpoint (tiny ~50MB thay vì ~5GB full UNet).
-        Chiến lược: CHỈ GIỮ file BEST + backup.
-        """
-        if is_best:
-            best_lora = self.checkpoints_dir / "lora_best.safetensors"
-            best_inj = self.checkpoints_dir / "injector_best.safetensors"
-            logger.info(f"🏆 Saving BEST LoRA model ({suffix})...")
-            self._save_safetensors_safe(self._get_lora_state_dict(), str(best_lora))
-            self._save_safetensors_safe(self.injector.state_dict(), str(best_inj))
-            
-            if best_lora.exists() and best_inj.exists():
-                logger.info(f"✅ BEST files verified: {best_lora.name} + {best_inj.name}")
-            else:
-                logger.error(f"❌ BEST files MISSING! Kiểm tra quyền ghi: {self.checkpoints_dir}")
-        else:
-            backup_lora = self.checkpoints_dir / "lora_backup.safetensors"
-            backup_inj = self.checkpoints_dir / "injector_backup.safetensors"
-            self._save_safetensors_safe(self._get_lora_state_dict(), str(backup_lora))
-            self._save_safetensors_safe(self.injector.state_dict(), str(backup_inj))
-        
-        # Dọn dẹp: chỉ giữ LoRA files + legacy files
-        keep_names = {
-            "lora_best.safetensors",
-            "injector_best.safetensors",
-            "lora_backup.safetensors",
-            "injector_backup.safetensors",
-            "lora_latest.safetensors",
-            "injector_latest.safetensors",
-            # Legacy (backward compat)
-            "deep_hair_v1_best.safetensors",
-            "deep_hair_v1_latest.safetensors",
-            "deep_hair_v1.safetensors",
-            "texture_encoder_best.safetensors",
-            "texture_encoder_latest.safetensors",
-            "training_history.json",
-        }
-        for p in self.checkpoints_dir.glob("*.safetensors"):
-            if p.name in keep_names:
-                continue
-            if IS_COLAB and ("_epoch_" in p.name):
-                continue
-            try:
-                p.unlink()
-                logger.info(f"  🗑️ Xóa checkpoint cũ: {p.name}")
-            except:
-                pass
-    
 
 
     # ==============================================================================
@@ -1435,7 +1388,7 @@ class Stage2Trainer:
         logger.info(f"Khởi động Chunked Loading – Global Epoch Training")
         logger.info(f"  📐 Resolution: {target_size[0]}x{target_size[1]}")
         logger.info(f"  🔄 Gradient Accumulation: {accumulation_steps} steps (effective batch = {batch_size * accumulation_steps})")
-        logger.info(f"  💾 Checkpoint: Local=BEST+backup | Drive={'LƯU TẤT CẢ epoch' if IS_COLAB else 'N/A'}")
+        logger.info(f"  💾 Checkpoint: HF Hub only (đồng bộ per-file)")
         
         # ==================================================
         # 1. DISCOVER CHUNKS
@@ -1479,8 +1432,9 @@ class Stage2Trainer:
         # Luồng: HF Hub download → local check → load weights
         # Trên Colab, /tmp/ bị xóa mỗi lần reset → cần tải lại từ HF Hub
         if resume:
-            # Bước 1: Download từ HF Hub nếu local chưa có
-            if IS_COLAB and HF_TOKEN and HF_REPO_ID:
+            # LUÔN download từ HF Hub (nơi lưu duy nhất)
+            # Colab free reset session + đổi acc liên tục → local luôn trống
+            if HF_TOKEN and HF_REPO_ID:
                 try:
                     from huggingface_hub import hf_hub_download
                     hf_files = [
@@ -1490,24 +1444,23 @@ class Stage2Trainer:
                     downloaded = []
                     for fname in hf_files:
                         local_path = self.checkpoints_dir / fname
-                        if not local_path.exists():
-                            try:
-                                hf_hub_download(
-                                    repo_id=HF_REPO_ID,
-                                    filename=f"{HF_SUBFOLDER}/{fname}",
-                                    repo_type=HF_REPO_TYPE,
-                                    token=HF_TOKEN,
-                                    local_dir=str(self.checkpoints_dir),
-                                    local_dir_use_symlinks=False,
-                                )
-                                # hf_hub_download lưu vào subfolder, move ra ngoài
-                                subfolder_path = self.checkpoints_dir / HF_SUBFOLDER / fname
-                                if subfolder_path.exists() and not local_path.exists():
-                                    shutil.move(str(subfolder_path), str(local_path))
-                                if local_path.exists():
-                                    downloaded.append(fname)
-                            except Exception:
-                                pass  # File chưa có trên Hub → bỏ qua
+                        try:
+                            hf_hub_download(
+                                repo_id=HF_REPO_ID,
+                                filename=f"{HF_SUBFOLDER}/{fname}",
+                                repo_type=HF_REPO_TYPE,
+                                token=HF_TOKEN,
+                                local_dir=str(self.checkpoints_dir),
+                                local_dir_use_symlinks=False,
+                            )
+                            # hf_hub_download lưu vào subfolder, move ra ngoài
+                            subfolder_path = self.checkpoints_dir / HF_SUBFOLDER / fname
+                            if subfolder_path.exists() and not local_path.exists():
+                                shutil.move(str(subfolder_path), str(local_path))
+                            if local_path.exists():
+                                downloaded.append(fname)
+                        except Exception:
+                            pass  # File chưa có trên Hub → bỏ qua
                     if downloaded:
                         logger.info(f"  ☁️ Downloaded từ HF Hub: {downloaded}")
                     else:
