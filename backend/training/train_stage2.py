@@ -1445,9 +1445,46 @@ class Stage2Trainer:
         resume_step_in_chunk = 0  # số batches đã train trong chunk bị interrupt
         
         # === LOAD PREVIOUS WEIGHTS (nếu có) ===
-        # Ưu tiên: best > latest > train từ đầu
-        # Chỉ load weights (không load optimizer/scheduler — bắt đầu fresh)
+        # Luồng: HF Hub download → local check → load weights
+        # Trên Colab, /tmp/ bị xóa mỗi lần reset → cần tải lại từ HF Hub
         if resume:
+            # Bước 1: Download từ HF Hub nếu local chưa có
+            if IS_COLAB and HF_TOKEN and HF_REPO_ID:
+                try:
+                    from huggingface_hub import hf_hub_download
+                    hf_files = [
+                        "lora_best.safetensors", "injector_best.safetensors",
+                        "lora_latest.safetensors", "injector_latest.safetensors",
+                    ]
+                    downloaded = []
+                    for fname in hf_files:
+                        local_path = self.checkpoints_dir / fname
+                        if not local_path.exists():
+                            try:
+                                hf_hub_download(
+                                    repo_id=HF_REPO_ID,
+                                    filename=f"{HF_SUBFOLDER}/{fname}",
+                                    repo_type=HF_REPO_TYPE,
+                                    token=HF_TOKEN,
+                                    local_dir=str(self.checkpoints_dir),
+                                    local_dir_use_symlinks=False,
+                                )
+                                # hf_hub_download lưu vào subfolder, move ra ngoài
+                                subfolder_path = self.checkpoints_dir / HF_SUBFOLDER / fname
+                                if subfolder_path.exists() and not local_path.exists():
+                                    shutil.move(str(subfolder_path), str(local_path))
+                                if local_path.exists():
+                                    downloaded.append(fname)
+                            except Exception:
+                                pass  # File chưa có trên Hub → bỏ qua
+                    if downloaded:
+                        logger.info(f"  ☁️ Downloaded từ HF Hub: {downloaded}")
+                    else:
+                        logger.info(f"  ☁️ Không tìm thấy checkpoint trên HF Hub — train mới")
+                except Exception as e:
+                    logger.warning(f"  ⚠️ HF Hub download failed: {e}")
+            
+            # Bước 2: Load weights từ local (đã có sẵn hoặc vừa download)
             best_lora = self.checkpoints_dir / "lora_best.safetensors"
             best_inj = self.checkpoints_dir / "injector_best.safetensors"
             latest_lora = self.checkpoints_dir / "lora_latest.safetensors"
@@ -1662,18 +1699,18 @@ class Stage2Trainer:
             # An toàn vì training loop đã dừng, không có GPU conflict
             logger.info(f"  💾 Saving epoch {epoch+1} weights...")
             
-            # Save latest (luôn luôn) — lora trước (quan trọng nhất), injector sau
-            self._save_safetensors_safe(self._get_lora_state_dict(),
-                                       str(self.checkpoints_dir / "lora_latest.safetensors"))
+            # Save latest (luôn luôn) — injector trước (nhỏ, nhanh), lora sau (lớn, lâu)
             self._save_safetensors_safe(self.injector.state_dict(),
                                        str(self.checkpoints_dir / "injector_latest.safetensors"))
+            self._save_safetensors_safe(self._get_lora_state_dict(),
+                                       str(self.checkpoints_dir / "lora_latest.safetensors"))
             
             # Save best (chỉ khi val_loss tốt hơn)
             if is_new_best:
-                self._save_safetensors_safe(self._get_lora_state_dict(),
-                                           str(self.checkpoints_dir / "lora_best.safetensors"))
                 self._save_safetensors_safe(self.injector.state_dict(),
                                            str(self.checkpoints_dir / "injector_best.safetensors"))
+                self._save_safetensors_safe(self._get_lora_state_dict(),
+                                           str(self.checkpoints_dir / "lora_best.safetensors"))
                 logger.info(f"  🏆 Best weights saved (Val: {val_loss:.6f})")
             
             # Save training history JSON
