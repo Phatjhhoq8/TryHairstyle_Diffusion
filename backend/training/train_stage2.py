@@ -1112,11 +1112,11 @@ class Stage2Trainer:
                 ax4.plot(epochs, val_losses, color='#2196F3', linewidth=2.5, marker='s', markersize=8, label='Val Loss')
                 # Đánh dấu best epoch (dựa trên val loss)
                 bestIdx = np.argmin(val_losses)
-                ax4.scatter([bestIdx + 1], [val_losses[bestIdx]], color='#FFD700', s=200, zorder=5, marker='★', label=f'Best Val (Epoch {bestIdx+1})')
+                ax4.scatter([bestIdx + 1], [val_losses[bestIdx]], color='#FFD700', s=200, zorder=5, marker='*', label=f'Best Val (Epoch {bestIdx+1})')
             else:
                 # Fallback: đánh dấu best trên train loss
                 bestIdx = np.argmin(history['epoch_avg_loss'])
-                ax4.scatter([bestIdx + 1], [history['epoch_avg_loss'][bestIdx]], color='#FFD700', s=200, zorder=5, marker='★', label=f'Best (Epoch {bestIdx+1})')
+                ax4.scatter([bestIdx + 1], [history['epoch_avg_loss'][bestIdx]], color='#FFD700', s=200, zorder=5, marker='*', label=f'Best (Epoch {bestIdx+1})')
             
             ax4.set_title('Train vs Validation Loss', fontsize=13)
             ax4.set_xticks(list(epochs))
@@ -1136,7 +1136,7 @@ class Stage2Trainer:
             ax5.plot(epochs, val_lpips, color='#00BCD4', linewidth=2.5, marker='D', markersize=8, label='Val LPIPS')
             # LPIPS thấp hơn = tốt hơn
             bestIdx = np.argmin([v if v > 0 else float('inf') for v in val_lpips])
-            ax5.scatter([bestIdx + 1], [val_lpips[bestIdx]], color='#FFD700', s=200, zorder=5, marker='★', label=f'Best LPIPS (Epoch {bestIdx+1})')
+            ax5.scatter([bestIdx + 1], [val_lpips[bestIdx]], color='#FFD700', s=200, zorder=5, marker='*', label=f'Best LPIPS (Epoch {bestIdx+1})')
             ax5.set_title('Validation LPIPS (↓ thấp = tốt)', fontsize=13)
             ax5.set_xticks(list(epochs))
         else:
