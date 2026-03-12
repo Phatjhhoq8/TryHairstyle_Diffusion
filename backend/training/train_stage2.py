@@ -37,8 +37,8 @@ DEVICE = getDevice()
 # Auto-detect Google Colab environment
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
 
-# CHỈ save cuối cùng khi training hoàn tất (lora_latest + injector_latest)
-# Không save mid-chunk, end-of-chunk, hay end-of-epoch → tránh Colab SIGINT
+# Save checkpoint tại 3 mốc: mid-chunk (N samples), end-chunk, end-epoch
+# Resume state lưu trên HF Hub → đổi account Colab vẫn tiếp tục được
 
 # HuggingFace Hub — lưu checkpoint ngoài Drive (reliable, không phụ thuộc FUSE)
 # Đọc từ environment variable (.env hoặc Colab secret)
@@ -1169,21 +1169,88 @@ class Stage2Trainer:
         
         logger.info(f"📊 Loss Chart đã lưu: {chartPath.name}")
         
-        # Upload chart lên HF Hub
+        # Upload chart lên HF Hub (cả per-epoch và latest)
         if HF_TOKEN and HF_REPO_ID:
             try:
                 from huggingface_hub import upload_file
+                # Upload latest (ghi đè cho xem nhanh)
                 upload_file(
                     path_or_fileobj=str(latestPath),
                     path_in_repo=f"{HF_SUBFOLDER}/charts/loss_chart_latest.png",
                     repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, token=HF_TOKEN,
                     commit_message=f"chart: epoch {epoch}",
                 )
-                logger.info(f"  ☁️ HF: loss_chart_latest.png → {HF_REPO_ID}/{HF_SUBFOLDER}/charts/")
+                # Upload per-epoch (không bị ghi đè, giữ lịch sử)
+                upload_file(
+                    path_or_fileobj=str(chartPath),
+                    path_in_repo=f"{HF_SUBFOLDER}/charts/{chartPath.name}",
+                    repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, token=HF_TOKEN,
+                    commit_message=f"chart: epoch {epoch} (archived)",
+                )
+                logger.info(f"  ☁️ HF: {chartPath.name} + loss_chart_latest.png → {HF_REPO_ID}/{HF_SUBFOLDER}/charts/")
             except Exception as e:
                 logger.warning(f"  ⚠️ HF upload chart failed: {e}")
 
-
+    def _save_resume_state(self, state: dict):
+        """Lưu resume_state.json vào /tmp/ + upload HF Hub.
+        File JSON nhẹ (~vài KB), upload cực nhanh, dùng để resume cross-account.
+        """
+        import gc
+        gc.collect()
+        torch.cuda.empty_cache()
+        
+        save_dir = "/tmp/training_saves" if IS_COLAB else str(self.checkpoints_dir)
+        os.makedirs(save_dir, exist_ok=True)
+        state_path = os.path.join(save_dir, "resume_state.json")
+        
+        with open(state_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        logger.info(f"  📋 Resume state saved: epoch={state['epoch']}, chunk={state['chunk_index']}, samples={state['samples_done_in_chunk']}")
+        
+        if HF_TOKEN and HF_REPO_ID:
+            try:
+                from huggingface_hub import upload_file, create_repo
+                try:
+                    create_repo(HF_REPO_ID, token=HF_TOKEN, repo_type=HF_REPO_TYPE, exist_ok=True, private=True)
+                except Exception:
+                    pass
+                upload_file(
+                    path_or_fileobj=state_path,
+                    path_in_repo=f"{HF_SUBFOLDER}/resume_state.json",
+                    repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, token=HF_TOKEN,
+                    commit_message=f"resume: epoch={state['epoch']} chunk={state['chunk_index']} samples={state['samples_done_in_chunk']}",
+                )
+                logger.info(f"  ☁️ HF: resume_state.json uploaded")
+            except Exception as e:
+                logger.warning(f"  ⚠️ HF upload resume_state failed: {e}")
+    
+    def _load_resume_state(self):
+        """Download resume_state.json từ HF Hub → đọc ra dict.
+        Returns: dict hoặc None nếu không tìm thấy.
+        """
+        if not (HF_TOKEN and HF_REPO_ID):
+            return None
+        try:
+            from huggingface_hub import hf_hub_download
+            local_dir = "/tmp/training_saves" if IS_COLAB else str(self.checkpoints_dir)
+            os.makedirs(local_dir, exist_ok=True)
+            hf_hub_download(
+                repo_id=HF_REPO_ID, repo_type=HF_REPO_TYPE, token=HF_TOKEN,
+                filename=f"{HF_SUBFOLDER}/resume_state.json",
+                local_dir=local_dir, local_dir_use_symlinks=False,
+            )
+            # hf_hub_download có thể lưu vào subfolder
+            state_path = os.path.join(local_dir, HF_SUBFOLDER, "resume_state.json")
+            if not os.path.exists(state_path):
+                state_path = os.path.join(local_dir, "resume_state.json")
+            if os.path.exists(state_path):
+                with open(state_path, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                logger.info(f"  📋 Resume state loaded: epoch={state['epoch']}, chunk={state['chunk_index']}, samples={state['samples_done_in_chunk']}")
+                return state
+        except Exception as e:
+            logger.info(f"  📋 Không tìm thấy resume_state.json trên HF Hub — train từ đầu ({e})")
+        return None
 
     # ==============================================================================
     # CHUNKED LOADING — GLOBAL EPOCH TRAINING
@@ -1358,7 +1425,7 @@ class Stage2Trainer:
     # MAIN TRAINING LOOP — Chunked Loading, Global Epoch
     # ==============================================================================
     
-    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True, chunk_names=None):
+    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True, chunk_names=None, save_every_n_samples=500):
         """
         Chunked Loading – Global Epoch Training.
         1 epoch = model nhìn thấy TẤT CẢ chunks đúng 1 lần.
@@ -1373,6 +1440,7 @@ class Stage2Trainer:
             resume: Resume từ checkpoint nếu có
             chunk_names: List tên các chunk cụ thể để train (vd: ['processed_001', 'processed_002']). 
                          Nếu None, train trên TẤT CẢ chunks tìm thấy.
+            save_every_n_samples: Save checkpoint mỗi N samples (0 = tắt mid-chunk save)
         """
         logger.info(f"Khởi động Chunked Loading – Global Epoch Training")
         logger.info(f"  📐 Resolution: {target_size[0]}x{target_size[1]}")
@@ -1416,6 +1484,24 @@ class Stage2Trainer:
         resume_chunk_index = -1  # -1 = bắt đầu epoch mới
         resume_chunk_names = []   # thứ tự chunks đã shuffle của epoch bị interrupt
         resume_step_in_chunk = 0  # số batches đã train trong chunk bị interrupt
+        
+        # === DOWNLOAD RESUME STATE từ HF Hub (nếu có) ===
+        # File JSON nhẹ chứa tọa độ: epoch, chunk_index, samples_done, global_step
+        if resume:
+            resume_state = self._load_resume_state()
+            if resume_state:
+                start_epoch = resume_state.get('epoch', 0)
+                global_step = resume_state.get('global_step', 0)
+                best_val_loss = resume_state.get('best_val_loss', float('inf'))
+                best_epoch = resume_state.get('best_epoch', -1)
+                resume_chunk_index = resume_state.get('chunk_index', -1)
+                resume_chunk_names = resume_state.get('chunk_order', [])
+                # Quy đổi samples → batches để skip đúng số batch
+                resume_step_in_chunk = resume_state.get('samples_done_in_chunk', 0) // max(batch_size, 1)
+                saved_history = resume_state.get('loss_history', None)
+                if saved_history and isinstance(saved_history, dict):
+                    loss_history = saved_history
+                logger.info(f"  📋 Resume từ: epoch={start_epoch}, chunk={resume_chunk_index}, step={global_step}, best_val={best_val_loss:.6f}")
         
         # === LOAD PREVIOUS WEIGHTS (nếu có) ===
         # Luồng: HF Hub download → local check → load weights
@@ -1464,12 +1550,14 @@ class Stage2Trainer:
             latest_inj = self.checkpoints_dir / "injector_latest.safetensors"
             
             loaded_from = None
-            if best_lora.exists() and best_inj.exists():
-                loaded_from = "best"
-                load_lora, load_inj = best_lora, best_inj
-            elif latest_lora.exists() and latest_inj.exists():
+            # ƯU TIÊN latest (checkpoint mới nhất, gần vị trí bị ngắt nhất)
+            # best chỉ dùng làm fallback khi latest không tồn tại
+            if latest_lora.exists() and latest_inj.exists():
                 loaded_from = "latest"
                 load_lora, load_inj = latest_lora, latest_inj
+            elif best_lora.exists() and best_inj.exists():
+                loaded_from = "best"
+                load_lora, load_inj = best_lora, best_inj
             
             if loaded_from:
                 try:
@@ -1537,7 +1625,10 @@ class Stage2Trainer:
                     logger.info(f"\n🔄 RESUME Epoch {epoch+1} — skip {skip_until} chunks đã train")
             else:
                 shuffled_chunks = chunk_dirs.copy()
-                random.shuffle(shuffled_chunks)
+                # Deterministic shuffle: cùng epoch luôn cho cùng thứ tự chunk
+                # Epoch khác → seed khác → thứ tự khác (tốt cho generalization)
+                epoch_rng = random.Random(epoch * 9999 + 42)
+                epoch_rng.shuffle(shuffled_chunks)
                 skip_until = 0
             
             chunk_names = [d.name for d in shuffled_chunks]
@@ -1620,9 +1711,48 @@ class Stage2Trainer:
                     })
                     global_step += 1
                     
-                    # SIGINT/SIGTERM check: graceful shutdown
+                    # ============================================
+                    # MID-CHUNK SAVE — mỗi save_every_n_samples
+                    # ============================================
+                    samples_done = (step + 1) * batch_size
+                    if save_every_n_samples > 0 and samples_done > 0 and samples_done % save_every_n_samples == 0:
+                        logger.info(f"\n  💾 [MID-CHUNK SAVE] {samples_done} samples (chunk {chunk_dir.name})...")
+                        import gc; gc.collect(); torch.cuda.empty_cache()
+                        self._save_safetensors_safe(
+                            self.injector.state_dict(),
+                            str(self.checkpoints_dir / "injector_latest.safetensors"))
+                        self._save_safetensors_safe(
+                            self._get_lora_state_dict(),
+                            str(self.checkpoints_dir / "lora_latest.safetensors"))
+                        self._save_resume_state({
+                            'epoch': epoch, 'chunk_index': chunk_idx,
+                            'chunk_order': chunk_names,
+                            'samples_done_in_chunk': samples_done,
+                            'global_step': global_step,
+                            'best_val_loss': best_val_loss, 'best_epoch': best_epoch,
+                            'loss_history': loss_history,
+                        })
+                    
+                    # SIGINT/SIGTERM check: graceful shutdown — save trước khi thoát
                     if self._interrupted:
-                        logger.warning(f"🛑 Graceful shutdown — thoát training...")
+                        logger.warning(f"🛑 Graceful shutdown — đang save checkpoint trước khi thoát...")
+                        import gc; gc.collect(); torch.cuda.empty_cache()
+                        self._save_safetensors_safe(
+                            self.injector.state_dict(),
+                            str(self.checkpoints_dir / "injector_latest.safetensors"))
+                        self._save_safetensors_safe(
+                            self._get_lora_state_dict(),
+                            str(self.checkpoints_dir / "lora_latest.safetensors"))
+                        samples_done_at_interrupt = (step + 1) * batch_size
+                        self._save_resume_state({
+                            'epoch': epoch, 'chunk_index': chunk_idx,
+                            'chunk_order': chunk_names,
+                            'samples_done_in_chunk': samples_done_at_interrupt,
+                            'global_step': global_step,
+                            'best_val_loss': best_val_loss, 'best_epoch': best_epoch,
+                            'loss_history': loss_history,
+                        })
+                        logger.info(f"  ✅ Checkpoint saved — có thể resume trên account khác")
                         logger.info(f"{'='*60}")
                         return  # Thoát sạch (không raise exception)
                 
@@ -1634,7 +1764,25 @@ class Stage2Trainer:
                 del dataset, dataloader
                 torch.cuda.empty_cache()
                 
-                # Không save giữa chừng — chỉ save cuối cùng khi training hoàn tất
+                # ============================================
+                # END-CHUNK SAVE
+                # ============================================
+                logger.info(f"  💾 [END-CHUNK SAVE] checkpoint sau chunk {chunk_dir.name}...")
+                import gc; gc.collect(); torch.cuda.empty_cache()
+                self._save_safetensors_safe(
+                    self.injector.state_dict(),
+                    str(self.checkpoints_dir / "injector_latest.safetensors"))
+                self._save_safetensors_safe(
+                    self._get_lora_state_dict(),
+                    str(self.checkpoints_dir / "lora_latest.safetensors"))
+                self._save_resume_state({
+                    'epoch': epoch, 'chunk_index': chunk_idx,
+                    'chunk_order': chunk_names,
+                    'samples_done_in_chunk': 0,  # chunk xong → resume sẽ skip chunk này
+                    'global_step': global_step,
+                    'best_val_loss': best_val_loss, 'best_epoch': best_epoch,
+                    'loss_history': loss_history,
+                })
                 
                 # Reset mid-chunk resume flag sau khi chunk resume xong
                 if resume_step_in_chunk > 0:
@@ -1712,6 +1860,17 @@ class Stage2Trainer:
             
             logger.info(f"  ✅ Epoch {epoch+1} saved: injector + lora → /tmp/ + HF Hub")
             
+            # Save resume state cho epoch mới (dễ resume đầu epoch tiếp theo)
+            self._save_resume_state({
+                'epoch': epoch + 1,  # epoch kế tiếp
+                'chunk_index': -1,   # bắt đầu epoch mới
+                'chunk_order': [],
+                'samples_done_in_chunk': 0,
+                'global_step': global_step,
+                'best_val_loss': best_val_loss, 'best_epoch': best_epoch,
+                'loss_history': loss_history,
+            })
+            
             # Reset resume flags sau epoch đầu tiên
             resume_chunk_index = -1
             resume_chunk_names = []
@@ -1755,6 +1914,7 @@ if __name__ == "__main__":
     parser.add_argument("--accumulation", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--fresh", action="store_true", help="Train từ đầu, KHÔNG load checkpoint cũ")
     parser.add_argument("--chunk-names", type=str, default="", help="Chỉ định cụ thể chunks để train, cách nhau bằng dấu phẩy (vd: processed_001,processed_002)")
+    parser.add_argument("--save-steps", type=int, default=500, help="Save checkpoint mỗi N samples (0=tắt mid-chunk save)")
     args = parser.parse_args()
     
     chunk_names_list = [name.strip() for name in args.chunk_names.split(",")] if args.chunk_names else None
@@ -1767,5 +1927,6 @@ if __name__ == "__main__":
         target_size=(args.resolution, args.resolution),
         accumulation_steps=args.accumulation,
         resume=not args.fresh,
-        chunk_names=chunk_names_list
+        chunk_names=chunk_names_list,
+        save_every_n_samples=args.save_steps,
     )
