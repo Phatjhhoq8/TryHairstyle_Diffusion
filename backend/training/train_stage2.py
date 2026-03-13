@@ -1657,6 +1657,20 @@ class Stage2Trainer:
                     continue
                 
                 num_workers = 0 if os.name == 'nt' else 2
+                
+                # Mid-chunk resume: cắt Dataset bằng Subset thay vì skip trong loop
+                # Cách cũ (continue) vẫn bắt DataLoader đọc file ảnh → tốn ~2 tiếng
+                # Cách mới (Subset) cắt index → DataLoader chỉ đọc phần chưa train → <1 giây
+                samples_offset = 0  # Số samples đã skip (dùng để tính samples_done chính xác)
+                if chunk_idx == resume_chunk_index and resume_step_in_chunk > 0 and epoch == start_epoch:
+                    skip_samples = resume_step_in_chunk * batch_size
+                    if 0 < skip_samples < len(dataset):
+                        original_len = len(dataset)
+                        remaining_indices = list(range(skip_samples, len(dataset)))
+                        dataset = torch.utils.data.Subset(dataset, remaining_indices)
+                        samples_offset = skip_samples
+                        logger.info(f"  ⏩ Resume: cắt {skip_samples} samples đã train, còn {len(dataset)}/{original_len} samples")
+                
                 # Deterministic DataLoader: cùng seed → cùng thứ tự batch → resume chính xác
                 dl_seed = epoch * 10000 + chunk_idx
                 dl_generator = torch.Generator().manual_seed(dl_seed)
@@ -1665,22 +1679,10 @@ class Stage2Trainer:
                     drop_last=True, num_workers=num_workers, pin_memory=True
                 )
                 
-                # Mid-chunk resume: skip batches đã train
-                skip_steps = 0
-                if chunk_idx == resume_chunk_index and resume_step_in_chunk > 0 and epoch == start_epoch:
-                    skip_steps = resume_step_in_chunk
-                
                 logger.info(f"\n  📂 Chunk {chunk_idx+1}/{len(shuffled_chunks)}: {chunk_dir.name} ({len(dataset)} samples)")
-                if skip_steps > 0:
-                    logger.info(f"  ⏩ Skipping {skip_steps} batches đã train (mid-chunk resume)...")
                 
                 pbar = tqdm(dataloader, desc=f"E{epoch+1} C{chunk_idx+1}/{len(shuffled_chunks)}")
                 for step, batch in enumerate(pbar):
-                    # Skip batches đã train (mid-chunk resume)
-                    if step < skip_steps:
-                        if step == 0 or (step + 1) % 100 == 0:
-                            pbar.set_postfix({"skip": f"{step+1}/{skip_steps}"})
-                        continue
                     
                     step_start = time.time()
                     losses = self.train_step(batch, global_step, accumulation_steps=accumulation_steps)
@@ -1714,7 +1716,7 @@ class Stage2Trainer:
                     # ============================================
                     # MID-CHUNK SAVE — mỗi save_every_n_samples
                     # ============================================
-                    samples_done = (step + 1) * batch_size
+                    samples_done = samples_offset + (step + 1) * batch_size
                     if save_every_n_samples > 0 and samples_done > 0 and samples_done % save_every_n_samples == 0:
                         logger.info(f"\n  💾 [MID-CHUNK SAVE] {samples_done} samples (chunk {chunk_dir.name})...")
                         import gc; gc.collect(); torch.cuda.empty_cache()
@@ -1743,7 +1745,7 @@ class Stage2Trainer:
                         self._save_safetensors_safe(
                             self._get_lora_state_dict(),
                             str(self.checkpoints_dir / "lora_latest.safetensors"))
-                        samples_done_at_interrupt = (step + 1) * batch_size
+                        samples_done_at_interrupt = samples_offset + (step + 1) * batch_size
                         self._save_resume_state({
                             'epoch': epoch, 'chunk_index': chunk_idx,
                             'chunk_order': chunk_names,
