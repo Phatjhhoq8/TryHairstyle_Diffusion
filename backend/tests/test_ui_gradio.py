@@ -149,6 +149,10 @@ def process_pipeline(user_image, hair_image, prompt):
         ref_hair_mask.save(os.path.join(session_dir, "ref_hair_mask.png"))
         print(f"  ✅ Saved hair_mask, face_mask, ref_hair_mask → {session_dir}", flush=True)
         
+        # Dynamic Mask: mở rộng mask nếu tóc mẫu lớn hơn tóc user
+        hair_mask = mask_service.expand_hair_mask(hair_mask, face_mask, ref_hair_mask, face_info)
+        hair_mask.save(os.path.join(session_dir, "hair_mask_expanded.png"))
+        
         # 3. Depth Estimation (dùng cached depth_estimator)
         print("  → Estimating Depth...", flush=True)
         depth_map = depth_estimator(user_image)['depth']

@@ -14,6 +14,7 @@ from backend.app.config import model_paths, settings
 from backend.app.services.face_detector import TrainingFaceDetector
 from backend.app.services.embedder import TrainingEmbedder
 from backend.app.services.training_utils import computeIoU
+from backend.app.services.reconstructor_3d import TrainingReconstructor3D
 
 
 class PartialFaceInfo:
@@ -55,6 +56,10 @@ class FaceInfoService:
         self.embedder = None
         self._embedder_init_attempted = False
         
+        # 3D Reconstructor cho scalp mask (lazy load)
+        self.reconstructor = None
+        self._reconstructor_init_attempted = False
+        
         print("[FaceInfoService] Initialized with TrainingFaceDetector + InsightFace + TrainingEmbedder")
     
     def _init_embedder(self):
@@ -75,6 +80,26 @@ class FaceInfoService:
         except Exception as e:
             print(f"[FaceInfoService] TrainingEmbedder init failed: {e}")
             self.embedder = None
+            return False
+    
+    def _init_reconstructor(self):
+        """Lazy init TrainingReconstructor3D."""
+        if self._reconstructor_init_attempted:
+            return self.reconstructor is not None
+        
+        self._reconstructor_init_attempted = True
+        try:
+            self.reconstructor = TrainingReconstructor3D()
+            if self.reconstructor.isAvailable():
+                print("[FaceInfoService] TrainingReconstructor3D initialized")
+                return True
+            else:
+                print("[FaceInfoService] TrainingReconstructor3D: model not available")
+                self.reconstructor = None
+                return False
+        except Exception as e:
+            print(f"[FaceInfoService] TrainingReconstructor3D init failed: {e}")
+            self.reconstructor = None
             return False
     
 
@@ -169,6 +194,21 @@ class FaceInfoService:
             key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]), 
             reverse=True
         )
+        
+        # Gắn 3D vertices vào face lớn nhất (cho scalp mask)
+        if len(all_faces) > 0 and self._init_reconstructor():
+            main_face = all_faces[0]
+            bbox = main_face.bbox.tolist()
+            try:
+                recon = self.reconstructor.reconstruct(image_cv2, bbox)
+                if recon is not None:
+                    main_face.vertices3D = recon["vertices"]  # (3, N)
+                    print(f"[FaceInfoService] 3D vertices attached: {recon['vertices'].shape}")
+                else:
+                    main_face.vertices3D = None
+            except Exception as e:
+                print(f"[FaceInfoService] 3D reconstruction failed: {e}")
+                main_face.vertices3D = None
         
         return all_faces
 

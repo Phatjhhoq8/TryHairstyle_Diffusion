@@ -349,6 +349,68 @@ class HairInpaintingDataset(Dataset):
             transforms.Normalize([0.5], [0.5])
         ])
 
+    def _augment_mask(self, mask, face_mask=None):
+        """
+        Mask Augmentation: 30% xác suất mở rộng mask ngẫu nhiên.
+        Giúp model học xử lý mask lớn hơn vùng tóc thật.
+        
+        Args:
+            mask: numpy (H, W), float32 [0,1] — hair mask gốc
+            face_mask: numpy (H, W), uint8 [0,255] hoặc None — vùng cấm (mặt)
+        Returns:
+            mask augmented (H, W), float32 [0,1]
+        """
+        # 30% xác suất kích hoạt
+        if random.random() > 0.3:
+            return mask
+        
+        # Chỉ augment nếu mask có tóc
+        mask_binary = (mask > 0.5).astype(np.uint8)
+        if mask_binary.sum() < 100:  # Quá ít pixel tóc → skip
+            return mask
+        
+        # Tính bounding box và aspect ratio của vùng tóc
+        ys, xs = np.where(mask_binary > 0)
+        hair_width = np.max(xs) - np.min(xs) + 1
+        hair_height = np.max(ys) - np.min(ys) + 1
+        ratio = hair_width / (hair_height + 1)
+        
+        # Chọn kernel theo aspect ratio
+        expand_factor = random.uniform(0.2, 0.8)  # Random mức mở rộng 20-80%
+        base_size = int(max(hair_width, hair_height) * expand_factor * 0.1)
+        base_size = max(3, min(base_size, 30))  # Clamp 3-30
+        
+        if ratio > 1.2:
+            # Tóc phồng → kernel ngang rộng hơn dọc
+            kernel = np.ones((max(3, base_size // 2), base_size), np.uint8)
+        elif ratio < 0.6:
+            # Tóc dài → kernel dọc dài hơn ngang
+            kernel = np.ones((base_size, max(3, base_size // 2)), np.uint8)
+        else:
+            # Cả hai → kernel đều
+            kernel = np.ones((base_size, base_size), np.uint8)
+        
+        # Random iterations 1-5
+        iterations = random.randint(1, 5)
+        expanded = cv2.dilate(mask_binary * 255, kernel, iterations=iterations)
+        
+        # Trừ face_mask (bảo vệ khuôn mặt)
+        if face_mask is not None:
+            # Dilate face_mask thêm ~10px làm buffer an toàn
+            face_buffer = cv2.dilate(face_mask, np.ones((10, 10), np.uint8), iterations=2)
+            expanded[face_buffer > 127] = 0
+        
+        # Smooth biên bằng Gaussian blur
+        expanded = cv2.GaussianBlur(expanded.astype(np.float32), (7, 7), 0)
+        
+        # Normalize về [0, 1]
+        result = np.clip(expanded / 255.0, 0.0, 1.0).astype(np.float32)
+        
+        # Đảm bảo vùng tóc gốc luôn được giữ
+        result = np.maximum(result, mask)
+        
+        return result
+    
     def __len__(self):
         return len(self.metadata)
 
@@ -400,6 +462,18 @@ class HairInpaintingDataset(Dataset):
             mask = (hair_only_rgba[:, :, 3] / 255.0).astype(np.float32)
         else:
             mask = np.zeros((self.target_size[0], self.target_size[1]), dtype=np.float32)
+        
+        # Load pre-computed face_mask từ face_masks/ (cùng thư mục data chunk)
+        face_mask_path = self.data_dir / "face_masks" / f"{img_id}.png"
+        face_mask = None
+        if face_mask_path.exists():
+            face_mask = cv2.imread(str(face_mask_path), cv2.IMREAD_GRAYSCALE)
+            if face_mask is not None:
+                face_mask = cv2.resize(face_mask, self.target_size)
+        
+        # Mask Augmentation: 30% random expand, trừ face_mask
+        mask = self._augment_mask(mask, face_mask)
+        
         true_mask = mask[..., np.newaxis]
         
         # Identity (từ AdaFace 512d)

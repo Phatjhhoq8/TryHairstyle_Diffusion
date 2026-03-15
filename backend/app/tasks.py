@@ -117,6 +117,10 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         ref_hair_mask.save(os.path.join(session_dir, "ref_hair_mask.png"))
         print(f"  ✅ Saved hair_mask, face_mask, ref_hair_mask → {session_dir}")
         
+        # Dynamic Mask: mở rộng mask nếu tóc mẫu lớn hơn tóc user
+        hair_mask = mask_service.expand_hair_mask(hair_mask, face_mask, ref_hair_mask, faces[0] if faces else None)
+        hair_mask.save(os.path.join(session_dir, "hair_mask_expanded.png"))
+        
         # 4. Depth Map (ControlNet Input)
         # Dùng depth estimator đã cache trong _SERVICES (tránh reload mỗi task)
         self.update_state(state='PROCESSING', meta={'step': 'Estimating Depth'})
