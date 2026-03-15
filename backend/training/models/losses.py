@@ -239,6 +239,82 @@ class FaceFeatureExtractor(nn.Module):
         
         return embeddings
 
+class SupConLoss(nn.Module):
+    """
+    Supervised Contrastive Loss (SupCon) — Khosla et al. 2020.
+    Kéo các embedding cùng nhãn lại gần nhau, đẩy các embedding khác nhãn ra xa
+    trong không gian projection. Dùng cho Stage 1 Texture Encoder training.
+    
+    Input:
+        features: (B, n_views, embed_dim) — projection vectors đã L2-normalize
+        labels: (B,) — nhãn curl cho mỗi sample
+    
+    LƯU Ý: Cần ít nhất 2 classes khác nhau trong batch để loss có ý nghĩa.
+    """
+    def __init__(self, temperature=0.07):
+        super(SupConLoss, self).__init__()
+        self.temperature = temperature
+
+    def forward(self, features, labels):
+        """
+        Args:
+            features: (B, n_views, D) — hidden vectors đã L2-normalize
+            labels: (B,) — ground truth labels
+        Returns:
+            loss: scalar
+        """
+        device = features.device
+        batch_size = features.shape[0]
+        n_views = features.shape[1]
+
+        # Flatten views: (B * n_views, D)
+        features = features.reshape(batch_size * n_views, -1)
+
+        # Repeat labels cho mỗi view: (B * n_views,)
+        labels = labels.contiguous().view(-1, 1)
+        labels = labels.repeat(n_views, 1).squeeze(1)
+
+        # Cosine similarity matrix: (N, N) where N = B * n_views
+        similarity_matrix = torch.matmul(features, features.T) / self.temperature
+
+        # Mask loại bỏ diagonal (tự so với chính mình)
+        N = batch_size * n_views
+        mask_self = torch.eye(N, dtype=torch.bool, device=device)
+        similarity_matrix = similarity_matrix.masked_fill(mask_self, -1e9)
+
+        # Mask positive pairs (cùng nhãn, khác index)
+        labels_eq = labels.unsqueeze(0) == labels.unsqueeze(1)  # (N, N)
+        mask_pos = labels_eq & ~mask_self  # Cùng nhãn nhưng không phải chính mình
+
+        # Số lượng positive pairs cho mỗi anchor
+        num_positives = mask_pos.sum(dim=1)  # (N,)
+
+        # Nếu không có positive pair → skip (tránh NaN)
+        valid = num_positives > 0
+        if valid.sum() == 0:
+            return torch.tensor(0.0, device=device, requires_grad=True)
+
+        # Log-sum-exp trick cho numerical stability
+        logits_max, _ = similarity_matrix.max(dim=1, keepdim=True)
+        logits = similarity_matrix - logits_max.detach()
+
+        # Log(sum(exp(negatives + positives))) — mẫu số
+        exp_logits = torch.exp(logits)
+        exp_logits = exp_logits.masked_fill(mask_self, 0.0)
+        log_sum_exp = torch.log(exp_logits.sum(dim=1, keepdim=True) + 1e-8)
+
+        # Mean of log(exp(positive) / sum(exp(all))) cho mỗi anchor
+        log_prob = logits - log_sum_exp  # (N, N)
+
+        # Chỉ lấy mean trên positive pairs
+        mean_log_prob_pos = (mask_pos.float() * log_prob).sum(dim=1) / (num_positives.float() + 1e-8)
+
+        # Loss = -mean over valid anchors
+        loss = -mean_log_prob_pos[valid].mean()
+
+        return loss
+
+
 if __name__ == "__main__":
     B, C, H, W = 2, 3, 256, 256
     gen = torch.rand(B, C, H, W)
