@@ -378,11 +378,46 @@ class HairDiffusionService:
         
         try:
              if self.texture_encoder is not None and self.style_transform is not None:
-                 # Crop vùng tóc từ ảnh reference (giống pipeline training)
-                 ref_np = np.array(ref_pil.resize((128, 128)))
+                 # Crop vùng tóc từ ảnh reference (khớp với training pipeline)
+                 # Training dùng hair-only crop (polygon mask) → resize 128×128
+                 # Inference cần tái tạo flow tương tự bằng SegFormer
+                 ref_for_style = ref_pil
+                 try:
+                     from backend.app.services.mask import SegmentationService
+                     seg = SegmentationService()
+                     ref_cv2 = cv2.cvtColor(np.array(ref_pil), cv2.COLOR_RGB2BGR)
+                     parsing = seg.get_parsing(ref_cv2)
+                     if parsing is not None:
+                         # Hair classes = {13, 14} (tóc + nón) — khớp với mask.py
+                         hair_mask = np.zeros_like(parsing, dtype=np.uint8)
+                         for cls in [13, 14]:
+                             hair_mask[parsing == cls] = 255
+                         
+                         hair_pixels = np.count_nonzero(hair_mask)
+                         if hair_pixels > 500:
+                             # Crop bounding box vùng tóc
+                             ys, xs = np.where(hair_mask > 0)
+                             y1, y2 = np.min(ys), np.max(ys)
+                             x1, x2 = np.min(xs), np.max(xs)
+                             
+                             # Crop hair-only từ ảnh RGB gốc (nền = đen)
+                             ref_rgb = np.array(ref_pil)
+                             hair_only = ref_rgb.copy()
+                             hair_only[hair_mask == 0] = 0  # Xóa nền + mặt
+                             hair_crop = hair_only[y1:y2+1, x1:x2+1]
+                             ref_for_style = Image.fromarray(hair_crop)
+                             print(f"  ✅ Hair cropped from reference: {hair_crop.shape[1]}×{hair_crop.shape[0]} ({hair_pixels} hair pixels)")
+                         else:
+                             print(f"  ⚠️ Hair mask quá nhỏ ({hair_pixels}px), dùng full ảnh reference")
+                     del seg  # Free SegFormer ngay sau khi dùng xong
+                     torch.cuda.empty_cache()
+                 except Exception as e:
+                     print(f"  ⚠️ SegFormer crop failed ({e}), dùng full ảnh reference")
+                 
+                 ref_np = np.array(ref_for_style.resize((128, 128)))
                  ref_tensor = self.style_transform(ref_np).unsqueeze(0).to(self.device)
                  with torch.no_grad():
-                     embed, _, _ = self.texture_encoder(ref_tensor)  # (1, 2048) — cùng distribution với training
+                     embed, _, _ = self.texture_encoder(ref_tensor)  # (1, 2048) — khớp distribution training
                      style_embed_t = embed.float()
                  print(f"  ✅ Style embedding extracted via HairTextureEncoder (2048-d)")
         except Exception as e:

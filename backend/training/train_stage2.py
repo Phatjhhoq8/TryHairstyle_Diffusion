@@ -921,8 +921,9 @@ class Stage2Trainer:
                     texture_loss_fn = TextureConsistencyLoss().to(DEVICE)
                     texture_loss_fn.eval()
                     masks_decoded = F.interpolate(masks_pixel, size=decoded_img.shape[-2:], mode='nearest')
-                    loss_tex_val = texture_loss_fn(decoded_img, gt_images, masks_decoded).item()
-                    del texture_loss_fn
+                    gt_for_tex = F.interpolate(gt_images, size=decoded_img.shape[-2:], mode='bilinear', align_corners=False) if gt_images.shape[-2:] != decoded_img.shape[-2:] else gt_images
+                    loss_tex_val = texture_loss_fn(decoded_img, gt_for_tex, masks_decoded).item()
+                    del texture_loss_fn, gt_for_tex
                     
                     # Identity Loss — Lazy load FaceFeatureExtractor (InceptionResnetV1)
                     face_extractor = FaceFeatureExtractor(device=str(DEVICE)).to(DEVICE)

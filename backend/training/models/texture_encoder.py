@@ -468,7 +468,7 @@ class TextureEncoderTrainer:
         train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=num_workers, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=num_workers, pin_memory=True)
         
-        steps_per_epoch = len(train_loader)
+        steps_per_epoch = len(train_dataset) // batch_size  # Ước tính (thực tế có thể khác khi resume mid-epoch)
         logger.info(f"  📊 Training: {num_epochs} epochs × {steps_per_epoch} steps/epoch")
         
         best_ckpt_path = None  # Theo dõi file best để xóa cái cũ
@@ -479,21 +479,35 @@ class TextureEncoderTrainer:
         for epoch in range(start_epoch, num_epochs):
             epoch_start = time.time()
             
-            # Xác định batch cần skip khi resume giữa epoch
-            skip_until = 0
+            # Mid-epoch resume: cắt Dataset bằng Subset thay vì skip trong loop
+            # Cách cũ (continue) vẫn bắt DataLoader đọc file ảnh → tốn thời gian
+            # Cách mới (Subset) cắt index → DataLoader chỉ đọc phần chưa train → <1 giây
+            active_train = train_dataset
+            samples_offset = 0
             if resume_batch_index >= 0 and epoch == start_epoch:
-                skip_until = resume_batch_index + 1
-                logger.info(f"\n🔄 RESUME Epoch {epoch+1} — skip {skip_until} batches đã train")
+                skip_samples = (resume_batch_index + 1) * batch_size
+                if 0 < skip_samples < len(train_dataset):
+                    original_len = len(train_dataset)
+                    remaining_indices = list(range(skip_samples, len(train_dataset)))
+                    active_train = torch.utils.data.Subset(train_dataset, remaining_indices)
+                    samples_offset = skip_samples
+                    logger.info(f"\n🔄 RESUME Epoch {epoch+1} — cắt {skip_samples} samples đã train, còn {len(active_train)}/{original_len} samples")
+                else:
+                    logger.info(f"\n🔄 RESUME Epoch {epoch+1} — skip_samples={skip_samples} ngoài phạm vi, train từ đầu epoch")
+            
+            # Deterministic DataLoader: cùng seed → cùng thứ tự batch → resume chính xác
+            dl_seed = epoch * 10000 + 42
+            dl_generator = torch.Generator().manual_seed(dl_seed)
+            active_loader = DataLoader(
+                active_train, batch_size=batch_size, shuffle=True, generator=dl_generator,
+                drop_last=True, num_workers=num_workers, pin_memory=True
+            )
             
             # Training Phase
             self.model.train()
             train_losses = []
-            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]")
+            pbar = tqdm(active_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]")
             for step, batch in enumerate(pbar):
-                # Skip batches đã train khi resume
-                if step < skip_until:
-                    continue
-                
                 loss = self.train_step(batch)
                 train_losses.append(loss)
                 loss_history['train_loss'].append(loss)
@@ -501,6 +515,8 @@ class TextureEncoderTrainer:
                 global_step += 1
                 
                 # Lưu checkpoint trung gian mỗi N steps
+                # batch_index dùng samples_offset để tính lại vị trí trong dataset gốc
+                actual_batch_index = samples_offset // batch_size + step
                 if global_step % self.SAVE_EVERY_N_STEPS == 0:
                     self._save_safetensors_safe(
                         self.model.state_dict(),
@@ -509,7 +525,7 @@ class TextureEncoderTrainer:
                     self._save_training_state(
                         epoch=epoch, global_step=global_step,
                         best_val_loss=best_val_loss, best_epoch=best_epoch,
-                        loss_history=loss_history, batch_index=step
+                        loss_history=loss_history, batch_index=actual_batch_index
                     )
             
             # Reset resume state sau epoch đầu tiên
