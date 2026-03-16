@@ -137,7 +137,8 @@ File [diffusion.py](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/serv
     - Fallback: tải `StableDiffusionXLControlNetInpaintPipeline` + ControlNet Depth SDXL + IP-Adapter Plus (ViT-H) cho style transfer.
 *   [_generate_custom(...)](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/diffusion.py#297-469): 
     - Lấy `id_embed` (512-d) qua InsightFace từ [embedder.py](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/embedder.py). Nếu không detect mặt → zeros fallback.
-    - Lấy `style_embed` (2048-d) qua **HairTextureEncoder** từ ảnh tóc mẫu (resize 128×128). Nếu không có model → zeros fallback.
+    - Lấy `style_embed` (2048-d) qua **HairTextureEncoder** (ResNet-50) từ ảnh tóc mẫu. \
+      *Cải tiến đồng bộ Training-Inference:* Thay vì encode toàn bộ ảnh mẫu, hệ thống dùng **SegFormer** ([mask.py](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/mask.py)) để trích xuất hair mask, sau đó crop lấy vùng tóc thuần túy rồi mới resize về 128×128 để encode. Điều này đảm bảo distribution đầu vào lúc inference hoàn toàn khớp với lúc training (vốn dĩ cũng dùng tóc đã crop sạch nền).
     - VAE encode: ảnh user → `gt_latents`, ảnh masked → `masked_latents`.
     - **CFG Denoising Loop (30 steps)**: 2 forward passes — conditional (prompt + style + identity) và unconditional (negative prompt + zero conditioning). `noise_pred = uncond + guidance_scale × (cond - uncond)`.
     - **Latent Blending**: Mỗi step: `latents = latents × mask + masked_latents × (1 - mask)` → chỉ vẽ trong vùng mask, giữ nguyên phần còn lại.
