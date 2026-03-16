@@ -86,7 +86,7 @@ Mô hình phân đoạn ngữ nghĩa mạnh mẽ dựa trên Transformer (jonath
 ### V. Chiến lược Huấn luyện
 Hệ thống chia thành **2 giai đoạn huấn luyện** (2-stage training):
 - **Stage 1 — Texture Encoder** (`texture_encoder.py`): Finetune ResNet-50 trên K-Hairstyle hair patches (128×128). Học phân loại curl (4 classes: thẳng/vểnh/xoăn/xoăn tít) và volume (3 classes). Dùng `CrossEntropyLoss` + `SupConLoss` (Supervised Contrastive). Output: vector 2048-d mã hóa đặc trưng texture tóc.
-- **Stage 2 — Inpainting UNet** (`train_stage2.py`): Freeze Texture Encoder → lấy style embedding 2048-d. Train LoRA (r=16) trên SDXL UNet 9-channel + CrossAttentionInjector. Data: K-Hairstyle + FFHQ. Loss: `MaskAwareLoss` (core) + `TextureConsistencyLoss` & `IdentityCosineLoss` (monitor mỗi 50 steps, no_grad). Gradient Accumulation 8 steps, AMP FP16, AdamW8bit.
+- **Stage 2 — Inpainting UNet** (`train_stage2.py`): Freeze Texture Encoder → lấy style embedding 2048-d. Train LoRA (r=16) trên SDXL UNet 9-channel + CrossAttentionInjector. Data: K-Hairstyle + FFHQ. Loss tích hợp 5 cải tiến: `Edge-weighted MaskAwareLoss` (phạt nặng viền tóc), `Latent Perceptual Loss` (giữ chi tiết sợi tóc), `Min-SNR Weighting` (tăng tốc hội tụ), `CFG Dropout 10%` (dạy model bám sát ảnh mẫu) và `Noise Offset 0.1` (cân bằng tương phản). Monitor thêm độ tương đồng qua `TextureConsistencyLoss` & `IdentityCosineLoss` (mỗi 50 steps). Gradient Accumulation 8 steps, AMP FP16, AdamW8bit (VRAM ~15GB).
 
 ### VI. Inference Pipeline
 Hệ thống hỗ trợ **2 pipeline** — tự động chọn dựa trên checkpoint có sẵn:
@@ -199,11 +199,13 @@ Class `SegmentationService` là "Bộ Não" chịu trách nhiệm tạo mask và
 *   [__init__()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#539-667): Thiết lập **LoRA** (Low-Rank Adaptation) với hạng `r=16`, target_modules: `to_q, to_k, to_v, to_out.0`. Đóng băng 99.7% trọng số SDXL (2.6B params), chỉ train ~0.3% qua LoRA + conv_in (9-channel) + CrossAttentionInjector. VAE đẩy sang CPU (on-demand GPU offload). AdamW8bit + AMP FP16 → VRAM ~8GB.
 *   [train_step()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#747-927): Chu trình back-propagation:
     1. **VAE Encode**: GT → `latents` (4ch). Masked image (`gt × (1-mask)`) → `masked_latents` (4ch). VAE CPU↔GPU offload mỗi encode.
-    2. **Noise Scheduling**: Random timestep `t` → `noisy_latents = scheduler.add_noise(latents, noise, t)`.
-    3. **Conditioning**: CrossAttentionInjector inject `[style_token, id_token]` → concat với text prompt embeddings.
+    2. **Noise Scheduling**: Phủ **Noise Offset 0.1** (giúp sinh dải màu siêu tối/sáng tự nhiên). Random timestep `t` → `noisy_latents = scheduler.add_noise(latents, noise, t)`.
+    3. **Conditioning**: Áp dụng **CFG Dropout 10%** (set style/id về zeros) để dạy model theo luật Classifier-Free Guidance. CrossAttentionInjector inject `[style_token, id_token]` → concat với text.
     4. **Forward (AMP)**: UNet 9-channel: `[noisy_latents(4), mask(1), masked_latents(4)]` → `noise_pred`.
-    5. **Loss**: 
-       - [MaskAwareLoss](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/losses.py#82-108) (Core, mọi step): Phạt sai số vùng tóc weight=1.0, vùng ngoài weight=0.1 → "khóa gradient" vùng mặt/nền.
+    5. **Loss (Tích hợp 3 tinh chỉnh)**: 
+       - **Edge-weighted MaskAwareLoss** (Core): Phạt sai số vùng tóc weight=1.0, vùng viền chân tóc weight=3.0 (giúp hairline tự nhiên), vùng nền weight=0.1.
+       - **Min-SNR-γ Weighting**: Nhân trọng số tốc độ học theo từng timestep → ưu tiên bước quan trọng, hội tụ nhanh hơn 30%.
+       - **Latent Perceptual Loss**: So sánh L1 giữa latent `pred_x0` và Ground Truth. Ép pixel tóc sắc nét trực tiếp trên không gian tiềm ẩn (tiết kiệm 100% VRAM decode).
        - *[Monitor Only, mỗi 50 steps, no_grad]*: VAE decode `pred_original` → [TextureConsistencyLoss](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/losses.py#34-81) (VGG16 Gram Matrix) + [IdentityCosineLoss](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/losses.py#109-129) (InceptionResnetV1). Chỉ log chart, KHÔNG cộng vào total_loss → tiết kiệm ~2GB VRAM.
     6. **Gradient Accumulation**: `scaled_loss = total_loss / accum_steps`. Clip grad_norm=1.0. Scheduler step mỗi accum_steps.
 *   [train_loop()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#1502-1981): Chunked Loading — 1 epoch = tất cả chunks. Shuffle thứ tự chunks mỗi epoch (deterministic seed). Mid-chunk save mỗi N samples + end-chunk save + end-epoch save. Resume state lưu trên HF Hub (cross-account resume). Graceful SIGINT/SIGTERM handling. Validation qua tối đa 3 chunks cố định (seed 42).

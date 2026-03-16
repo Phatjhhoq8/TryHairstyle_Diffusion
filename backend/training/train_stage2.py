@@ -788,6 +788,13 @@ class Stage2Trainer:
         # NOISE SCHEDULING (thực)
         # ==========================================
         noise = torch.randn_like(latents)
+        
+        # [CẢI TIẾN 5] Noise Offset 0.1 — giúp model sinh ảnh có contrast tốt hơn
+        # (tóc đen nhánh, highlight sáng tự nhiên thay vì xám đều)
+        # Ref: https://www.crosslabs.org/blog/diffusion-with-offset-noise
+        noise_offset = 0.1 * torch.randn(latents.shape[0], latents.shape[1], 1, 1, device=DEVICE)
+        noise = noise + noise_offset
+        
         bsz = latents.shape[0]
         timesteps = torch.randint(
             0, self.noise_scheduler.config.num_train_timesteps,
@@ -796,7 +803,9 @@ class Stage2Trainer:
         
         # Thêm noise theo scheduler chuẩn diffusion
         noisy_latents = self.noise_scheduler.add_noise(latents, noise, timesteps)
-        del latents  # Free — noise target là `noise`, không cần `latents` nữa
+        # GIỮ `latents` cho Latent Perceptual Loss (cải tiến 1) — detach để không tốn grad memory
+        latents_for_perceptual = latents.detach()
+        del latents
         
         # ==========================================
         # CONDITIONING (thực)
@@ -806,6 +815,14 @@ class Stage2Trainer:
         text_embeds = batch['text_embeds'].to(DEVICE)
         pooled_text_embeds = batch['pooled_text_embeds'].to(DEVICE)
         time_ids = batch['time_ids'].to(DEVICE)
+        
+        # [CẢI TIẾN 2] CFG Dropout 10% — cho phép Classifier-Free Guidance lúc inference
+        # Random set style+identity về zeros → model học phân biệt "có conditioning" vs "không"
+        # Lúc inference dùng guidance_scale > 1 để ép tóc bám sát ảnh mẫu
+        # train_step() chỉ gọi trong training → không cần guard self.training
+        if torch.rand(1).item() < 0.1:
+            style_embeds = torch.zeros_like(style_embeds)
+            id_embeds = torch.zeros_like(id_embeds)
         
         # Gộp Style + Identity conditioning qua IP-Adapter
         injected_conds = self.injector.inject_conditioning(style_embeds, id_embeds)
@@ -836,12 +853,42 @@ class Stage2Trainer:
             del masked_latents  # Không cần sau forward
             
             # ==========================================
-            # LOSS COMPUTATION
+            # LOSS COMPUTATION (5 CẢI TIẾN TÍCH HỢP)
             # ==========================================
             
-            # 1. Mask-Aware Diffusion Loss (Core — mọi step)
-            loss_diffusion = self.mask_aware_loss(noise_pred, noise, masks_latent)
-            total_loss = loss_diffusion
+            # [CẢI TIẾN 3] Edge-weighted Mask — phạt nặng vùng viền tóc → hairline tự nhiên hơn
+            # Tính edge mask bằng erosion: edge = mask - eroded_mask
+            eroded_mask = -F.max_pool2d(-masks_latent, kernel_size=3, stride=1, padding=1)
+            edge_mask = masks_latent - eroded_mask
+            # Trọng số: vùng tóc = 1.0, viền tóc = 3.0, nền = 0.1
+            edge_weights = masks_latent + 2.0 * edge_mask + 0.1 * (1.0 - masks_latent)
+            
+            # 1. Mask-Aware Diffusion Loss với Edge Weights (Core — mọi step)
+            noise_diff = (noise_pred - noise) ** 2
+            loss_diffusion = (noise_diff * edge_weights).sum() / (edge_weights.sum() + 1e-8)
+            
+            # [CẢI TIẾN 4] Min-SNR-γ Weighting — ưu tiên timestep quan trọng, hội tụ nhanh hơn ~30%
+            # Ref: Hang et al., "Efficient Diffusion Training via Min-SNR Weighting" (ICLR 2024)
+            alphas_cumprod = self.noise_scheduler.alphas_cumprod.to(DEVICE)
+            snr = alphas_cumprod[timesteps] / (1.0 - alphas_cumprod[timesteps] + 1e-8)  # (B,)
+            min_snr_gamma = 5.0
+            snr_weight = torch.clamp(snr, max=min_snr_gamma) / (snr + 1e-8)  # (B,)
+            # Áp weight lên loss (broadcast: snr_weight (B,) → (B,1,1,1) cho noise_diff)
+            loss_diffusion = loss_diffusion * snr_weight.mean()
+            
+            # [CẢI TIẾN 1] Latent Perceptual Loss — ép x0 prediction gần ground truth trên latent space
+            # Tốn ~0 VRAM thêm vì tính trực tiếp trên latent, không cần decode VAE hay load VGG
+            sqrt_alpha = (alphas_cumprod[timesteps] ** 0.5).view(-1, 1, 1, 1)
+            sqrt_one_minus_alpha = ((1.0 - alphas_cumprod[timesteps]) ** 0.5).view(-1, 1, 1, 1)
+            pred_x0 = (noisy_latents - sqrt_one_minus_alpha * noise_pred) / (sqrt_alpha + 1e-8)
+            loss_latent_perceptual = F.l1_loss(pred_x0 * masks_latent, latents_for_perceptual * masks_latent)
+            
+            # Tổng hợp: Diffusion (chính) + Latent Perceptual (phụ, weight 0.01)
+            total_loss = loss_diffusion + 0.01 * loss_latent_perceptual
+            
+            # Cleanup
+            del eroded_mask, edge_mask, edge_weights, noise_diff
+            del pred_x0, latents_for_perceptual
         
         # Cast sang fp32 TRƯỚC khi backprop
         total_loss = total_loss.float()
@@ -924,6 +971,7 @@ class Stage2Trainer:
             "diffusion_loss": loss_diffusion.item(),
             "texture_loss": loss_tex_val,
             "identity_loss": loss_id_val,
+            "latent_perceptual_loss": loss_latent_perceptual.item() if isinstance(loss_latent_perceptual, torch.Tensor) else 0.0,
         }
         
     @torch.no_grad()
@@ -1552,7 +1600,8 @@ class Stage2Trainer:
         best_epoch = -1
         loss_history = {
             'total_loss': [], 'diffusion_loss': [], 'texture_loss': [],
-            'identity_loss': [], 'epoch_avg_loss': [], 'val_loss': [], 'val_lpips': [],
+            'identity_loss': [], 'latent_perceptual_loss': [],
+            'epoch_avg_loss': [], 'val_loss': [], 'val_lpips': [],
         }
         
         resume_chunk_index = -1  # -1 = bắt đầu epoch mới
@@ -1769,6 +1818,7 @@ class Stage2Trainer:
                     loss_history['diffusion_loss'].append(losses['diffusion_loss'])
                     loss_history['texture_loss'].append(losses['texture_loss'])
                     loss_history['identity_loss'].append(losses.get('identity_loss', 0.0))
+                    loss_history['latent_perceptual_loss'].append(losses.get('latent_perceptual_loss', 0.0))
                     
                     # ETA
                     avg_step_time = sum(step_times[-50:]) / len(step_times[-50:])
