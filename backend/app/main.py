@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from backend.app.config import settings, OUTPUT_DIR, UPLOAD_DIR, BACKEND_DIR
 from pathlib import Path
-from backend.app.schemas import HairTransferResponse, TaskStatusResponse, HairColorResponse
-from backend.app.tasks import process_hair_transfer, process_hair_colorize, celery_app
+from backend.app.schemas import HairTransferResponse, TaskStatusResponse, HairColorResponse, DetectFacesResponse
+from backend.app.tasks import process_hair_transfer, process_hair_colorize, process_detect_faces, celery_app
 from backend.app.services.hair_color_service import HairColorService
 from celery.result import AsyncResult
 
@@ -98,6 +98,31 @@ async def generate_hair(
         "message": "Task started successfully"
     }
 
+@app.post("/detect-faces", response_model=DetectFacesResponse, tags=["Core"])
+async def detect_faces_api(image: UploadFile = File(...)):
+    """
+    Quét và cắt chân dung toàn bộ khuôn mặt có trong một bức ảnh chung.
+    Hoạt động qua Celery Task để chống treo server và cạn kiệt VRAM.
+    """
+    ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "bmp"}
+    file_ext = image.filename.split('.')[-1].lower()
+    if file_ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {ALLOWED_EXTENSIONS}")
+    
+    filename = f"{uuid.uuid4()}_detect.{file_ext}"
+    file_path = UPLOAD_DIR / filename
+    
+    with open(file_path, "wb") as f:
+        shutil.copyfileobj(image.file, f)
+        
+    task = process_detect_faces.delay(str(file_path))
+    
+    return {
+        "task_id": task.id,
+        "status": "QUEUED",
+        "message": "Face detection task started"
+    }
+
 @app.post("/transfer", response_model=HairTransferResponse, tags=["Core"])
 async def transfer_hair(user_img: str, hair_img: str, prompt: str = "high quality realistic hair"):
     """
@@ -142,6 +167,8 @@ async def get_task_status(task_id: str):
         if isinstance(result_data, dict):
             if result_data.get("status") == "SUCCESS":
                 response["result_url"] = result_data.get("url")
+                if "faces" in result_data:
+                    response["faces"] = result_data["faces"]
             else:
                 response["status"] = "FAILURE"
                 response["error"] = result_data.get("error")

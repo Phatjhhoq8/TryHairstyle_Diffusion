@@ -18,6 +18,7 @@ class TaskStatusResponse(BaseModel):
     task_id: str
     status: str # PENDING, PROCESSING, SUCCESS, FAILURE
     result_url: Optional[str] = None
+    faces: Optional[list] = None
     error: Optional[str] = None
 
 class HairColorRequest(BaseModel):
@@ -29,3 +30,15 @@ class HairColorResponse(BaseModel):
     task_id: str
     status: str
     message: str
+
+class FaceDetected(BaseModel):
+    face_id: int
+    bbox: list[float]
+    confidence: float
+    cropped_image_url: str
+
+class DetectFacesResponse(BaseModel):
+    task_id: str
+    status: str
+    message: str
+

@@ -250,7 +250,12 @@ with gr.Blocks(title="TryHairStyle - FFHQ Test", theme=gr.themes.Soft()) as demo
             with gr.Row():
                 with gr.Column():
                     gr.Markdown("### 📸 Inputs")
-                    user_input = gr.Image(label="User Face", type="pil")
+                    user_input = gr.Image(label="User Image (Group/Single)", type="pil")
+                    detect_faces_btn = gr.Button("🔍 Detect Faces")
+                    face_gallery = gr.Gallery(label="Detected Faces", show_label=True, columns=3, height=200, object_fit="contain")
+                    detected_faces_state = gr.State([])
+                    selected_face_input = gr.Image(label="Selected Face (Will be processed)", type="pil")
+                    
                     hair_input = gr.Image(label="Hair Reference", type="pil")
                     random_btn = gr.Button("🎲 Load Random FFHQ Pair")
                 
@@ -313,13 +318,65 @@ with gr.Blocks(title="TryHairStyle - FFHQ Test", theme=gr.themes.Soft()) as demo
     def random_pair():
         img1 = get_random_ffhq_image()
         img2 = get_random_ffhq_image()
-        return img1, img2
+        # For random FFHQ, it's already a single portrait, so we can put it directly into selected_face_input
+        return img1, img1, img2
     
-    random_btn.click(fn=random_pair, outputs=[user_input, hair_input])
+    random_btn.click(fn=random_pair, outputs=[user_input, selected_face_input, hair_input])
+    
+    def extract_faces(user_img):
+        if user_img is None:
+            return [], [], "⚠️ Please upload an image first."
+        global face_service
+        if face_service is None:
+            load_result = load_services()
+            if "Error" in load_result:
+                return [], [], f"❌ {load_result}"
+                
+        user_cv2 = cv2.cvtColor(np.array(user_img), cv2.COLOR_RGB2BGR)
+        faces = face_service.analyze_all(user_cv2)
+        
+        if not faces:
+            return [], [], "⚠️ No faces detected."
+            
+        cropped_faces = []
+        for f in faces:
+            bbox = f.bbox
+            x1, y1, x2, y2 = bbox
+            w = x2 - x1
+            h = y2 - y1
+            # Lấy dư ra 50% xung quanh để lấy cả phần đỉnh đầu (tóc) và cằm/cổ
+            cx = x1 + w/2
+            cy = y1 + h/2
+            new_w = w * 1.8
+            new_h = h * 1.8
+            new_x1 = max(0, int(cx - new_w/2))
+            new_y1 = max(0, int(cy - new_h/2))
+            new_x2 = min(user_img.width, int(cx + new_w/2))
+            new_y2 = min(user_img.height, int(cy + new_h/2))
+            
+            crop = user_img.crop((new_x1, new_y1, new_x2, new_y2))
+            cropped_faces.append(crop)
+            
+        return cropped_faces, cropped_faces, f"✅ Detected {len(faces)} faces. Please click on one in the gallery to select."
+
+    detect_faces_btn.click(
+        fn=extract_faces,
+        inputs=[user_input],
+        outputs=[face_gallery, detected_faces_state, log_output]
+    )
+
+    def select_face(faces_list, evt: gr.SelectData):
+        return faces_list[evt.index]
+
+    face_gallery.select(
+        fn=select_face,
+        inputs=[detected_faces_state],
+        outputs=[selected_face_input]
+    )
     
     run_btn.click(
         fn=process_pipeline,
-        inputs=[user_input, hair_input, prompt_input],
+        inputs=[selected_face_input, hair_input, prompt_input],
         outputs=[output_image, log_output]
     )
     

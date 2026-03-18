@@ -242,3 +242,77 @@ def process_hair_colorize(self, face_img_path: str, hair_color: str, intensity: 
 
     except Exception as e:
         return {"status": "FAILURE", "error": str(e)}
+
+@celery_app.task(bind=True)
+def process_detect_faces(self, image_path: str):
+    """
+    Quét và cắt các khuôn mặt từ ảnh đầu vào.
+    Nới rộng bbox một chút (1.8x) để cắt trọn vẹn cả tóc và cổ, phục vụ ghép tóc tốt hơn.
+    """
+    try:
+        if not _SERVICES["face"]:
+            _SERVICES["face"] = FaceInfoService()
+        face_service = _SERVICES["face"]
+    except Exception as e:
+        return {"status": "FAILURE", "error": f"Face Service Load Failed: {str(e)}"}
+
+    try:
+        session_name = f"detect_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.request.id[:8]}"
+        session_dir = os.path.join(str(OUTPUT_DIR), session_name)
+        os.makedirs(session_dir, exist_ok=True)
+        print(f">>> Detect Faces session: {session_dir}")
+        
+        self.update_state(state='PROCESSING', meta={'step': 'Loading image and detecting'})
+        user_cv2 = cv2.imread(image_path)
+        if user_cv2 is None:
+            return {"status": "FAILURE", "error": "Cannot read uploaded image."}
+            
+        faces = face_service.analyze_all(user_cv2)
+        if not faces:
+            return {"status": "SUCCESS", "faces": []}
+            
+        user_pil = Image.fromarray(cv2.cvtColor(user_cv2, cv2.COLOR_BGR2RGB))
+        results = []
+        
+        print(f"  🔍 Detected {len(faces)} faces.")
+        for i, f in enumerate(faces):
+            bbox = f.bbox
+            x1, y1, x2, y2 = bbox
+            w = x2 - x1
+            h = y2 - y1
+            
+            # Mở rộng 80% (1.8x) để lấy đầy đủ cả mái tóc và cổ áo.
+            cx, cy = x1 + w/2, y1 + h/2
+            new_w, new_h = w * 1.8, h * 1.8
+            new_x1 = max(0, int(cx - new_w/2))
+            new_y1 = max(0, int(cy - new_h/2))
+            new_x2 = min(user_pil.width, int(cx + new_w/2))
+            new_y2 = min(user_pil.height, int(cy + new_h/2))
+            
+            crop = user_pil.crop((new_x1, new_y1, new_x2, new_y2))
+            crop_filename = f"face_{i}.png"
+            crop_path = os.path.join(session_dir, crop_filename)
+            crop.save(crop_path)
+            
+            confidence = getattr(f, "det_score", 1.0)
+            if hasattr(confidence, "item"):
+                confidence = confidence.item()  # Unwrap tensor if needed
+                
+            results.append({
+                "face_id": i,
+                "bbox": [new_x1, new_y1, new_x2, new_y2],
+                "confidence": float(confidence),
+                "cropped_image_url": f"/static/output/{session_name}/{crop_filename}"
+            })
+            
+        print(f"  ✅ Finished saving {len(results)} cropped faces.")
+        return {
+            "status": "SUCCESS",
+            "faces": results
+        }
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"status": "FAILURE", "error": str(e)}
+
