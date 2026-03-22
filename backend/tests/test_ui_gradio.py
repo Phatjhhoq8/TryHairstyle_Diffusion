@@ -236,165 +236,478 @@ def process_colorize_pipeline(user_image, color_name, intensity):
 
 # ======================= GRADIO UI =======================
 
-with gr.Blocks(title="TryHairStyle - FFHQ Test", theme=gr.themes.Soft()) as demo:
-    gr.Markdown("# 💇 TryHairStyle Review Tool (FFHQ)")
-    gr.Markdown("*Pipeline: Face Detection → Hair+Hat Mask → Depth Estimation → SDXL Inpainting*")
+custom_css = """
+/* Header */
+.header-row { 
+    background: linear-gradient(135deg, #1a7a6d, #2d9b8e); 
+    padding: 16px 24px; 
+    border-radius: 12px; 
+    margin-bottom: 16px; 
+}
+.header-row h1 { color: white !important; margin: 0 !important; font-size: 1.6em !important; }
+.header-row p { color: rgba(255,255,255,0.85) !important; margin: 4px 0 0 0 !important; font-size: 0.9em !important; }
+
+/* Upload boxes */
+.upload-box { 
+    border: 2px dashed #2d9b8e !important; 
+    border-radius: 12px !important; 
+    min-height: 280px !important; 
+    background: #f8fffe !important; 
+}
+
+/* VẼ TÓC button */
+.draw-btn { 
+    background: linear-gradient(135deg, #f5a623, #f7c948) !important; 
+    color: white !important; 
+    font-size: 1.4em !important; 
+    font-weight: bold !important; 
+    border-radius: 16px !important; 
+    min-height: 120px !important; 
+    border: none !important;
+    box-shadow: 0 4px 15px rgba(245,166,35,0.4) !important;
+    transition: transform 0.2s, box-shadow 0.2s !important;
+}
+.draw-btn:hover { 
+    transform: translateY(-2px) !important; 
+    box-shadow: 0 6px 20px rgba(245,166,35,0.6) !important; 
+}
+
+/* Result panel */
+.result-panel { 
+    background: #f0faf8 !important; 
+    border: 1px solid #d0e8e4 !important; 
+    border-radius: 12px !important; 
+    padding: 12px !important; 
+}
+
+/* Popup overlay */
+.popup-overlay { 
+    background: white !important; 
+    border: 2px solid #2d9b8e !important; 
+    border-radius: 16px !important; 
+    padding: 20px !important; 
+    box-shadow: 0 8px 32px rgba(0,0,0,0.15) !important; 
+}
+
+/* Color swatches */
+.color-section { 
+    background: #fafafa !important; 
+    border-radius: 12px !important; 
+    padding: 12px !important; 
+    border: 1px solid #e0e0e0 !important; 
+}
+
+/* Status bar */
+.status-bar { font-size: 0.85em !important; }
+"""
+
+
+def extract_faces_from_image(img):
+    """Detect và crop tất cả khuôn mặt từ ảnh. Trả về list PIL Images."""
+    if img is None:
+        return []
     
+    global face_service
+    if face_service is None:
+        load_result = load_services()
+        if "Error" in load_result:
+            return []
+    
+    if face_service is None:
+        return []
+    
+    img_cv2 = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    faces = face_service.analyze_all(img_cv2)
+    
+    if not faces:
+        return []
+    
+    cropped = []
+    for f in faces:
+        bbox = f.bbox
+        x1, y1, x2, y2 = bbox
+        w = x2 - x1
+        h = y2 - y1
+        cx = x1 + w / 2
+        cy = y1 + h / 2
+        new_w = w * 1.8
+        new_h = h * 1.8
+        new_x1 = max(0, int(cx - new_w / 2))
+        new_y1 = max(0, int(cy - new_h / 2))
+        new_x2 = min(img.width, int(cx + new_w / 2))
+        new_y2 = min(img.height, int(cy + new_h / 2))
+        cropped.append(img.crop((new_x1, new_y1, new_x2, new_y2)))
+    
+    return cropped
+
+
+with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) as demo:
+    
+    # ===== States =====
+    selected_face_state = gr.State(None)       # PIL Image — khuôn mặt đã chọn
+    selected_hair_state = gr.State(None)       # PIL Image — tóc đã chọn
+    face_crops_state = gr.State([])            # list[PIL] — các khuôn mặt crop được
+    hair_crops_state = gr.State([])            # list[PIL] — các tóc crop được
+    popup_source_state = gr.State("")          # "face" hoặc "hair" — popup đang chọn cho cái nào
+    
+    # ===== Header =====
+    with gr.Row(elem_classes="header-row"):
+        gr.Markdown("# 💇 AI HAIR STYLIST — HỆ THỐNG TẠO KIỂU TÓC\n*Tải ảnh chân dung & kiểu tóc tham khảo, nhấn Vẽ Tóc để tạo kết quả*")
+    
+    # ===== Status bar =====
     with gr.Row():
-        status_box = gr.Textbox(label="System Status", value="⏳ Not Loaded", interactive=False)
-        load_btn = gr.Button("🔧 Initialize System Services", variant="secondary")
+        status_box = gr.Textbox(
+            label="Trạng thái hệ thống", value="⏳ Chưa khởi tạo — Bấm 'Khởi tạo' hoặc chạy lần đầu sẽ tự load",
+            interactive=False, elem_classes="status-bar"
+        )
+        load_btn = gr.Button("🔧 Khởi tạo", variant="secondary", scale=0)
     
-    with gr.Tabs():
-        # ===== Tab 1: Hair Transfer (original) =====
-        with gr.TabItem("💇 Hair Transfer"):
-            with gr.Row():
-                with gr.Column():
-                    gr.Markdown("### 📸 Inputs")
-                    user_input = gr.Image(label="User Image (Group/Single)", type="pil")
-                    detect_faces_btn = gr.Button("🔍 Detect Faces")
-                    face_gallery = gr.Gallery(label="Detected Faces", show_label=True, columns=3, height=200, object_fit="contain")
-                    detected_faces_state = gr.State([])
-                    selected_face_input = gr.Image(label="Selected Face (Will be processed)", type="pil")
-                    
-                    hair_input = gr.Image(label="Hair Reference", type="pil")
-                    random_btn = gr.Button("🎲 Load Random FFHQ Pair")
-                
-                with gr.Column():
-                    gr.Markdown("### ⚙️ Settings")
-                    prompt_input = gr.Textbox(
-                        label="Prompt", 
-                        value="high quality, realistic hairstyle",
-                        placeholder="Describe the hairstyle..."
-                    )
-                    run_btn = gr.Button("🚀 Run Transfer", variant="primary")
-                
-                with gr.Column():
-                    gr.Markdown("### 🖼️ Result")
-                    output_image = gr.Image(label="Result", type="pil")
-                    log_output = gr.Textbox(label="Log", lines=3)
+    # ===== Main Layout: 2 uploads + VẼ TÓC btn + Result =====
+    with gr.Row():
+        # --- Column 1: Ảnh chân dung ---
+        with gr.Column(scale=3):
+            gr.Markdown("### 📸 ẢNH ĐẦU VÀO 1: CHÂN DUNG")
+            user_input = gr.Image(
+                label="Tải ảnh chân dung lên (PNG, JPG)",
+                type="pil",
+                height=300,
+                elem_classes="upload-box"
+            )
         
-        # ===== Tab 2: Hair Color =====
-        with gr.TabItem("🎨 Hair Color"):
-            gr.Markdown("### 🎨 Đổi Màu Tóc")
-            gr.Markdown("*Chỉ đổi màu tóc — không thay đổi kiểu tóc. Nhanh hơn Hair Transfer.*")
-            
+        # --- Column 2: Ảnh kiểu tóc ---
+        with gr.Column(scale=3):
+            gr.Markdown("### 💇 ẢNH ĐẦU VÀO 2: THAM KHẢO KIỂU TÓC")
+            hair_input = gr.Image(
+                label="Tải ảnh kiểu tóc tham khảo",
+                type="pil",
+                height=300,
+                elem_classes="upload-box"
+            )
+        
+        # --- Column 3: Nút VẼ TÓC ---
+        with gr.Column(scale=1, min_width=140):
+            gr.Markdown("&nbsp;")  # spacer
+            draw_btn = gr.Button(
+                "✂️\nVẼ TÓC",
+                variant="primary",
+                elem_classes="draw-btn"
+            )
+            gr.Markdown("<center>Nhấn để tạo kết quả</center>")
+        
+        # --- Column 4: Kết quả ---
+        with gr.Column(scale=3, elem_classes="result-panel"):
+            gr.Markdown("### 🖼️ ẢNH KẾT QUẢ")
+            output_image = gr.Image(label="Kết quả", type="pil", height=300)
+            log_output = gr.Textbox(label="Trạng thái", lines=2, interactive=False)
             with gr.Row():
-                with gr.Column():
-                    gr.Markdown("### 📸 Input")
-                    color_user_input = gr.Image(label="User Face", type="pil")
-                    color_random_btn = gr.Button("🎲 Load Random FFHQ")
-                
-                with gr.Column():
-                    gr.Markdown("### ⚙️ Chọn Màu")
-                    # Tạo danh sách tên preset cho dropdown
-                    preset_labels = [f"{info['label']} ({name})" for name, info in PRESET_COLORS.items()]
-                    preset_names = list(PRESET_COLORS.keys())
-                    color_dropdown = gr.Dropdown(
-                        label="Preset Color",
-                        choices=preset_names,
-                        value="blonde",
-                        info="Chọn màu preset hoặc nhập hex bên dưới"
-                    )
-                    color_hex_input = gr.Textbox(
-                        label="Custom Hex (tuỳ chọn)",
-                        placeholder="#FF0000",
-                        info="Để trống nếu dùng preset"
-                    )
-                    color_intensity_slider = gr.Slider(
-                        label="Intensity", minimum=0.0, maximum=1.0,
-                        value=0.7, step=0.05,
-                        info="0 = giữ nguyên, 1 = 100% màu mới"
-                    )
-                    color_run_btn = gr.Button("🎨 Colorize", variant="primary")
-                
-                with gr.Column():
-                    gr.Markdown("### 🖼️ Result")
-                    color_output_image = gr.Image(label="Result", type="pil")
-                    color_log_output = gr.Textbox(label="Log", lines=3)
+                download_btn = gr.Button("⬇️ Tải xuống kết quả", variant="primary", size="sm")
     
-    # ===== Events =====
+    # ===== Text Prompt (dưới 2 ảnh) =====
+    with gr.Row():
+        with gr.Column(scale=6):
+            prompt_input = gr.Textbox(
+                label="📝 Text Prompt",
+                value="high quality, realistic hairstyle",
+                placeholder="Mô tả kiểu tóc mong muốn...",
+                lines=2
+            )
+        with gr.Column(scale=4):
+            pass  # khoảng trống cân đối
+    
+    # ===== Color Picker (dưới prompt) =====
+    with gr.Row(elem_classes="color-section"):
+        with gr.Column(scale=2):
+            gr.Markdown("### 🎨 Tuỳ chỉnh màu tóc (tuỳ chọn)")
+            preset_names = list(PRESET_COLORS.keys())
+            color_dropdown = gr.Dropdown(
+                label="Màu preset",
+                choices=["none"] + preset_names,
+                value="none",
+                info="Chọn 'none' nếu không muốn đổi màu"
+            )
+        with gr.Column(scale=2):
+            color_hex_input = gr.Textbox(
+                label="Hex tuỳ chỉnh",
+                placeholder="#FF0000",
+                info="Ưu tiên hex nếu nhập (để trống = dùng preset)"
+            )
+        with gr.Column(scale=2):
+            color_intensity_slider = gr.Slider(
+                label="Cường độ màu",
+                minimum=0.0, maximum=1.0, value=0.7, step=0.05,
+                info="0 = giữ nguyên, 1 = 100% màu mới"
+            )
+        with gr.Column(scale=1):
+            random_btn = gr.Button("🎲 FFHQ ngẫu nhiên", variant="secondary", size="sm")
+    
+    # ===== POPUP: Chọn khuôn mặt / tóc (ẩn mặc định) =====
+    with gr.Column(visible=False, elem_classes="popup-overlay") as popup_panel:
+        popup_title = gr.Markdown("### 🔍 Phát hiện nhiều khuôn mặt — Vui lòng chọn một")
+        popup_gallery = gr.Gallery(
+            label="Các khuôn mặt phát hiện được",
+            show_label=True, columns=4, height=250,
+            object_fit="contain", allow_preview=False
+        )
+        with gr.Row():
+            popup_confirm_btn = gr.Button("✅ Xác nhận chọn", variant="primary")
+            popup_cancel_btn = gr.Button("❌ Huỷ", variant="secondary")
+        popup_selected_preview = gr.Image(label="Đã chọn", type="pil", height=150)
+    
+    # ===============================================================
+    # ======================== EVENT HANDLERS ========================
+    # ===============================================================
+    
     load_btn.click(fn=load_services, outputs=status_box)
     
+    # --- Random FFHQ pair ---
     def random_pair():
         img1 = get_random_ffhq_image()
         img2 = get_random_ffhq_image()
-        # For random FFHQ, it's already a single portrait, so we can put it directly into selected_face_input
-        return img1, img1, img2
+        return img1, img2
+    random_btn.click(fn=random_pair, outputs=[user_input, hair_input])
     
-    random_btn.click(fn=random_pair, outputs=[user_input, selected_face_input, hair_input])
-    
-    def extract_faces(user_img):
-        if user_img is None:
-            return [], [], "⚠️ Please upload an image first."
-        global face_service
-        if face_service is None:
-            load_result = load_services()
-            if "Error" in load_result:
-                return [], [], f"❌ {load_result}"
-                
-        user_cv2 = cv2.cvtColor(np.array(user_img), cv2.COLOR_RGB2BGR)
-        faces = face_service.analyze_all(user_cv2)
+    # --- Click VẼ TÓC: validate → detect faces → popup hoặc chạy luôn ---
+    def on_draw_click(user_img, hair_img, prompt, color_name, hex_input, intensity):
+        """
+        Bước 1: Validate input.
+        Bước 2: Detect faces trong ảnh chân dung.
+           - Nếu > 1 face → trả về list faces + hiện popup.
+           - Nếu 1 face → lưu face đó.
+        Bước 3: Detect faces trong ảnh tóc (tương tự).
+        Bước 4: Nếu không cần popup → chạy pipeline luôn.
         
-        if not faces:
-            return [], [], "⚠️ No faces detected."
-            
-        cropped_faces = []
-        for f in faces:
-            bbox = f.bbox
-            x1, y1, x2, y2 = bbox
-            w = x2 - x1
-            h = y2 - y1
-            # Lấy dư ra 50% xung quanh để lấy cả phần đỉnh đầu (tóc) và cằm/cổ
-            cx = x1 + w/2
-            cy = y1 + h/2
-            new_w = w * 1.8
-            new_h = h * 1.8
-            new_x1 = max(0, int(cx - new_w/2))
-            new_y1 = max(0, int(cy - new_h/2))
-            new_x2 = min(user_img.width, int(cx + new_w/2))
-            new_y2 = min(user_img.height, int(cy + new_h/2))
-            
-            crop = user_img.crop((new_x1, new_y1, new_x2, new_y2))
-            cropped_faces.append(crop)
-            
-        return cropped_faces, cropped_faces, f"✅ Detected {len(faces)} faces. Please click on one in the gallery to select."
-
-    detect_faces_btn.click(
-        fn=extract_faces,
-        inputs=[user_input],
-        outputs=[face_gallery, detected_faces_state, log_output]
+        Returns: (output_image, log, popup_visible, popup_title, popup_gallery, 
+                  face_crops, hair_crops, selected_face, selected_hair, popup_source,
+                  popup_preview)
+        """
+        # Validate
+        if user_img is None:
+            raise gr.Error("⚠️ Vui lòng tải lên ảnh chân dung!")
+        if hair_img is None:
+            raise gr.Error("⚠️ Vui lòng tải lên ảnh kiểu tóc tham khảo!")
+        
+        # Detect faces in user image
+        user_faces = extract_faces_from_image(user_img)
+        
+        if len(user_faces) > 1:
+            # Nhiều khuôn mặt → hiện popup chọn
+            return (
+                gr.update(),            # output_image — giữ nguyên 
+                "🔍 Phát hiện nhiều khuôn mặt trong ảnh chân dung. Vui lòng chọn 1.",
+                gr.update(visible=True),  # popup_panel
+                "### 🔍 Phát hiện **nhiều khuôn mặt** trong ảnh chân dung — Chọn 1 khuôn mặt để xử lý",
+                user_faces,              # popup_gallery
+                user_faces,              # face_crops_state
+                [],                      # hair_crops_state (chưa detect)
+                None,                    # selected_face_state
+                None,                    # selected_hair_state
+                "face",                  # popup_source_state
+                None,                    # popup_selected_preview
+            )
+        
+        # 1 face hoặc 0 face trong ảnh chân dung → dùng luôn ảnh gốc (hoặc face crop nếu có 1)
+        chosen_face = user_faces[0] if len(user_faces) == 1 else user_img
+        
+        # Detect faces in hair image
+        hair_faces = extract_faces_from_image(hair_img)
+        
+        if len(hair_faces) > 1:
+            # Nhiều khuôn mặt/tóc → hiện popup chọn
+            return (
+                gr.update(),
+                "🔍 Phát hiện nhiều khuôn mặt trong ảnh tóc tham khảo. Vui lòng chọn 1.",
+                gr.update(visible=True),
+                "### 🔍 Phát hiện **nhiều khuôn mặt** trong ảnh tóc — Chọn 1 kiểu tóc để tham khảo",
+                hair_faces,
+                [],                     # face_crops (đã chọn xong)
+                hair_faces,             # hair_crops_state
+                chosen_face,            # selected_face_state (đã OK)
+                None,                   # selected_hair_state
+                "hair",                 # popup_source_state
+                None,
+            )
+        
+        # Không cần popup → chạy pipeline luôn
+        chosen_hair = hair_faces[0] if len(hair_faces) == 1 else hair_img
+        
+        result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt)
+        
+        # Nếu có chọn color → colorize thêm
+        if result_img is not None:
+            actual_color = hex_input.strip() if hex_input and hex_input.strip() else color_name
+            if actual_color and actual_color != "none":
+                colored_img, color_msg = process_colorize_pipeline(result_img, actual_color, intensity)
+                if colored_img is not None:
+                    result_img = colored_img
+                    status_msg += f"\n🎨 {color_msg}"
+        
+        return (
+            result_img,
+            status_msg,
+            gr.update(visible=False),   # ẩn popup
+            "",
+            [],
+            [], [],
+            chosen_face, chosen_hair,
+            "",
+            None,
+        )
+    
+    draw_btn.click(
+        fn=on_draw_click,
+        inputs=[user_input, hair_input, prompt_input, color_dropdown, color_hex_input, color_intensity_slider],
+        outputs=[
+            output_image, log_output,
+            popup_panel, popup_title, popup_gallery,
+            face_crops_state, hair_crops_state,
+            selected_face_state, selected_hair_state,
+            popup_source_state, popup_selected_preview
+        ]
     )
-
-    def select_face(faces_list, evt: gr.SelectData):
-        return faces_list[evt.index]
-
-    face_gallery.select(
-        fn=select_face,
-        inputs=[detected_faces_state],
-        outputs=[selected_face_input]
+    
+    # --- Popup: select from gallery ---
+    def on_popup_select(face_crops, hair_crops, source, evt: gr.SelectData):
+        """User click vào 1 ảnh trong popup gallery."""
+        if source == "face":
+            chosen = face_crops[evt.index]
+        else:
+            chosen = hair_crops[evt.index]
+        return chosen
+    
+    popup_gallery.select(
+        fn=on_popup_select,
+        inputs=[face_crops_state, hair_crops_state, popup_source_state],
+        outputs=[popup_selected_preview]
     )
     
-    run_btn.click(
-        fn=process_pipeline,
-        inputs=[selected_face_input, hair_input, prompt_input],
-        outputs=[output_image, log_output]
+    # --- Popup: confirm selection ---
+    def on_popup_confirm(
+        preview_img, source,
+        face_crops, hair_crops,
+        sel_face, sel_hair,
+        user_img, hair_img,
+        prompt, color_name, hex_input, intensity
+    ):
+        """
+        Xác nhận chọn từ popup.
+        - Nếu đang chọn face → lưu face, tiếp tục check hair.
+        - Nếu đang chọn hair → lưu hair, chạy pipeline.
+        """
+        if preview_img is None:
+            raise gr.Error("⚠️ Vui lòng click chọn 1 ảnh trong danh sách trước!")
+        
+        if source == "face":
+            # Đã chọn face xong → check hair
+            chosen_face = preview_img
+            
+            hair_faces = extract_faces_from_image(hair_img)
+            if len(hair_faces) > 1:
+                return (
+                    gr.update(),
+                    "🔍 Phát hiện nhiều khuôn mặt trong ảnh tóc. Vui lòng chọn 1.",
+                    gr.update(visible=True),
+                    "### 🔍 Phát hiện **nhiều khuôn mặt** trong ảnh tóc — Chọn 1 kiểu tóc để tham khảo",
+                    hair_faces,
+                    [],             # face_crops — đã xong
+                    hair_faces,     # hair_crops
+                    chosen_face,    # selected_face
+                    None,           # selected_hair (chưa chọn)
+                    "hair",         # source
+                    None,           # preview
+                )
+            
+            # Hair OK → chạy pipeline
+            chosen_hair = hair_faces[0] if len(hair_faces) == 1 else hair_img
+            result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt)
+            
+            if result_img is not None:
+                actual_color = hex_input.strip() if hex_input and hex_input.strip() else color_name
+                if actual_color and actual_color != "none":
+                    colored_img, color_msg = process_colorize_pipeline(result_img, actual_color, intensity)
+                    if colored_img is not None:
+                        result_img = colored_img
+                        status_msg += f"\n🎨 {color_msg}"
+            
+            return (
+                result_img, status_msg,
+                gr.update(visible=False), "", [],
+                [], [],
+                chosen_face, chosen_hair,
+                "", None,
+            )
+        
+        else:
+            # source == "hair" — đã chọn hair → chạy pipeline
+            chosen_hair = preview_img
+            chosen_face = sel_face if sel_face is not None else user_img
+            
+            result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt)
+            
+            if result_img is not None:
+                actual_color = hex_input.strip() if hex_input and hex_input.strip() else color_name
+                if actual_color and actual_color != "none":
+                    colored_img, color_msg = process_colorize_pipeline(result_img, actual_color, intensity)
+                    if colored_img is not None:
+                        result_img = colored_img
+                        status_msg += f"\n🎨 {color_msg}"
+            
+            return (
+                result_img, status_msg,
+                gr.update(visible=False), "", [],
+                [], [],
+                chosen_face, chosen_hair,
+                "", None,
+            )
+    
+    popup_confirm_btn.click(
+        fn=on_popup_confirm,
+        inputs=[
+            popup_selected_preview, popup_source_state,
+            face_crops_state, hair_crops_state,
+            selected_face_state, selected_hair_state,
+            user_input, hair_input,
+            prompt_input, color_dropdown, color_hex_input, color_intensity_slider
+        ],
+        outputs=[
+            output_image, log_output,
+            popup_panel, popup_title, popup_gallery,
+            face_crops_state, hair_crops_state,
+            selected_face_state, selected_hair_state,
+            popup_source_state, popup_selected_preview
+        ]
     )
     
-    # Hair Color events
-    def random_single():
-        return get_random_ffhq_image()
+    # --- Popup: cancel ---
+    def on_popup_cancel():
+        return (
+            gr.update(visible=False), "", [],
+            [], [],
+            None, None,
+            "", None,
+        )
     
-    color_random_btn.click(fn=random_single, outputs=[color_user_input])
+    popup_cancel_btn.click(
+        fn=on_popup_cancel,
+        outputs=[
+            popup_panel, popup_title, popup_gallery,
+            face_crops_state, hair_crops_state,
+            selected_face_state, selected_hair_state,
+            popup_source_state, popup_selected_preview
+        ]
+    )
     
-    def run_colorize(image, preset, hex_input, intensity):
-        # Ưu tiên hex input nếu có
-        color = hex_input.strip() if hex_input and hex_input.strip() else preset
-        return process_colorize_pipeline(image, color, intensity)
+    # --- Download result ---
+    def save_result(result_img):
+        if result_img is None:
+            raise gr.Error("Chưa có kết quả để tải!")
+        save_path = os.path.join(str(OUTPUT_DIR), f"download_{datetime.now().strftime('%Y%m%d_%H%M%S')}.png")
+        result_img.save(save_path)
+        return save_path
     
-    color_run_btn.click(
-        fn=run_colorize,
-        inputs=[color_user_input, color_dropdown, color_hex_input, color_intensity_slider],
-        outputs=[color_output_image, color_log_output]
+    download_btn.click(
+        fn=save_result,
+        inputs=[output_image],
+        outputs=gr.File(visible=False)
     )
 
 if __name__ == "__main__":
