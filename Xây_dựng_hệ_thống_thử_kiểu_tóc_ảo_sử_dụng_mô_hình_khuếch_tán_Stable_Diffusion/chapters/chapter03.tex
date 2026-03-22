@@ -1,0 +1,22 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Kiến trúc tổng thể hệ thống}
+Vẽ một sơ đồ (Block Diagram) cho thấy luồng đi của dữ liệu từ Frontend -> Backend API -> AI Model (Stable Diffusion) -> Trả về Frontend.
+
+\section{Thiết kế luồng xử lý AI (AI Pipeline)}
+\subsection{Tiền xử lý dữ liệu (Preprocessing)}
+Nhận diện khuôn mặt, tách nền, tạo mặt nạ (mask) vùng tóc...
+\subsection{Quá trình Inpainting}
+Các tham số cấu hình: Denoising strength, Prompt, Negative Prompt...
+\subsection{Hậu xử lý (Postprocessing)}
+Blend màu, làm mượt biên giới hạn giữa tóc giả và người thật.
+
+\section{Thiết kế Cơ sở dữ liệu}
+(Nếu có module quản lý người dùng, lịch sử thử tóc...)
+
+\section{Thiết kế Giao diện (UI/UX)}
+Wireframe hoặc mô tả cách bố trí các màn hình chức năng.
+
+\end{document}

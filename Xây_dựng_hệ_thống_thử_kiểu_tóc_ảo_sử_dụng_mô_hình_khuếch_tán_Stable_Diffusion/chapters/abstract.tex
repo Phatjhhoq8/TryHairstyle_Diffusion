@@ -1,0 +1,10 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+Multimedia data, combining images and text, has increasingly become a rich source of information that enhances classification tasks. However, effectively exploiting this data requires the sophisticated integration of multimodal processing techniques with appropriate machine learning and deep learning models.
+
+In this report, we conduct a study on a multimodal fashion classification problem (handbags and footwear). The system is built based on the mlfw software package using Python, with an architecture consisting of main modules: Helpers (preprocessing and feature extraction, including TF-IDF for text and Color Histogram, SIFT, HOG, GIST, and deep features for images), Processors, Ranker, and Runner.
+
+Experimental results indicate that Naive Bayes and AdaBoost achieve the highest accuracy on text data (97.5\%). On image data, the traditional HOG feature achieves an impressive 97.5\%, while Deep Features paired with Neural Networks autonomously establish a perfect 100\% accuracy. The Late Fusion process between Naive Bayes and Neural Networks with a weight of $\alpha=0.4$ successfully maintains this 100\% accuracy. Although individual modalities perform remarkably well on the current dataset, the fusion architecture demonstrates its robustness in harmonizing information, serving as a highly reliable foundation paving the way for processing more complex data in the future.
+
+\end{document}

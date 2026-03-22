@@ -1,0 +1,10 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+Dữ liệu đa phương tiện, với sự kết hợp giữa hình ảnh và văn bản, ngày càng trở thành nguồn thông tin phong phú góp phần nâng cao hiệu quả các bài toán phân lớp. Tuy nhiên, việc khai thác hiệu quả loại dữ liệu này đòi hỏi sự kết hợp tinh tế giữa các kỹ thuật xử lý đa phương thức cùng các mô hình học máy và học sâu phù hợp.
+
+Trong báo cáo này, chúng tôi tiến hành nghiên cứu bài toán phân loại dữ liệu thời trang đa phương thức (túi xách và giày dép). Hệ thống được xây dựng dựa trên gói phần mềm mlfw sử dụng ngôn ngữ Python, với kiến trúc gồm các module chính: Helpers (tiền xử lý và trích xuất đặc trưng văn bản bằng TF-IDF, và hình ảnh bằng Color Histogram, SIFT, HOG, GIST cùng đặc trưng học sâu), Processors, Ranker và Runner.
+
+Kết quả thực nghiệm cho thấy trên dữ liệu văn bản, mô hình Naive Bayes và AdaBoost đạt hiệu suất cao nhất (97.5\%). Trên dữ liệu hình ảnh, đặc trưng truyền thống HOG đạt kết quả ấn tượng 97.5\%, trong khi đặc trưng Học sâu kết hợp mạng Neural Network tự thân xác lập mức độ chính xác hoàn hảo 100\%. Quá trình kết hợp đa phương thức (Late Fusion) giữa Naive Bayes và Neural Network với trọng số $\alpha=0.4$ tiếp tục duy trì thành công độ chính xác 100\%. Dù trên tập dữ liệu hiện tại các phương thức đơn lẻ đã hoạt động rất hiệu quả, cấu trúc lai ghép vẫn chứng minh được sự vững vàng trong việc dung hòa thông tin, đóng vai trò nền tảng đáng tin cậy mở đường cho xử lý các dữ liệu phức tạp hơn trong tương lai.
+
+\end{document}

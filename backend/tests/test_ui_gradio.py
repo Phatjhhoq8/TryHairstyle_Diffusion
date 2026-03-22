@@ -34,11 +34,12 @@ color_service = None
 
 
 def load_services():
-    """Load tất cả AI services (1 lần duy nhất)."""
+    """Load tất cả AI services (1 lần duy nhất). Dùng yield để Gradio không bị timeout."""
     global face_service, mask_service, diffusion_service, depth_estimator, color_service
     
     if face_service is not None and diffusion_service is not None and depth_estimator is not None:
-        return "✅ Services Already Loaded"
+        yield "✅ Services Already Loaded"
+        return
     
     print(">>> Loading Services...", flush=True)
     try:
@@ -48,25 +49,29 @@ def load_services():
         diffusion_service = None
         depth_estimator = None
         
+        yield "⏳ Đang tải Face Service (1/5)..."
         face_service = FaceInfoService()
         print("  ✅ Face Service loaded", flush=True)
         
+        yield "⏳ Đang tải Mask Service (2/5)..."
         mask_service = SegmentationService()
         print("  ✅ Mask Service loaded", flush=True)
         
+        yield "⏳ Đang tải Diffusion Service (3/5 - Nặng nhất, chờ ~1-2 phút)..."
         diffusion_service = HairDiffusionService()
         print("  ✅ Diffusion Service loaded", flush=True)
         
-        # Depth estimator — load 1 lần, cache global (tránh reload mỗi inference)
+        yield "⏳ Đang tải Depth Estimator (4/5)..."
         from transformers import pipeline
         depth_estimator = pipeline("depth-estimation", model="Intel/dpt-large")
         print("  ✅ Depth Estimator loaded (Intel/dpt-large)", flush=True)
         
+        yield "⏳ Đang tải Hair Color Service (5/5)..."
         color_service = HairColorService()
         print("  ✅ Hair Color Service loaded", flush=True)
         
         print(">>> All Services Loaded Successfully!", flush=True)
-        return "✅ Services Loaded — Ready to Run"
+        yield "✅ Services Loaded — Ready to Run"
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -76,7 +81,7 @@ def load_services():
         diffusion_service = None
         depth_estimator = None
         color_service = None
-        return f"❌ Error: {e}"
+        yield f"❌ Error: {e}"
 
 
 def get_random_ffhq_image():
@@ -109,7 +114,7 @@ def process_pipeline(user_image, hair_image, prompt):
     # Auto-load services nếu chưa load
     global face_service, mask_service, diffusion_service, depth_estimator
     if face_service is None or diffusion_service is None or depth_estimator is None:
-        load_result = load_services()
+        load_result = list(load_services())[-1]
         if "Error" in load_result:
             return None, f"❌ Service Load Failed: {load_result}"
         if diffusion_service is None:
@@ -280,13 +285,27 @@ custom_css = """
     padding: 12px !important; 
 }
 
-/* Popup overlay */
+/* Popup overlay (fixed full screen background) */
 .popup-overlay { 
+    position: fixed !important;
+    inset: 0 !important;
+    background: rgba(0,0,0,0.6) !important; 
+    z-index: 9999 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+
+/* Inner popup box */
+.popup-content {
     background: white !important; 
-    border: 2px solid #2d9b8e !important; 
     border-radius: 16px !important; 
-    padding: 20px !important; 
-    box-shadow: 0 8px 32px rgba(0,0,0,0.15) !important; 
+    padding: 24px !important; 
+    box-shadow: 0 12px 40px rgba(0,0,0,0.2) !important; 
+    max-width: 800px !important;
+    width: 90% !important;
+    max-height: 90vh !important;
+    overflow-y: auto !important;
 }
 
 /* Color swatches */
@@ -309,7 +328,7 @@ def extract_faces_from_image(img):
     
     global face_service
     if face_service is None:
-        load_result = load_services()
+        load_result = list(load_services())[-1]
         if "Error" in load_result:
             return []
     
@@ -352,21 +371,21 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
     
     # ===== Header =====
     with gr.Row(elem_classes="header-row"):
-        gr.Markdown("# 💇 AI HAIR STYLIST — HỆ THỐNG TẠO KIỂU TÓC\n*Tải ảnh chân dung & kiểu tóc tham khảo, nhấn Vẽ Tóc để tạo kết quả*")
+        gr.Markdown("# AI HAIR STYLIST — HỆ THỐNG TẠO KIỂU TÓC\n*Tải ảnh chân dung & kiểu tóc tham khảo, nhấn Vẽ Tóc để tạo kết quả*")
     
     # ===== Status bar =====
     with gr.Row():
         status_box = gr.Textbox(
-            label="Trạng thái hệ thống", value="⏳ Chưa khởi tạo — Bấm 'Khởi tạo' hoặc chạy lần đầu sẽ tự load",
+            label="Trạng thái hệ thống", value="Chưa khởi tạo — Bấm 'Khởi tạo' hoặc chạy lần đầu sẽ tự load",
             interactive=False, elem_classes="status-bar"
         )
-        load_btn = gr.Button("🔧 Khởi tạo", variant="secondary", scale=0)
+        load_btn = gr.Button("Khởi tạo", variant="secondary", scale=0)
     
     # ===== Main Layout: 2 uploads + VẼ TÓC btn + Result =====
     with gr.Row():
         # --- Column 1: Ảnh chân dung ---
         with gr.Column(scale=3):
-            gr.Markdown("### 📸 ẢNH ĐẦU VÀO 1: CHÂN DUNG")
+            gr.Markdown("### ẢNH ĐẦU VÀO 1: CHÂN DUNG")
             user_input = gr.Image(
                 label="Tải ảnh chân dung lên (PNG, JPG)",
                 type="pil",
@@ -376,7 +395,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         
         # --- Column 2: Ảnh kiểu tóc ---
         with gr.Column(scale=3):
-            gr.Markdown("### 💇 ẢNH ĐẦU VÀO 2: THAM KHẢO KIỂU TÓC")
+            gr.Markdown("### ẢNH ĐẦU VÀO 2: THAM KHẢO KIỂU TÓC")
             hair_input = gr.Image(
                 label="Tải ảnh kiểu tóc tham khảo",
                 type="pil",
@@ -388,7 +407,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         with gr.Column(scale=1, min_width=140):
             gr.Markdown("&nbsp;")  # spacer
             draw_btn = gr.Button(
-                "✂️\nVẼ TÓC",
+                "VẼ TÓC",
                 variant="primary",
                 elem_classes="draw-btn"
             )
@@ -396,17 +415,17 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         
         # --- Column 4: Kết quả ---
         with gr.Column(scale=3, elem_classes="result-panel"):
-            gr.Markdown("### 🖼️ ẢNH KẾT QUẢ")
+            gr.Markdown("### ẢNH KẾT QUẢ")
             output_image = gr.Image(label="Kết quả", type="pil", height=300)
             log_output = gr.Textbox(label="Trạng thái", lines=2, interactive=False)
             with gr.Row():
-                download_btn = gr.Button("⬇️ Tải xuống kết quả", variant="primary", size="sm")
+                download_btn = gr.Button("Tải xuống kết quả", variant="primary", size="sm")
     
     # ===== Text Prompt (dưới 2 ảnh) =====
     with gr.Row():
         with gr.Column(scale=6):
             prompt_input = gr.Textbox(
-                label="📝 Text Prompt",
+                label="Text Prompt",
                 value="high quality, realistic hairstyle",
                 placeholder="Mô tả kiểu tóc mong muốn...",
                 lines=2
@@ -417,7 +436,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
     # ===== Color Picker (dưới prompt) =====
     with gr.Row(elem_classes="color-section"):
         with gr.Column(scale=2):
-            gr.Markdown("### 🎨 Tuỳ chỉnh màu tóc (tuỳ chọn)")
+            gr.Markdown("### Tuỳ chỉnh màu tóc (tuỳ chọn)")
             preset_names = list(PRESET_COLORS.keys())
             color_dropdown = gr.Dropdown(
                 label="Màu preset",
@@ -438,20 +457,21 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
                 info="0 = giữ nguyên, 1 = 100% màu mới"
             )
         with gr.Column(scale=1):
-            random_btn = gr.Button("🎲 FFHQ ngẫu nhiên", variant="secondary", size="sm")
+            random_btn = gr.Button("FFHQ ngẫu nhiên", variant="secondary", size="sm")
     
     # ===== POPUP: Chọn khuôn mặt / tóc (ẩn mặc định) =====
     with gr.Column(visible=False, elem_classes="popup-overlay") as popup_panel:
-        popup_title = gr.Markdown("### 🔍 Phát hiện nhiều khuôn mặt — Vui lòng chọn một")
-        popup_gallery = gr.Gallery(
-            label="Các khuôn mặt phát hiện được",
-            show_label=True, columns=4, height=250,
-            object_fit="contain", allow_preview=False
-        )
-        with gr.Row():
-            popup_confirm_btn = gr.Button("✅ Xác nhận chọn", variant="primary")
-            popup_cancel_btn = gr.Button("❌ Huỷ", variant="secondary")
-        popup_selected_preview = gr.Image(label="Đã chọn", type="pil", height=150)
+        with gr.Column(elem_classes="popup-content"):
+            popup_title = gr.Markdown("### Phát hiện nhiều khuôn mặt — Vui lòng chọn một")
+            popup_gallery = gr.Gallery(
+                label="Các khuôn mặt phát hiện được",
+                show_label=True, columns=4, height=300,
+                object_fit="contain", allow_preview=False
+            )
+            with gr.Row():
+                popup_confirm_btn = gr.Button("Xác nhận chọn", variant="primary")
+                popup_cancel_btn = gr.Button("Huỷ", variant="secondary")
+            popup_selected_preview = gr.Image(label="Đã chọn", type="pil", height=150)
     
     # ===============================================================
     # ======================== EVENT HANDLERS ========================
