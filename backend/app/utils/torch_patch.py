@@ -1,5 +1,17 @@
 import torch
 
+# === Patch _is_hf_initialized ===
+# HuggingFace transformers/diffusers truyền kwarg '_is_hf_initialized' vào
+# torch.nn.Parameter.__new__() nhưng PyTorch phiên bản cũ không hỗ trợ.
+print("[torch_patch] 0. Patching torch.nn.Parameter for _is_hf_initialized...", flush=True)
+_original_parameter_new = torch.nn.Parameter.__new__
+
+def _patched_parameter_new(cls, *args, **kwargs):
+    # Loại bỏ các kwargs HuggingFace-specific mà PyTorch không hiểu
+    kwargs.pop('_is_hf_initialized', None)
+    return _original_parameter_new(cls, *args, **kwargs)
+
+torch.nn.Parameter.__new__ = _patched_parameter_new
 print("[torch_patch] 1. Patching torch.xpu (Intel XPU)...", flush=True)
 if not hasattr(torch, 'xpu') or not hasattr(torch.xpu, 'is_available'):
     class _DummyXPU:

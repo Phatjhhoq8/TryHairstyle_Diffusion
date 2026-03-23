@@ -285,15 +285,18 @@ custom_css = """
     padding: 12px !important; 
 }
 
-/* Popup overlay (fixed full screen background) */
+/* Popup overlay - base styles only, display managed by JS */
 .popup-overlay { 
     position: fixed !important;
     inset: 0 !important;
     background: rgba(0,0,0,0.6) !important; 
     z-index: 9999 !important;
-    display: flex !important;
     align-items: center !important;
     justify-content: center !important;
+}
+/* popup-active is toggled by our JS MutationObserver */
+.popup-overlay.popup-active {
+    display: flex !important;
 }
 
 /* Inner popup box */
@@ -318,6 +321,71 @@ custom_css = """
 
 /* Status bar */
 .status-bar { font-size: 0.85em !important; }
+
+/* Loading spinner */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+.loading-container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 40px 20px;
+    gap: 16px;
+}
+.loading-spinner {
+    width: 48px; height: 48px;
+    border: 4px solid rgba(45,155,142,0.2);
+    border-top-color: #2d9b8e;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+.loading-text {
+    color: #2d9b8e;
+    font-size: 1.1em;
+    font-weight: 600;
+    animation: pulse 1.5s ease-in-out infinite;
+}
+.loading-sub {
+    color: #888;
+    font-size: 0.85em;
+}
+"""
+
+# JavaScript: MutationObserver quản lý popup overlay display
+popup_js = """
+function() {
+    // Chờ DOM sẵn sàng rồi gắn MutationObserver
+    requestAnimationFrame(() => {
+        const popup = document.querySelector('.popup-overlay');
+        if (!popup) return;
+        
+        function updatePopupDisplay() {
+            // Gradio ẩn component bằng cách thêm class 'hidden' hoặc 'hide' 
+            // hoặc set style.display = 'none' trên element hoặc parent wrapper
+            const isGradioHidden = popup.classList.contains('hide') || 
+                                   popup.classList.contains('hidden') ||
+                                   popup.style.display === 'none' ||
+                                   popup.parentElement?.style?.display === 'none';
+            
+            if (isGradioHidden) {
+                popup.classList.remove('popup-active');
+            } else {
+                popup.classList.add('popup-active');
+            }
+        }
+        
+        // Observer theo dõi class + style thay đổi trên popup và parent
+        const observer = new MutationObserver(updatePopupDisplay);
+        observer.observe(popup, { attributes: true, attributeFilter: ['class', 'style'] });
+        if (popup.parentElement) {
+            observer.observe(popup.parentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+        }
+        
+        // Khởi tạo lần đầu
+        updatePopupDisplay();
+    });
+}
 """
 
 
@@ -416,7 +484,12 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         # --- Column 4: Kết quả ---
         with gr.Column(scale=3, elem_classes="result-panel"):
             gr.Markdown("### ẢNH KẾT QUẢ")
-            output_image = gr.Image(label="Kết quả", type="pil", height=300)
+            output_image = gr.Image(label="Kết quả", type="pil", height=300, interactive=False)
+            loading_html = gr.HTML(
+                value="",
+                visible=False,
+                elem_classes="loading-container"
+            )
             log_output = gr.Textbox(label="Trạng thái", lines=2, interactive=False)
             with gr.Row():
                 download_btn = gr.Button("Tải xuống kết quả", variant="primary", size="sm")
@@ -511,7 +584,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         
         if len(user_faces) > 1:
             # Nhiều khuôn mặt → hiện popup chọn
-            return (
+            yield (
                 gr.update(),            # output_image — giữ nguyên 
                 "🔍 Phát hiện nhiều khuôn mặt trong ảnh chân dung. Vui lòng chọn 1.",
                 gr.update(visible=True),  # popup_panel
@@ -523,7 +596,9 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
                 None,                    # selected_hair_state
                 "face",                  # popup_source_state
                 None,                    # popup_selected_preview
+                gr.update(),             # loading_html
             )
+            return
         
         # 1 face hoặc 0 face trong ảnh chân dung → dùng luôn ảnh gốc (hoặc face crop nếu có 1)
         chosen_face = user_faces[0] if len(user_faces) == 1 else user_img
@@ -533,7 +608,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         
         if len(hair_faces) > 1:
             # Nhiều khuôn mặt/tóc → hiện popup chọn
-            return (
+            yield (
                 gr.update(),
                 "🔍 Phát hiện nhiều khuôn mặt trong ảnh tóc tham khảo. Vui lòng chọn 1.",
                 gr.update(visible=True),
@@ -545,10 +620,28 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
                 None,                   # selected_hair_state
                 "hair",                 # popup_source_state
                 None,
+                gr.update(),            # loading_html
             )
+            return
         
         # Không cần popup → chạy pipeline luôn
         chosen_hair = hair_faces[0] if len(hair_faces) == 1 else hair_img
+        
+        # Yield trạng thái loading: ẩn ảnh output, hiện spinner thay thế
+        loading_content = '''
+        <div class="loading-container">
+            <div class="loading-spinner"></div>
+            <div class="loading-text">⏳ Đang tạo kiểu tóc...</div>
+            <div class="loading-sub">Quá trình này mất khoảng 30-60 giây</div>
+        </div>
+        '''
+        yield (
+            gr.update(visible=False),    # ẩn output_image
+            "⏳ Đang xử lý tạo kiểu tóc, vui lòng chờ...",
+            gr.update(visible=False), "", [],
+            [], [], chosen_face, chosen_hair, "", None,
+            gr.update(value=loading_content, visible=True),  # hiện loading
+        )
         
         result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt)
         
@@ -561,16 +654,18 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
                     result_img = colored_img
                     status_msg += f"\n🎨 {color_msg}"
         
-        return (
-            result_img,
+        
+        yield (
+            gr.update(value=result_img, visible=True),  # hiện lại output với kết quả
             status_msg,
-            gr.update(visible=False),   # ẩn popup
+            gr.update(visible=False),
             "",
             [],
             [], [],
             chosen_face, chosen_hair,
             "",
             None,
+            gr.update(value="", visible=False),   # ẩn loading
         )
     
     draw_btn.click(
@@ -581,7 +676,8 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             popup_panel, popup_title, popup_gallery,
             face_crops_state, hair_crops_state,
             selected_face_state, selected_hair_state,
-            popup_source_state, popup_selected_preview
+            popup_source_state, popup_selected_preview,
+            loading_html
         ]
     )
     
@@ -634,49 +730,34 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
                     None,           # selected_hair (chưa chọn)
                     "hair",         # source
                     None,           # preview
+                    chosen_face,    # user_input update
+                    gr.update(),    # hair_input update
                 )
             
-            # Hair OK → chạy pipeline
+            # Hair OK → Đóng popup, cập nhật ảnh, yêu cầu người dùng bấm VẼ TÓC
             chosen_hair = hair_faces[0] if len(hair_faces) == 1 else hair_img
-            result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt)
-            
-            if result_img is not None:
-                actual_color = hex_input.strip() if hex_input and hex_input.strip() else color_name
-                if actual_color and actual_color != "none":
-                    colored_img, color_msg = process_colorize_pipeline(result_img, actual_color, intensity)
-                    if colored_img is not None:
-                        result_img = colored_img
-                        status_msg += f"\n🎨 {color_msg}"
             
             return (
-                result_img, status_msg,
+                None, "✅ Đã chọn khuôn mặt xong. Vui lòng bấm 'VẼ TÓC' để tạo kiểu.",
                 gr.update(visible=False), "", [],
                 [], [],
                 chosen_face, chosen_hair,
                 "", None,
+                gr.update(value=chosen_face), gr.update(value=chosen_hair),
             )
         
         else:
-            # source == "hair" — đã chọn hair → chạy pipeline
+            # source == "hair" — đã chọn hair → cập nhật ảnh
             chosen_hair = preview_img
             chosen_face = sel_face if sel_face is not None else user_img
             
-            result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt)
-            
-            if result_img is not None:
-                actual_color = hex_input.strip() if hex_input and hex_input.strip() else color_name
-                if actual_color and actual_color != "none":
-                    colored_img, color_msg = process_colorize_pipeline(result_img, actual_color, intensity)
-                    if colored_img is not None:
-                        result_img = colored_img
-                        status_msg += f"\n🎨 {color_msg}"
-            
             return (
-                result_img, status_msg,
+                None, "✅ Đã chọn kiểu tóc xong. Vui lòng bấm 'VẼ TÓC' để tạo kiểu.",
                 gr.update(visible=False), "", [],
                 [], [],
                 chosen_face, chosen_hair,
                 "", None,
+                gr.update(value=chosen_face), gr.update(value=chosen_hair),
             )
     
     popup_confirm_btn.click(
@@ -693,7 +774,8 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             popup_panel, popup_title, popup_gallery,
             face_crops_state, hair_crops_state,
             selected_face_state, selected_hair_state,
-            popup_source_state, popup_selected_preview
+            popup_source_state, popup_selected_preview,
+            user_input, hair_input
         ]
     )
     

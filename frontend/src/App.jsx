@@ -157,6 +157,7 @@ export default function App() {
       // Đã chọn face → tiếp tục check hair
       const croppedUrl = face.cropped_image_url;
       setSelectedFaceUrl(croppedUrl);
+      setFaceImage(croppedUrl);  // Cập nhật ảnh ở ô input
 
       setLoading(true);
       setPipelineStatus('Đang quét ảnh tóc...');
@@ -193,6 +194,7 @@ export default function App() {
       // source === 'hair': đã chọn tóc → generate
       const croppedUrl = face.cropped_image_url;
       setSelectedHairUrl(croppedUrl);
+      setHairImage(croppedUrl);  // Cập nhật ảnh ở ô input
       setLoading(true);
 
       try {
