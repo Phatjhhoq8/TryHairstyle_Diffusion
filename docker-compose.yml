@@ -23,7 +23,7 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - ./backend/models:/workspace/backend/models:ro
+      - ./backend/models:/workspace/backend/models
       - ./backend/data:/workspace/backend/data
     environment:
       - REDIS_URL=redis://redis:6379/0
@@ -47,9 +47,9 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: tryhair_celery
-    command: celery -A backend.app.tasks worker --loglevel=info --pool=solo
+    command: celery -A backend.app.tasks.celery_app worker --loglevel=info --pool=solo --concurrency=1
     volumes:
-      - ./backend/models:/workspace/backend/models:ro
+      - ./backend/models:/workspace/backend/models
       - ./backend/data:/workspace/backend/data
     environment:
       - REDIS_URL=redis://redis:6379/0

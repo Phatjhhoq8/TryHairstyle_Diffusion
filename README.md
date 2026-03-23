@@ -1,343 +1,322 @@
-# Try Hairstyle with Stable Diffusion
+# 💇 TryHairStyle — Hệ thống Tạo Kiểu Tóc bằng AI
 
-## 1. Yêu cầu hệ thống
-- Python >= 3.10
-- GPU NVIDIA hỗ trợ CUDA (khuyến nghị CUDA 11.8)
-- Linux / WSL (Windows nên dùng WSL để ổn định)
+> Ứng dụng AI chuyển đổi kiểu tóc sử dụng Stable Diffusion XL, ControlNet, IP-Adapter và Face Parsing.
+> Upload ảnh chân dung + ảnh kiểu tóc tham khảo → AI tạo ảnh kết quả với kiểu tóc mới.
 
---------------------------------------------------
+---
 
-## 2. Tạo và kích hoạt môi trường ảo
+## 📋 Mục Lục
 
-```bash
-python -m venv venv_wsl
-source venv_wsl/bin/activate
+1. [Tổng quan Kiến trúc](#1-tổng-quan-kiến-trúc)
+2. [Yêu cầu Hệ thống](#2-yêu-cầu-hệ-thống)
+3. [Cài đặt & Chạy](#3-cài-đặt--chạy)
+4. [Tải Models](#4-tải-models)
+5. [Cấu trúc Thư mục](#5-cấu-trúc-thư-mục)
+6. [API Endpoints](#6-api-endpoints)
+7. [Kiểm thử](#7-kiểm-thử)
+8. [Troubleshooting](#8-troubleshooting)
+
+---
+
+## 1. Tổng quan Kiến trúc
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    Frontend (React + Vite)                │
+│                   http://localhost:5173 (dev)             │
+│                   http://localhost:3000 (docker)          │
+└────────────────────────┬─────────────────────────────────┘
+                         │ /api/* (proxy)
+┌────────────────────────▼─────────────────────────────────┐
+│                Backend (FastAPI)  :8000                   │
+│  POST /generate  │  POST /detect-faces  │  GET /status   │
+└────────────┬─────────────────────────────────────────────┘
+             │ Celery Task Queue
+┌────────────▼─────────────────────────────────────────────┐
+│               Celery Worker (GPU)                        │
+│  ┌──────────┐ ┌──────────┐ ┌───────────┐ ┌───────────┐  │
+│  │ Face     │ │ Mask     │ │ Diffusion │ │ Hair      │  │
+│  │ Service  │ │ Service  │ │ Service   │ │ Color     │  │
+│  │(InsightF)│ │(SegForm) │ │ (SDXL)    │ │ Service   │  │
+│  └──────────┘ └──────────┘ └───────────┘ └───────────┘  │
+└──────────────────────────────────────────────────────────┘
+             │
+┌────────────▼──┐
+│  Redis :6379  │ (Message Broker)
+└───────────────┘
 ```
 
---------------------------------------------------
+### AI Pipeline
 
-## 3. Cài đặt Môi trường (Theo đúng thứ tự để tránh lỗi)
+1. **Face Detection** — InsightFace + YOLOv8 phát hiện & align khuôn mặt
+2. **Face/Hair Parsing** — SegFormer tách mask tóc và mặt (19 classes)
+3. **Hair Transfer** — Stable Diffusion XL Inpainting + ControlNet Depth + IP-Adapter
+4. **Hair Colorization** — Thay đổi màu tóc theo preset hoặc hex color
 
-**Bước 1: Cài đặt PyTorch & xFormers (BẮT BUỘC TRƯỚC)**
-*Lưu ý: Cần cài PyTorch hỗ trợ CUDA 12.1 trở lên cho RTX 3060.*
+### Tech Stack
 
-```bash
-# Gỡ bản cũ nếu có
-pip uninstall torch torchvision torchaudio xformers -y
+| Layer | Công nghệ |
+|-------|-----------|
+| Frontend | React 19, Vite 8, TailwindCSS 4 |
+| Backend API | FastAPI, Pydantic, Uvicorn |
+| Task Queue | Celery + Redis |
+| AI/ML | PyTorch 2.4, Diffusers, Transformers, InsightFace |
+| Segmentation | SegFormer (face parsing), SAM |
+| Container | Docker, Docker Compose, NVIDIA Container Toolkit |
 
-# 1. Cài PyTorch (Stable 2.5.1 + CUDA 12.4)
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+---
 
-# 2. Cài xFormers (Tương thích với PyTorch đã cài)
-pip install xformers
-```
+## 2. Yêu cầu Hệ thống
 
-**Bước 2: Cài đặt các thư viện dự án (Dependencies)**
+### Phần cứng
+- **GPU NVIDIA** với ≥ 12GB VRAM (RTX 3060 trở lên)
+- **RAM** ≥ 16GB
+- **Disk** ≥ 20GB trống (cho models + Docker images)
 
-```bash
-pip install --upgrade pip
-pip install -r backend/requirements.txt
-```
+### Phần mềm
+- Python ≥ 3.10
+- Node.js ≥ 18
+- CUDA ≥ 12.1
+- Docker + Docker Compose v2 (nếu chạy Docker)
+- NVIDIA Container Toolkit (nếu chạy Docker)
+- WSL2 (nếu dùng Windows)
 
---------------------------------------------------
+---
 
-## 4. Kiểm tra PyTorch & CUDA
+## 3. Cài đặt & Chạy
 
-python - << 'EOF'
-import torch, torchvision, torchaudio
-print("torch:", torch.__version__)
-print("torchvision:", torchvision.__version__)
-print("torchaudio:", torchaudio.__version__)
-print("cuda:", torch.cuda.is_available())
-print("gpu:", torch.cuda.get_device_name(0))
-EOF
-
-Nếu cuda: True và hiện tên GPU → cài đặt thành công.
-
---------------------------------------------------
-
-## 5. Tải dữ liệu (Dataset)
-
-FFHQ (khuôn mặt chất lượng cao):
-https://drive.google.com/drive/folders/1tZUcXDBeOibC6jcMCtgRRz67pzrAHeHL
-
-K-Hairstyle (kiểu tóc tham chiếu):
-https://psh01087.github.io/K-Hairstyle/
-
---------------------------------------------------
-
-## 6. Chuẩn bị HuggingFace CLI
-
-pip install huggingface_hub
-huggingface-cli login
-
-(Lưu ý: cần tài khoản HuggingFace)
-
---------------------------------------------------
-
-## 7. Tải Model & Thư viện (QUAN TRỌNG)
-
-### Cách 1: Tự động (Khuyên dùng)
-
-1. Đảm bảo đã kích hoạt môi trường ảo:
-```bash
-source venv_wsl/bin/activate
-```
-2. Chạy lệnh sau:
-```bash
-python download_models.py
-```
-Script sẽ tự động tải:
-- ControlNet Depth (SDXL)
-- InstantID & IP-Adapter
-- **SegFormer Face Parsing** (tách mask face/hair)
-- CLIP Image Encoder
-- YOLOv8-Face, AdaFace, 3DDFA V2
-
-### Cách 2: Tải Thủ công (Nếu script lỗi)
-
-### 8.1 Stable Diffusion XL Inpainting (1024x1024)
-
-mkdir -p models/stable-diffusion
-cd models/stable-diffusion
-
-hf download diffusers/stable-diffusion-xl-1.0-inpainting-0.1 \
-  --local-dir sd_xl_inpainting
-
---------------------------------------------------
-
-### 8.2 ControlNet Depth SDXL
-
-mkdir -p models/controlnet_depth
-cd models/controlnet_depth
-
-hf download diffusers/controlnet-depth-sdxl-1.0 \
-  --local-dir .
-
---------------------------------------------------
-
-### 8.3 IP-Adapter FaceID (giữ identity khuôn mặt)
-
-mkdir -p models/ip_adapter_faceid
-cd models/ip_adapter_faceid
-
-hf download h94/IP-Adapter-FaceID \
-  --local-dir .
-
---------------------------------------------------
-
-### 8.4 IP-Adapter Plus (copy kiểu tóc từ ảnh mẫu)
-
-mkdir -p models/ip_adapter_hair
-cd models/ip_adapter_hair
-
-hf download h94/IP-Adapter \
-  --local-dir .
-
---------------------------------------------------
-
-### 8.5 SegFormer – Face Parsing (tách mask tóc & khuôn mặt)
-
-SegFormer (Transformer-based) cho face/hair parsing, accuracy cao đặc biệt trên profile views.
+### 🐳 Cách 1: Docker Compose (Khuyên dùng - Production)
 
 ```bash
-# Tải tự động bằng download_models.py (khuyên dùng)
-python download_models.py
+# 1. Clone project
+git clone <repo-url>
+cd TryHairStyle
 
-# Hoặc tải thủ công bằng HuggingFace CLI:
-mkdir -p backend/models/segformer_face_parsing
-cd backend/models/segformer_face_parsing
-hf download jonathandinu/face-parsing --local-dir .
-```
-
-> **Lưu ý:** Nếu chưa download local, pipeline sẽ tự download từ HuggingFace hub lần đầu chạy (~350MB).
-
-### 8.6 3DDFA_V2 (3D Face Alignment)
-
-mkdir -p models/3ddfa_v2
-cd models/3ddfa_v2
-git clone https://github.com/cleardusk/3DDFA_V2.git .
-# Build Sim3DR (C++ Extension)
-cd Sim3DR
-python setup.py build_ext --inplace
-
---------------------------------------------------
-
-## 8. Ghi chú
-- **SegFormer** (`jonathandinu/face-parsing`): Tách mask face/hair (19 classes CelebAMask-HQ)
-- IP-Adapter FaceID: giữ nguyên khuôn mặt
-- IP-Adapter Plus: copy kiểu tóc
-- Training pipeline hỗ trợ 3D mesh face enhancement + directional hair dilation cho profile views
-
-## 9. Troubleshooting (Các lỗi thường gặp và cách khắc phục)
-
-
-### 9.1 Lỗi Xung đột thư viện (Transformers vs Diffusers)
-- **Lỗi:** `ImportError: cannot import name 'MT5Tokenizer'` hoặc `Qwen2_5_VL...`
-- **Nguyên nhân:** Xung đột phiên bản giữa `transformers`, `diffusers`, và `sentencepiece`.
-- **Cách sửa:** Sử dụng phiên bản "điểm ngọt" đã test kỹ:
-    ```bash
-    pip install transformers==4.49.0
-    ```
-
-### 9.2 Lỗi Runtime Crash `NoneType` (IP-Adapter)
-- **Lỗi:** `AttributeError: 'NoneType' object has no attribute 'image_projection_layers'`
-- **Nguyên nhân:** Model IP-Adapter không load được nhưng code vẫn cố dùng.
-- **Cách sửa:** Đã patch lại code `diffusion.py` để tự động bỏ qua IP-Adapter nếu load lỗi, giúp app không bị crash.
-
-### 9.3 Lỗi Lệch kiểu dữ liệu (FP16 vs FP32)
-- **Lỗi:** `RuntimeError: Input type (HalfTensor) and weight type (FloatTensor)...`
-- **Nguyên nhân:** Model chính chạy FP16 nhưng IP-Adapter chạy FP32.
-- **Cách sửa:** Đã update code để ép kiểu toàn bộ pipeline sang FP16.
-
-### 9.4 Các lỗi cũ hơn
-- **Lỗi `module 'torch' has no attribute 'xpu'`**: Do `accelerate` mới không tương thích Windows. Sửa bằng `pip install accelerate==0.26.0` (hoặc mới hơn nếu dùng WSL).
-- **Lỗi `InstantX... ip-adapter.bin not found`**: Sai đường dẫn model. Sửa bằng cách dùng đường dẫn tuyệt đối.
---------------------------------------------------
-
-## 10. Hướng dẫn Chạy Hệ thống (Run App)
-
-### Cách 1: Chạy bằng Docker Compose (Khuyên dùng cho Production/Deploy)
-
-> **Yêu cầu hệ thống:**
-> - Docker + Docker Compose (v2.0+)
-> - NVIDIA Container Toolkit (cho GPU support)
-> - GPU NVIDIA với ít nhất 12GB VRAM
-
-#### Bước 1: Chuẩn bị Models
-Đảm bảo thư mục `backend/models/` đã có đầy đủ models (xem Section 7).
-
-#### Bước 2: Cấu hình Environment
-```bash
-# Copy file env mẫu
+# 2. Cấu hình environment
 cp .env.example .env
-```
+# Mở .env và điền HUGFACE_TOKEN
 
-#### Bước 3: Build Docker Images
-```bash
-docker compose build
-```
+# 3. Đảm bảo models đã có trong backend/models/ (xem Mục 4)
 
-#### Bước 4: Khởi động toàn bộ hệ thống
-```bash
-# Chạy tất cả services (Redis, Backend, Celery, Frontend)
-docker compose up -d
+# 4. Build & khởi động
+docker compose up --build -d
 
-# Xem logs
+# 5. Theo dõi logs
 docker compose logs -f
 
-# Kiểm tra trạng thái
-docker compose ps
+# 6. Truy cập
+#    Frontend:  http://localhost:3000
+#    API Docs:  http://localhost:8000/docs
 ```
 
-#### Truy cập:
-- **Frontend:** `http://localhost:3000`
-- **API Swagger:** `http://localhost:8000/docs`
-
-#### Dừng hệ thống:
+**Quản lý Docker:**
 ```bash
-docker compose down
+docker compose ps          # Xem trạng thái các service
+docker compose logs -f celery-worker   # Xem logs AI worker
+docker compose restart backend         # Restart backend
+docker compose down                    # Dừng tất cả
+docker compose up -d --build           # Rebuild & restart
 ```
 
-#### Troubleshooting Docker:
-```bash
-# Xem logs của service cụ thể
-docker compose logs backend
-docker compose logs celery-worker
+**Docker Services:**
 
-# Restart một service
-docker compose restart backend
-
-# Rebuild và restart
-docker compose up -d --build
-```
+| Service | Container | Port | Mô tả |
+|---------|-----------|------|--------|
+| `redis` | tryhair_redis | 6379 | Message broker cho Celery |
+| `backend` | tryhair_backend | 8000 | FastAPI server |
+| `celery-worker` | tryhair_celery | — | AI model inference (GPU) |
+| `frontend` | tryhair_frontend | 3000 | Web UI (Nginx + React build) |
 
 ---
 
-### Cách 2: Chạy trên WSL (Khuyên dùng cho Development)
+### 🖥️ Cách 2: WSL Development (Phát triển)
 
-> **Yêu cầu:** Mở **4 terminal WSL** riêng biệt (hoặc dùng tmux/screen).
+> Mở **2 terminal** riêng biệt.
 
-#### Terminal 1: Khởi động Redis
+**Terminal 1 — Backend (Redis + FastAPI + Celery):**
 ```bash
-# Cài Redis nếu chưa có
-sudo apt update && sudo apt install redis-server -y
-
-# Chạy Redis server
-redis-server
-```
-
-#### Terminal 2: Khởi động Backend API (FastAPI)
-```bash
-# Di chuyển vào thư mục dự án
-cd /mnt/c/Users/Admin/Desktop/TryHairStyle
-
-# Kích hoạt môi trường ảo
+cd /mnt/c/Users/<User>/Desktop/TryHairStyle
 source venv_wsl/bin/activate
-
-# Chạy FastAPI server
-uvicorn backend.app.main:app --host 0.0.0.0 --port 8000 --reload
+bash start.sh
 ```
-API sẽ chạy tại: `http://localhost:8000`
-Swagger UI: `http://localhost:8000/docs`
+Script `start.sh` tự động khởi động: Redis → FastAPI (port 8000) → Celery Worker.
 
-#### Terminal 3: Khởi động Celery Worker (Xử lý AI Tasks)
+**Terminal 2 — Frontend:**
 ```bash
-# Di chuyển vào thư mục dự án
-cd /mnt/c/Users/Admin/Desktop/TryHairStyle
-
-# Kích hoạt môi trường ảo
-source venv_wsl/bin/activate
-
-# Chạy Celery worker (Thêm pool=solo để chạy ổn định trên Windows/WSL)
-celery -A backend.app.tasks worker --loglevel=info --pool=solo
-```
-
-#### Terminal 4: Khởi động Frontend (ReactJS)
-```bash
-# Di chuyển vào thư mục frontend
-cd /mnt/c/Users/Admin/Desktop/TryHairStyle/frontend
-
-# Cài dependencies (lần đầu)
-npm install
-
-# Chạy dev server
+cd /mnt/c/Users/<User>/Desktop/TryHairStyle/frontend
+npm install   # lần đầu
 npm run dev
 ```
-Frontend sẽ chạy tại: `http://localhost:5173`
+Frontend chạy tại: `http://localhost:5173`
 
 ---
 
-### Cách 3: Chạy trên Windows (Powershell) - Chỉ Frontend
+### ⚡ Cách 3: Windows PowerShell (Chỉ Frontend)
 
-> **Lưu ý:** Backend nên chạy trên WSL để tận dụng GPU với CUDA ổn định hơn.
+> Backend phải chạy trên WSL (Cách 2, Terminal 1).
 
-**Chạy Frontend trên Windows:**
 ```powershell
-cd C:\Users\Admin\Desktop\TryHairStyle\frontend
+cd C:\Users\<User>\Desktop\TryHairStyle\frontend
 npm install
 npm run dev
 ```
-Frontend sẽ chạy tại: `http://localhost:5173`
 
---------------------------------------------------
+---
 
-## 11. Chạy Kiểm Thử (Verification Scripts)
+## 4. Tải Models
 
-Để kiểm tra nhanh hệ thống (Backend Logic), bạn có thể dùng script CLI:
+### Tự động (Khuyên dùng)
 
-### 11.1 CLI Test (Chạy ngầm)
-Tự động chạy pipeline hair transfer với ảnh ngẫu nhiên từ FFHQ.
+```bash
+source venv_wsl/bin/activate
+python download_models.py
+```
+
+Script tự tải: ControlNet Depth, InstantID, IP-Adapter, SegFormer Face Parsing, CLIP, YOLOv8-Face, AdaFace, 3DDFA V2.
+
+### Thủ công
+
+| Model | Mục đích | Lệnh tải |
+|-------|----------|----------|
+| **SDXL Inpainting** | Base model | `hf download diffusers/stable-diffusion-xl-1.0-inpainting-0.1` |
+| **ControlNet Depth** | Giữ cấu trúc khuôn mặt | `hf download diffusers/controlnet-depth-sdxl-1.0` |
+| **IP-Adapter FaceID** | Giữ identity khuôn mặt | `hf download h94/IP-Adapter-FaceID` |
+| **IP-Adapter Plus** | Copy kiểu tóc | `hf download h94/IP-Adapter` |
+| **SegFormer** | Tách mask face/hair | `hf download jonathandinu/face-parsing` |
+| **3DDFA V2** | 3D face alignment | `git clone https://github.com/cleardusk/3DDFA_V2.git` |
+
+> **Lưu ý:** Cần đăng nhập HuggingFace CLI trước: `pip install huggingface_hub && huggingface-cli login`
+
+---
+
+## 5. Cấu trúc Thư mục
+
+```
+TryHairStyle/
+├── backend/
+│   ├── app/
+│   │   ├── main.py              # FastAPI endpoints
+│   │   ├── tasks.py             # Celery tasks (generate, detect, colorize)
+│   │   ├── config.py            # Cấu hình paths, thông số
+│   │   ├── schemas.py           # Pydantic data models
+│   │   ├── services/
+│   │   │   ├── face.py          # Face detection & alignment (InsightFace)
+│   │   │   ├── mask.py          # Face/Hair parsing (SegFormer)
+│   │   │   ├── diffusion.py     # Hair transfer pipeline (SDXL + ControlNet)
+│   │   │   ├── hair_color_service.py  # Hair colorization
+│   │   │   ├── embedder.py      # Hair texture embedding
+│   │   │   ├── face_detector.py # YOLOv8 face detector
+│   │   │   └── pose_estimator.py # 3D pose estimation
+│   │   └── utils/
+│   │       └── torch_patch.py   # Compatibility patches (PyTorch ↔ HuggingFace)
+│   ├── models/                  # AI model weights (không commit)
+│   ├── data/                    # Upload & output images
+│   ├── tests/
+│   │   ├── test_cli_ffhq.py     # CLI test với FFHQ
+│   │   └── test_ui_gradio.py    # Gradio UI test (debug nhanh)
+│   ├── Dockerfile
+│   ├── requirements.txt
+│   └── .dockerignore
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx              # Main app component
+│   │   ├── api/hairApi.js       # API client
+│   │   ├── components/
+│   │   │   ├── ImageUpload.jsx  # Upload & preview ảnh
+│   │   │   ├── DrawButton.jsx   # Nút VẼ TÓC
+│   │   │   ├── ResultPanel.jsx  # Hiển thị kết quả
+│   │   │   ├── FaceSelector.jsx # Popup chọn mặt (multi-face)
+│   │   │   ├── ColorPicker.jsx  # Chọn màu tóc
+│   │   │   ├── PromptInput.jsx  # Text prompt
+│   │   │   └── Header.jsx
+│   │   └── index.css            # Global styles
+│   ├── Dockerfile               # Multi-stage build (Node → Nginx)
+│   ├── nginx.conf               # Nginx config (SPA + API proxy)
+│   ├── vite.config.js
+│   └── package.json
+├── docker-compose.yml           # Orchestrate tất cả services
+├── start.sh                     # Script khởi động WSL (dev)
+├── download_models.py           # Tải models tự động
+├── .env.example                 # Template biến môi trường
+└── README.md
+```
+
+---
+
+## 6. API Endpoints
+
+| Method | Endpoint | Mô tả |
+|--------|----------|--------|
+| `POST` | `/generate` | Gửi 2 ảnh + prompt → tạo kiểu tóc (trả task_id) |
+| `POST` | `/detect-faces` | Phát hiện khuôn mặt trong ảnh (trả task_id) |
+| `GET` | `/status/{task_id}` | Kiểm tra trạng thái task |
+| `GET` | `/colors` | Danh sách preset màu tóc |
+| `GET` | `/random-pair` | 2 ảnh FFHQ ngẫu nhiên |
+| `GET` | `/docs` | Swagger UI |
+
+**Flow xử lý:**
+```
+POST /generate → task_id → GET /status/{id} (polling) → result_url
+```
+
+---
+
+## 7. Kiểm thử
+
+### CLI Test
 ```bash
 python backend/tests/test_cli_ffhq.py
 ```
-- Kết quả lưu tại: `backend/output/cli_test_result.png`
+Chạy pipeline với ảnh FFHQ ngẫu nhiên. Kết quả lưu tại `backend/output/`.
 
-### 11.2 UI Test (Giao diện trực quan - Gradio)
-Bật giao diện web nhỏ gọn để chọn ảnh và chạy thử (Dùng để debug nhanh nếu không muốn chạy React).
+### Gradio UI Test (Debug nhanh)
 ```bash
 python backend/tests/test_ui_gradio.py
 ```
-- Truy cập: `http://127.0.0.1:7861`
+Giao diện web debug tại `http://127.0.0.1:7862` — upload ảnh, chọn mặt, và chạy thử pipeline trực tiếp.
 
---------------------------------------------------
+### Kiểm tra PyTorch & CUDA
+```bash
+python -c "import torch; print(f'PyTorch: {torch.__version__}'); print(f'CUDA: {torch.cuda.is_available()}'); print(f'GPU: {torch.cuda.get_device_name(0)}')"
+```
+
+---
+
+## 8. Troubleshooting
+
+### Lỗi thường gặp
+
+| Lỗi | Nguyên nhân | Cách sửa |
+|-----|-------------|---------|
+| `_is_hf_initialized` | Xung đột PyTorch ↔ HuggingFace | Đã patch tự động trong `torch_patch.py` |
+| `module 'torch' has no attribute 'xpu'` | accelerate mới không tương thích | Đã patch tự động |
+| `NoneType ... image_projection_layers` | IP-Adapter load lỗi | Code tự bỏ qua, app vẫn chạy |
+| `HalfTensor vs FloatTensor` | Lệch FP16/FP32 | Pipeline đã ép sang FP16 |
+| `ImportError: MT5Tokenizer` | Xung đột transformers/diffusers | `pip install transformers==4.49.0` |
+
+### Docker
+
+```bash
+# Xem logs service cụ thể
+docker compose logs celery-worker -f
+
+# Restart service
+docker compose restart backend
+
+# Rebuild hoàn toàn
+docker compose down && docker compose up --build -d
+
+# Kiểm tra GPU trong container
+docker compose exec celery-worker nvidia-smi
+```
+
+### Dataset
+
+- **FFHQ** (khuôn mặt): https://drive.google.com/drive/folders/1tZUcXDBeOibC6jcMCtgRRz67pzrAHeHL
+- **K-Hairstyle** (kiểu tóc): https://psh01087.github.io/K-Hairstyle/
+
+---
+
+## 📄 License
+
+Dự án phục vụ mục đích học tập và nghiên cứu.
