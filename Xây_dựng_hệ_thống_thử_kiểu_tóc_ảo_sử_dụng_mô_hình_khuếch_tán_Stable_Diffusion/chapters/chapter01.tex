@@ -7,28 +7,41 @@
 
 Bên cạnh đó, việc thay đổi kiểu tóc thường tốn nhiều thời gian, chi phí và đôi khi gây ảnh hưởng đến chất lượng tóc, đặc biệt trong các trường hợp nhuộm, uốn hoặc duỗi. Nếu lựa chọn sai kiểu tóc, người dùng có thể phải chờ một thời gian dài để chăm sóc đợi tóc mọc lại và thậm chí là tốn thêm tiền để điều chỉnh lại kiểu tóc.
 
-Với sự phát triển của trí tuệ nhân tạo, thị giác máy tính và công nghệ thực tế tăng cường đã mở ra khả năng thử kiểu tóc ảo dựa trên đặc trưng của kiểu tóc mẫu sau đó vẽ lại kiểu tóc đó lên khuôn mặt của người dùng. Thông qua việc nhận diện khuôn mặt và xử lý hình ảnh, hệ thống có thể cho phép người dùng thử nhiều kiểu tóc khác nhau trên chính hình ảnh của mình trước khi đưa ra quyết định thay đổi kiểu tóc ngoài đời thực.
+Với sự phát triển bùng nổ của trí tuệ nhân tạo, thị giác máy tính và công nghệ tạo sinh học sâu (Deep Generative AI) đã mở ra khả năng thử kiểu tóc ảo dựa trên hình mẫu thực tế, sau đó tự động tái tạo lại cấu trúc tóc lên khuôn mặt của người dùng dựa theo hình dáng hộp sọ. Thông qua hệ thống máy học, người dùng có thể trải nghiệm thay đổi hàng loạt bức ảnh ngoại hình chỉ trong vài giây trước khi đưa ra quyết định thay đổi kiểu tóc ngoài đời thực.
 
-Do đó, việc nghiên cứu và phát triển một hệ thống thử kiểu tóc ảo là cần thiết. Hệ thống này không chỉ giúp người dùng lựa chọn kiểu tóc phù hợp một cách trực quan và nhanh chóng, mà còn hỗ trợ các salon tóc trong việc tư vấn khách hàng, nâng cao trải nghiệm dịch vụ và giảm thiểu rủi ro trong quá trình thay đổi kiểu tóc.
-
-Từ những lý do trên, đề tài xây dựng hệ thống thử kiểu tóc ảo được đề xuất nhằm ứng dụng các công nghệ xử lý ảnh và trí tuệ nhân tạo để hỗ trợ người dùng trong việc lựa chọn kiểu tóc phù hợp với khuôn mặt và phong cách cá nhân.
+Do đó, việc nghiên cứu và phát triển một hệ thống thử kiểu tóc ảo đa cấu hình là giải pháp thiết yếu. Hệ thống không chỉ tạo bước đệm thông minh hỗ trợ các khách hàng cá nhân tự tin thể hiện phong cách; mà đồng thời đóng vai trò tư vấn chiến lược tại các salon tóc chuyên nghiệp giúp trực quan hóa nhu cầu, giảm thiểu khiếu nại và chuyển đổi năng lực cạnh tranh trong kỷ nguyên số.
 
 \section{Lịch sử giải quyết vấn đề}
+Bài toán chuyển giao kiểu tóc (Hairstyle Transfer) ban đầu được giải quyết qua các phương pháp ghép ảnh thủ công hoặc \textit{Image Morphing} đơn thuần bằng kỹ thuật xử lý ảnh đồ họa (OpenCV/Photoshop). Cách làm này tuy đơn giản nhưng không tái hiện được hiệu ứng ánh sáng, độ bóng tóc tự nhiên, và thường bị lỗi nặng tại các đường ranh giới hoặc khác biệt hệ số tương phản mặt/tóc.
+
+Giai đoạn tiếp theo đánh dấu sự thống trị của Mạng Sinh Đối Nghịch (GAN - Generative Adversarial Networks) với các thuật toán như \textit{HairFastGAN} hay \textit{StarGAN}. Dù giải quyết xuất sắc về thời gian thực thi (real-time rendering) và độ tương thích màu da, học máy GAN bắt đầu bộc lộ khuyết điểm không thể sửa chữa: Mô hình thiếu hiểu biết triệt để về hình dòng không gian 3D, dễ dàng bóp méo hình dạng mắt/mũi người dùng gốc khi chịu áp lực chuyển đổi kiểu dáng tóc chênh lệch cấu trúc lớn.
+
+Mô hình khuếch tán \textit{Diffusion Models} – đặc biệt là Stable Diffusion (SD) nổi lên như tiêu chuẩn mới giải quyết mọi nhược điểm nói trên. Khả năng dự đoán nhiễu nghịch đảo dựa trên sự dẫn hướng của Prompt-Văn Bản và Adapter hình ảnh phụ trợ (như IP-Adapter) mở ra cánh cửa tạo sinh cấu trúc bề mặt tóc thực tế, giữ vững chi tiết phông nền mà không thỏa hiệp phá hủy cấu trúc nhân trắc học.
 
 \section{Mục tiêu đề tài}
-Nêu rõ mục tiêu chính mà báo cáo niên luận hướng tới. (Ví dụ: Xây dựng một ứng dụng web/app có khả năng thay đổi kiểu tóc của người dùng...).
+Nghiên cứu kiến trúc tổng hợp AI nhằm xây dựng và triển khai một ứng dụng nền tảng (Web Application) thử nghiệm kiểu tóc thời gian thực với các mục tiêu cụ thể:
+\begin{enumerate}
+    \item Phát triển thuật toán tích hợp mô hình Stable Diffusion Inpainting có khả năng sao chép phong cách (tóc thẳng, xoăn, gợn sóng) từ ảnh tham chiếu sang ảnh một cá nhân mục tiêu.
+    \item Đảm bảo \textbf{duy trì 100\% cấu trúc khuôn mặt} (Identity), phương hướng nhìn (Gaze), mức độ phơi sáng tự nhiên và hình nền gốc (Background).
+    \item Tối ưu hóa hiệu năng bằng các kỹ thuật tinh chỉnh phân mảnh (Fine-Tuning LoRA/ControlNet) để đáp ứng phản hồi trên trải nghiệm web giới hạn trong vài giây thao tác tải.
+\end{enumerate}
 
 \section{Phạm vi đề tài}
-Đề tài giới hạn trong phạm vi nào? Khách hàng mục tiêu là ai? (Ví dụ: Chỉ xử lý ảnh chụp khuôn mặt góc lộ rõ 80\%, sử dụng công nghệ XYZ...).
+Quá trình xây dựng và kiểm định chất lượng mô hình dự định được đặt khuôn khổ trong các giới hạn chức năng sau:
+\begin{itemize}
+    \item Hệ thống ưu tiên xử lý ảnh chụp rõ nét khuôn mặt người góc chính diện hoặc nghiêng ngang cấu profile ($<90^{\circ}$). Không hỗ trợ hình dạng cơ thể khuất sau lưng.
+    \item Giới hạn độ phân giải thao tác trên U-Net và VAE nằm ở khung nội suy kích thước tối ưu hóa cho SDXL Inpainting.
+    \item Xử lý đơn luồng tập trung thay thế khu vực được khoanh vùng (Semantic Segmentation Mask) liên quan đến bộ phận tóc và mũ, bảo toàn hoàn toàn không gian các vùng trang phục.
+\end{itemize}
 
 \section{Cấu trúc báo cáo}
-Báo cáo gồm các chương sau:
+Luận văn được biên soạn và phân bổ thành 5 chương cấu trúc tuần tự bao gồm:
 \begin{itemize}
-    \item \textbf{Chương 1: Tổng quan} - Giới thiệu bài toán và mục tiêu.
-    \item \textbf{Chương 2: Cơ sở lý thuyết} - Các kiến thức nền tảng về Stable Diffusion.
-    \item \textbf{Chương 3: Phân tích và thiết kế} - Kiến trúc hệ thống.
-    \item \textbf{Chương 4: Triển khai và kết quả} - Xây dựng ứng dụng và đánh giá.
-    \item \textbf{Chương 5: Tổng kết} - Đánh giá ưu nhược điểm và hướng phát triển.
+    \item \textbf{Chương 1: Tổng quan} - Nêu rõ bối cảnh, lý do hình thành bài toán và định hướng giải quyết.
+    \item \textbf{Chương 2: Cơ sở lý thuyết} - Phân tích khoa học nguyên lý Diffusion Models, U-Net, nền tảng Transformer và hệ sinh thái kỹ thuật.
+    \item \textbf{Chương 3: Phân tích và Thiết kế} - Bóc tách luồng sơ đồ kiến trúc Dual-Conditioning, cơ chế xử lý Inpainting mạng tùy biến 9-kênh và điều hướng tiền xử lý mặt nạ Masking tự động.
+    \item \textbf{Chương 4: Triển khai Ứng dụng} - Cụ thể hóa hạ tầng thiết lập mô hình học sâu, phương diện hàm mất mát (Loss) và các giải pháp vận hành ứng dụng Web hoàn chỉnh. 
+    \item \textbf{Chương 5: Tổng kết} - Trình bày thước đo thực nghiệm, các hạn chế còn đọng lại và mở rộng ý tưởng tiềm năng trong chu kỳ nghiên cứu tiếp theo.
 \end{itemize}
 
 \end{document}

@@ -2,19 +2,42 @@
 
 \begin{document}
 
-\section{Giới thiệu về Generative AI và Diffusion Models}
-Phần này giải thích cơ chế hoạt động của thuật toán khuếch tán (Diffusion). Quá trình Forward Diffusion (thêm nhiễu) và Reverse Diffusion (khử nhiễu).
+\section{Giới thiệu cơ bản về Generative AI và Diffusion Models}
+Generative AI (Trí tuệ nhân tạo tạo sinh) đại diện cho nhánh công nghệ có năng lực học hỏi trực tiếp kết cấu của tập dữ liệu huấn luyện để tự tổng hợp các kết tủa sinh học, đồ họa hoặc văn bản hoàn toàn mới. Nổi bật nhất trong lĩnh vực tạo sinh hình ảnh hiện tại là \textbf{Hệ phương trình Khuếch tán (Diffusion Models)}. Nguyên tắc hoạt động của thuật toán Diffusion trải qua chu trình vật lý phân rã gồm hai giai đoạn cốt lõi:
+\begin{enumerate}
+    \item \textbf{Forward Diffusion (Khuếch tán thuận):} 
+    Quá trình đưa nhiễu Gaussian liên tục trộn vào hình ảnh gốc tuần tự qua $T$ bước thời gian (steps), mỗi bước làm biến dạng biểu dữ liệu cho đến khi hình ảnh phá hủy trở thành mảng nhiễu hạt nguyên thủy (Pure Noise).
+    \item \textbf{Reverse Diffusion (Khử nhiễu nghịch):}
+    Tại nửa chu trình thứ hai, một mạng lưới học sâu (điển hình là U-Net) được rèn luyện để đảo ngược sự phá vỡ cấu trúc trên. Mạng này bóc tách, phán đoán quy luật của nhiễu phân rã tại từng thời điểm $t$ nhằm từng bước loại bỏ chúng ra khỏi khối Pure Noise và ép buộc hệ thống tạo sinh hình ảnh tuân thủ các điều kiện chỉ dẫn mong muốn.
+\end{enumerate}
 
-\section{Kiến trúc Stable Diffusion}
-\subsection{VAE (Variational Autoencoder)}
-Latent Space là gì? Tại sao SD lại nén ảnh trước khi khuếch tán?
-\subsection{U-Net}
-Mạng U-Net đóng vai trò ra sao trong việc dự đoán nhiễu (Noise Prediction)?
+\section{Kiến trúc học sâu Stable Diffusion}
+Stable Diffusion (SD) thuộc phân nhóm \textit{Latent Diffusion Models} (Mô hình khuếch tán tiềm ẩn) sinh ra nhằm giải quyết nhược điểm cần dung lượng tài nguyên khổng lồ. 
 
-\section{Các kỹ thuật điều khiển (Control Techniques)}
-Trình bày về ControlNet, LoRA, Inpainting... Làm sao để ép Stable Diffusion vẽ một kiểu tóc cụ thể lên trên đầu một người dùng xác định?
+\subsection{Cơ chế nén tiềm ẩn (Variational Autoencoder - VAE)}
+Học mô phỏng thẳng trên không gian Pixel RGB đối với ảnh lớn tốn hao lượng lớn bộ nhớ card đồ họa (VRAM). VAE được hệ thống sử dụng như "Bộ giải phẫu nén", gộp khối hình ảnh thành không gian đặc trưng trừu tượng liên tục \textbf{Latent Space}. Các mảnh khuếch tán chỉ chuyển động qua lại trong dạng tín hiệu nén đa chiều này, cho đến bước xuất file cuối cùng mới qua lõi VAE Decode khôi phục thành tệp hình chân thực đa phương tiện.
 
-\section{Công nghệ và Công cụ sử dụng}
-Ví dụ: Python, PyTorch, Diffusers library, ReactJS (cho Frontend), FastAPI (cho API)...
+\subsection{Mạng U-Net dự đoán nhiễu hình}
+Với cấu trúc chóp nón thắt nút hai nhánh (Encoder thu gọn - Decoder giải mã), mạng U-Net đóng vai trò trung tâm não bộ tại các bước loại trừ Reverse Diffusion. Mô hình sẽ nhận dữ liệu ảnh đang nhiễu hỏng $x_t$, khối văn bản dẫn dắt Token Embedding và ma trận thời gian Timestep $t$ để dự đoán chính xác nhiễu tạp âm nào cần tách lọc. Sự lặp lại hàm quy suy này định hình chính xác từ khối pixels nhiễu ra đối tượng trực quan rõ nét.
+
+\section{Kiến trúc Kỹ thuật điều khiển bổ trợ (Control Techniques)}
+Stable Diffusion độc lập không hiểu được cấu trúc hình học hoặc ràng buộc đặc điểm người cụ thể trên mặt nạ. Để cưỡng chế độ chính xác sinh đồ họa thực hóa, hệ thống vay mượn chuỗi adapter chuyên nghiệp:
+\begin{itemize}
+    \item \textbf{ControlNet Depth:} 
+    Một bản sao mạng siêu nhẹ tích hợp chạy song song với U-Net gốc. Thay vì chỉ hiểu văn bản, bộ này thu nhận \textit{Depth Map} (Bản đồ chiều sâu xa-gần đen trắng) từ ảnh chụp người dùng để giam hãm khả năng sinh ảnh sai cấu trúc sọ, ngăn độ biến dạng vùng mắt, cung mày và dáng cổ tự nhiên.
+    \item \textbf{IP-Adapter Plus:} 
+    Thay thế kỹ năng "bốc" sinh ngẫu nhiên từ chuỗi văn bản (Prompt), IP-Adapter đóng chức năng tiếp quản dữ liệu đồ họa (Image Prompt Adapter). Thông qua mô hình thị giác tỷ lệ lớn CLIP, bộ chuyển đổi tách xuất mẫu texture, tần số cuộn uốn cong của hình ảnh mái tóc ảo để ép khuôn diện SDXL tái tạo lại mái tóc mới theo bản màu chuẩn mực.
+    \item \textbf{InstantID:}
+    Phương thức giữ gìn cấu trúc điểm nhận dạng căn cước (Identity preservation) hàng đầu. Liên kết mạnh qua vector dữ liệu xuất ra từ thuật toán InsightFace, InstantID đan một mảnh định tuyến danh tính lên Attention Blocks của U-Net khiến nét mặt xuất hiện trên tấm hình mới được khóa cứng khuôn biểu cảm và khung xương nhận dạng 100\% so với người tham gia trải nghiệm ban đầu.
+    \item \textbf{Low-Rank Adaptation (LoRA):} Kỹ thuật hiệu chỉnh ma trận hàng xấp xỉ bậc thấp (r=16) hỗ trợ huấn luyện mạng thần kinh tỷ tham số khổng lồ (2,6B params của SDXL) thông qua can thiệp chỉ trên $<0,5\%$ lượng kết nối trọng số, biến LoRA thành chiếc chìa khóa tối ưu khả năng sinh thiết dải tóc mịn tại đường chân tóc.
+\end{itemize}
+
+\section{Công nghệ triển khai ứng dụng (Tech Stack)}
+Hệ thống trải dài môi trường thực thi qua cơ sở vững chắc từ Backend đến Giao diện.
+\begin{itemize}
+    \item \textbf{Python (PyTorch \& Diffusers Library):} Chuẩn mực môi trường điều phối tính toán điểm Float \textit{Half Tension (FP16)} trên card NVIDIA CUDA, cấp phát bộ nhớ cấp tốc thao tác VRAM máy học bằng công cụ của hãng HuggingFace.
+    \item \textbf{FastAPI \& Celery Worker:} Do độ trễ (Latency) trả về của các API Diffusion tốn tới 6 giây cho một phép gọi. Cấu trúc RESTful của FastAPI được luân chuyển gánh nặng qua quy trình Background Task (Celery phân tán) tích hợp cùng hệ dữ liệu bộ đệm trung gian Redis để cung cấp máy chủ trạng thái bền bỉ (resilience and asynchronous workflow).
+    \item \textbf{ReactJS (Vite/TailwindCSS):} Giao diện hệ thống thân thiện Web xây dựng tại chu trình sinh DOM ảo ReactJS. Hỗ trợ truyền tải và giải mã tệp tin ảnh linh hoạt trên giao thức mã Base64 sang Canvas cho khung cửa máy khách WebClient hiện đại.
+\end{itemize}
 
 \end{document}
