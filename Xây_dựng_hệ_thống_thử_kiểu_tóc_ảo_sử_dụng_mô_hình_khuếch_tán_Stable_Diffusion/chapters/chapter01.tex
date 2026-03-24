@@ -1,0 +1,50 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Đặt vấn đề}
+Trong những năm gần đây, nhu cầu làm đẹp và cá nhân hóa ngoại hình ngày càng gia tăng. Trong đó, kiểu tóc là yếu tố có ảnh hưởng đáng kể đến diện mạo, phong cách và sự tự tin của mỗi người. Tuy nhiên, việc lựa chọn kiểu tóc phù hợp vẫn là một vấn đề khó khăn, bởi người dùng thường chỉ có thể tham khảo qua hình ảnh mẫu hoặc tư vấn trực tiếp từ thợ làm tóc mà chưa có công cụ hỗ trợ hình dung kết quả một cách trực quan.
+
+Trên thực tế, việc thay đổi kiểu tóc, đặc biệt là cắt, uốn hoặc nhuộm, thường đi kèm với chi phí và rủi ro nhất định. Nếu lựa chọn chưa phù hợp, người dùng có thể mất thêm thời gian và chi phí để điều chỉnh lại kiểu tóc hoặc chờ tóc phục hồi. Vì vậy, một công cụ cho phép thử nghiệm kiểu tóc trước khi đưa ra quyết định thực tế có ý nghĩa thiết thực đối với cả khách hàng cá nhân lẫn các cơ sở làm đẹp.
+
+Sự phát triển của trí tuệ nhân tạo, đặc biệt là thị giác máy tính và các mô hình tạo sinh, đã mở ra khả năng xây dựng các hệ thống thử kiểu tóc ảo với độ chân thực ngày càng cao. Thay vì cắt ghép hình ảnh thủ công, các mô hình học sâu hiện đại có thể khai thác đặc trưng của khuôn mặt, cấu trúc hình học và đặc điểm kiểu tóc để tạo ra ảnh kết quả có tính trực quan, hỗ trợ người dùng đánh giá trước khi thực hiện thay đổi ngoài thực tế.
+
+Xuất phát từ bối cảnh đó, đề tài ``Xây dựng hệ thống thử kiểu tóc ảo sử dụng mô hình khuếch tán Stable Diffusion'' được thực hiện nhằm nghiên cứu và phát triển một hệ thống có khả năng tạo ảnh thử nghiệm kiểu tóc trên nền tảng web, góp phần hỗ trợ quá trình tư vấn và ra quyết định trong lĩnh vực làm đẹp.
+
+\section{Lịch sử giải quyết vấn đề}
+Trong giai đoạn đầu, bài toán thay đổi kiểu tóc trên ảnh chủ yếu được tiếp cận bằng các phương pháp xử lý ảnh truyền thống như cắt ghép thủ công, nội suy hình ảnh hoặc chỉnh sửa bằng phần mềm đồ họa. Các phương pháp này có ưu điểm là dễ triển khai, tuy nhiên thường tạo ra kết quả thiếu tự nhiên, khó bảo toàn ánh sáng, biên tóc và sự hài hòa giữa tóc với khuôn mặt.
+
+Sau đó, các mô hình sinh đối kháng (GAN) như \textit{StarGAN} hay một số biến thể chuyên biệt cho bài toán tóc đã được nghiên cứu và ứng dụng. Các hướng tiếp cận này cho phép sinh ảnh nhanh hơn và tạo ra kết quả mượt hơn so với phương pháp thủ công. Tuy nhiên, trong nhiều trường hợp, các mô hình GAN vẫn gặp khó khăn khi phải bảo toàn danh tính khuôn mặt hoặc xử lý những thay đổi lớn về hình dạng, độ dài và hướng tóc.
+
+Gần đây, các mô hình khuếch tán (Diffusion Models), đặc biệt là Stable Diffusion, trở thành một hướng tiếp cận nổi bật trong lĩnh vực tạo sinh ảnh. Nhờ khả năng sinh ảnh có chất lượng cao, hỗ trợ nhiều cơ chế điều kiện hóa và dễ kết hợp với các mô-đun chuyên biệt như ControlNet, IP-Adapter hay InstantID, mô hình khuếch tán cho thấy tiềm năng lớn đối với bài toán thử kiểu tóc ảo, nơi yêu cầu đồng thời tính chân thực, khả năng chuyển giao phong cách và bảo toàn đặc trưng khuôn mặt.
+
+\section{Mục tiêu đề tài}
+Đề tài hướng đến việc nghiên cứu, thiết kế và xây dựng một hệ thống thử kiểu tóc ảo trên nền tảng web. Các mục tiêu cụ thể bao gồm:
+\begin{enumerate}
+    \item Xây dựng quy trình xử lý ảnh có khả năng tiếp nhận ảnh người dùng và ảnh kiểu tóc tham chiếu để tạo ra ảnh kết quả thử tóc một cách trực quan.
+    \item Ứng dụng mô hình Stable Diffusion XL Inpainting kết hợp với các mô-đun hỗ trợ nhằm chuyển giao đặc trưng kiểu tóc từ ảnh tham chiếu sang ảnh đích.
+    \item Bảo toàn tối đa các đặc trưng quan trọng của ảnh gốc như khuôn mặt, hướng nhìn, bố cục tổng thể và ánh sáng nền.
+    \item Triển khai hệ thống dưới dạng ứng dụng web, hỗ trợ người dùng tải ảnh, gửi yêu cầu xử lý và nhận kết quả trong thời gian phù hợp.
+\end{enumerate}
+
+\section{Phạm vi đề tài}
+Phạm vi thực hiện của đề tài được giới hạn trong các nội dung sau:
+\begin{itemize}
+    \item Hệ thống tập trung xử lý ảnh chân dung có một khuôn mặt chính, ưu tiên các ảnh rõ nét ở góc chính diện hoặc nghiêng vừa phải.
+    \item Phạm vi chỉnh sửa chủ yếu giới hạn ở vùng tóc; các thành phần khác như khuôn mặt, trang phục và hậu cảnh được giữ nguyên ở mức tối đa.
+    \item Đề tài tập trung vào việc xây dựng và tích hợp hệ thống, chưa đi sâu vào tối ưu hóa cho xử lý thời gian thực trên video hoặc môi trường thiết bị di động cấu hình thấp.
+    \item Việc đánh giá kết quả chủ yếu dựa trên quan sát trực quan và khả năng vận hành của hệ thống trong môi trường thử nghiệm.
+\end{itemize}
+
+\section{Cấu trúc báo cáo}
+Báo cáo được tổ chức thành sáu chương như sau:
+\begin{itemize}
+    \item \textbf{Chương 1: Giới thiệu vấn đề} trình bày bối cảnh, lý do chọn đề tài, mục tiêu, phạm vi và bố cục báo cáo.
+    \item \textbf{Chương 2: Cơ sở lý thuyết} giới thiệu các kiến thức nền tảng liên quan đến mô hình khuếch tán, Stable Diffusion và các kỹ thuật điều khiển bổ trợ.
+    \item \textbf{Chương 3: Phân tích và thiết kế} mô tả kiến trúc tổng thể, cơ chế điều kiện kép, thiết kế các service module (FaceInfoService, SegmentationService, HairDiffusionService, HairColorService), mặt nạ động, luồng bất đồng bộ và API RESTful.
+    \item \textbf{Chương 4: Triển khai ứng dụng} trình bày môi trường cài đặt, quy trình huấn luyện hai giai đoạn (HairTextureEncoder + LoRA UNet), cấu trúc backend và Celery tasks, giao diện React và triển khai Docker.
+    \item \textbf{Chương 5: Chạy thử nghiệm và đánh giá} mô tả quy trình vận hành, các kịch bản kiểm thử, minh họa kết quả và bảng tổng hợp đánh giá.
+    \item \textbf{Chương 6: Tổng kết} nêu các kết quả đạt được, ưu nhược điểm hệ thống và hướng phát triển trong thời gian tới.
+\end{itemize}
+
+\end{document}

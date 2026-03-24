@@ -1,0 +1,183 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Môi trường và cài đặt hệ thống}
+Hệ thống được phát triển và vận hành trên môi trường phần cứng và phần mềm phù hợp với đặc thù tính toán của các mô hình khuếch tán:
+
+\begin{table}[H]
+    \centering
+    \caption{Cấu hình phần cứng và phần mềm triển khai}
+    \label{tab:system-config}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{3cm}|X|}
+        \hline
+        \textbf{Thành phần} & \textbf{Chi tiết} \\
+        \hline
+        GPU & NVIDIA RTX 3060 -- 12GB VRAM \\
+        \hline
+        RAM & 16GB \\
+        \hline
+        Hệ điều hành & Linux Ubuntu qua WSL2 \\
+        \hline
+        Python & 3.10, PyTorch 2.x, CUDA 12.1 \\
+        \hline
+        AI Frameworks & Diffusers, Transformers, InsightFace, Ultralytics \\
+        \hline
+        Backend & FastAPI, Celery, Redis \\
+        \hline
+        Frontend & React (Vite), TailwindCSS \\
+        \hline
+        Containerization & Docker Compose + NVIDIA Container Toolkit \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+Cấu hình đường dẫn model và thông số ứng dụng được quản lý tập trung trong module \texttt{config.py}, bao gồm:
+\begin{itemize}
+    \item \textbf{ModelPaths:} Đường dẫn đến các model weights (SDXL Inpainting, ControlNet Depth, IP-Adapter, InsightFace, AdaFace, YOLOv8-Face, SegFormer, 3DDFA V2, HairTextureEncoder).
+    \item \textbf{Settings:} Host, port, Redis URL và device (cuda/cpu).
+\end{itemize}
+
+\section{Xây dựng Model AI (Giai đoạn huấn luyện)}
+Ngoài việc sử dụng mô hình SDXL Inpainting có sẵn, hệ thống xây dựng quy trình huấn luyện hai giai đoạn nhằm cải thiện chất lượng sinh ảnh cho bài toán chuyên biệt.
+
+\subsection{Giai đoạn 1: Huấn luyện bộ mã hóa kết cấu tóc (HairTextureEncoder)}
+Bộ mã hóa sử dụng backbone ResNet\nobreakdash-50 để trích xuất vector đặc trưng tóc 2048 chiều. Quá trình huấn luyện sử dụng ảnh crop vùng tóc (xác định bằng SegFormer), resize về $128\times 128$ và chuẩn hóa theo ImageNet. Vector đặc trưng này phục vụ cho nhánh style conditioning trong quá trình suy luận.
+
+\subsection{Giai đoạn 2: Tinh chỉnh UNet Inpainting bằng LoRA}
+Mô hình UNet 9 kênh đầu vào (3 kênh noisy latents + 3 kênh masked latents + 1 kênh mask + 2 kênh padding) được tinh chỉnh bằng LoRA trên nền SDXL. Các thành phần chính:
+\begin{itemize}
+    \item \textbf{HairInpaintingUNet:} UNet wrapper cho 9 kênh đầu vào, tích hợp với VAE encoder.
+    \item \textbf{CrossAttentionInjector:} Module inject style embedding (2048-d) và identity embedding (512-d) vào các tầng cross-attention của UNet. Các embedding được project thông qua linear layer riêng biệt.
+    \item \textbf{Hàm mất mát đa thành phần:}
+    \begin{itemize}
+        \item Mask-aware loss: Tăng trọng số cho pixel vùng tóc và biên tóc.
+        \item Latent loss: So sánh đặc trưng trong không gian tiềm ẩn.
+        \item Cơ chế weighting theo timestep: Hỗ trợ hội tụ ổn định.
+    \end{itemize}
+    \item \textbf{Classifier-Free Guidance:} Được áp dụng cả trong huấn luyện (dropout conditioning) và suy luận.
+\end{itemize}
+Quá trình huấn luyện sử dụng độ phân giải $512\times 512$, phù hợp với tài nguyên GPU 12GB.
+
+\section{Xây dựng Backend API}
+Backend được xây dựng bằng FastAPI với cấu trúc module rõ ràng.
+
+\subsection{Cấu trúc source code}
+\begin{Verbatim}[frame=single]
+backend/app/
+├── main.py          # FastAPI endpoints + CORS + Static Files
+├── tasks.py         # 3 Celery tasks (hair_transfer, colorize, detect_faces)
+├── config.py        # Model paths + App settings
+├── schemas.py       # Pydantic request/response schemas
+├── services/
+│   ├── diffusion.py       # Dual pipeline (Standard + Custom)
+│   ├── face.py            # YOLO + InsightFace + AdaFace
+│   ├── mask.py            # SegFormer + Dynamic Masking
+│   ├── hair_color_service.py  # HSV Color Transfer
+│   ├── embedder.py        # Yaw-based embedding switching
+│   ├── face_detector.py   # YOLOv8-Face + NMS
+│   ├── pose_estimator.py  # InsightFace landmarks + 3DDFA pose
+│   └── reconstructor_3d.py   # 3DDFA V2 dense mesh
+└── utils/
+    └── torch_patch.py     # PyTorch compatibility patches
+\end{Verbatim}
+
+\subsection{Celery Tasks và Lazy Loading}
+Hệ thống định nghĩa ba Celery task chính:
+\begin{enumerate}
+    \item \textbf{process\_hair\_transfer:} Pipeline đầy đủ gồm load ảnh, phân tích khuôn mặt (auto-rotate nếu không phát hiện mặt), phân đoạn tóc, mở rộng mask động, ước lượng depth, suy luận Diffusion, đổi màu tóc (nếu yêu cầu) và lưu kết quả.
+    \item \textbf{process\_hair\_colorize:} Chỉ cần hair mask + HSV color transfer, nhanh hơn đáng kể so với pipeline đầy đủ.
+    \item \textbf{process\_detect\_faces:} Quét khuôn mặt, mở rộng bounding box 1.8$\times$ để lấy trọn tóc và cổ, cắt và lưu ảnh crop riêng.
+\end{enumerate}
+
+Tất cả model AI được lazy-load trong worker process qua hàm \texttt{get\_services()} để đảm bảo tương thích CUDA/Celery. Sau mỗi task, bộ nhớ GPU được giải phóng bằng \texttt{torch.cuda.empty\_cache()}.
+
+\subsection{Pydantic Schemas}
+Dữ liệu đầu vào và đầu ra được kiểm tra bằng Pydantic:
+\begin{itemize}
+    \item \textbf{HairTransferRequest/Response:} Ảnh đầu vào, prompt, màu tóc tùy chọn (preset hoặc hex), cường độ màu (0.0--1.0).
+    \item \textbf{TaskStatusResponse:} Trạng thái PENDING/PROCESSING/SUCCESS/FAILURE, URL kết quả, danh sách faces (cho detect), thông báo lỗi.
+    \item \textbf{DetectFacesResponse:} Danh sách khuôn mặt (face\_id, bbox, confidence, cropped\_image\_url).
+\end{itemize}
+
+\section{Xây dựng phân hệ đổi màu tóc (Hair Color Service)}
+HairColorService xử lý trực tiếp trên không gian điểm ảnh bằng phương pháp chuyển đổi HSV. Bảng~\ref{tab:preset-colors} liệt kê một số preset màu được cung cấp sẵn.
+
+\begin{table}[H]
+    \centering
+    \caption{Một số preset màu tóc trong hệ thống}
+    \label{tab:preset-colors}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{2.5cm}|>{\centering\arraybackslash}p{2cm}|X|}
+        \hline
+        \textbf{Tên} & \textbf{Mã hex} & \textbf{Ghi chú} \\
+        \hline
+        Đen (black) & \texttt{\#1a1a1a} & Hue $= 0$, Saturation rất thấp \\
+        \hline
+        Vàng (blonde) & \texttt{\#d4a54a} & Blonde phổ biến \\
+        \hline
+        Đỏ (red) & \texttt{\#8b2500} & Saturation cao \\
+        \hline
+        Hồng (pink) & \texttt{\#d4608a} & Giá trị Hue $\approx 165$ \\
+        \hline
+        Xanh dương (blue) & \texttt{\#2a52be} & Màu thời trang \\
+        \hline
+        Bạc (silver) & \texttt{\#c0c0c0} & Saturation gần 0, Value cao \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+\section{Xây dựng giao diện người dùng (Frontend)}
+Giao diện được phát triển bằng React (Vite) với 7 component chính:
+
+\begin{table}[H]
+    \centering
+    \caption{Các component React của hệ thống}
+    \label{tab:frontend-components}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{3cm}|X|}
+        \hline
+        \textbf{Component} & \textbf{Chức năng} \\
+        \hline
+        Header & Tiêu đề ứng dụng \\
+        \hline
+        ImageUpload & Tải ảnh chân dung và ảnh tóc tham chiếu (hỗ trợ drag-and-drop) \\
+        \hline
+        DrawButton & Nút khởi chạy pipeline, hiển thị trạng thái loading \\
+        \hline
+        ResultPanel & Hiển thị ảnh kết quả, trạng thái xử lý và thông báo lỗi \\
+        \hline
+        PromptInput & Nhập prompt mô tả kiểu tóc mong muốn \\
+        \hline
+        ColorPicker & Chọn màu tóc từ 15 preset + thanh điều chỉnh cường độ \\
+        \hline
+        FaceSelector & Modal popup chọn khuôn mặt khi ảnh có nhiều người \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+Giao diện sử dụng module \texttt{hairApi.js} để giao tiếp với backend thông qua 5 hàm API:
+\begin{itemize}
+    \item \texttt{generateHair()}: Gửi 2 ảnh + prompt + màu tóc qua \texttt{POST /generate}.
+    \item \texttt{detectFaces()}: Gửi ảnh để quét khuôn mặt qua \texttt{POST /detect-faces}.
+    \item \texttt{pollTask()}: Poll trạng thái task mỗi 2 giây cho đến khi hoàn thành hoặc thất bại.
+    \item \texttt{getColors()}: Lấy danh sách preset màu.
+    \item \texttt{getRandomPair()}: Lấy cặp ảnh FFHQ ngẫu nhiên để test.
+\end{itemize}
+
+Luồng xử lý trên frontend khi người dùng nhấn "Vẽ":
+\begin{enumerate}
+    \item Gọi \texttt{/detect-faces} trên ảnh chân dung. Nếu phát hiện nhiều khuôn mặt, hiện FaceSelector để chọn.
+    \item Gọi \texttt{/detect-faces} trên ảnh tóc tham chiếu. Tương tự, chọn khuôn mặt nếu cần.
+    \item Gọi \texttt{/generate} với ảnh đã crop + prompt + màu tóc.
+    \item Poll trạng thái, hiển thị kết quả khi hoàn thành.
+\end{enumerate}
+
+\section{Triển khai bằng Docker}
+Hệ thống được container hóa qua Docker Compose với 4 service:
+\begin{enumerate}
+    \item \textbf{Redis} (\texttt{redis:7-alpine}): Message broker với healthcheck.
+    \item \textbf{Backend} (\texttt{tryhair\_backend}): FastAPI server, mount volume \texttt{models/} và \texttt{data/}, GPU passthrough.
+    \item \textbf{Celery Worker} (\texttt{tryhair\_celery}): Dùng chung Dockerfile với backend, chạy lệnh Celery worker với \texttt{--pool=solo --concurrency=1} cho GPU.
+    \item \textbf{Frontend} (\texttt{tryhair\_frontend}): Build React thành static files, serve qua Nginx trên port 3000.
+\end{enumerate}
+
+\end{document}

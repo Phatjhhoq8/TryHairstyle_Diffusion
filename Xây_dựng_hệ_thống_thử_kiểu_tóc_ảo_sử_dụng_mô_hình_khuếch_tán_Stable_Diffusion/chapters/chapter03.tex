@@ -1,0 +1,107 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Kiến trúc tổng thể hệ thống}
+Hệ thống TryHairStyle được tổ chức theo kiến trúc client--server với bốn thành phần chính:
+\begin{enumerate}
+    \item \textbf{Frontend (React/Vite):} Giao diện web cho phép người dùng tải ảnh, chọn kiểu tóc tham chiếu, chọn màu tóc và xem kết quả.
+    \item \textbf{Backend API (FastAPI):} Tiếp nhận yêu cầu HTTP, kiểm tra dữ liệu đầu vào, tạo tác vụ xử lý và phục vụ file tĩnh.
+    \item \textbf{Worker AI (Celery):} Nhận tác vụ từ hàng đợi Redis, thực hiện toàn bộ pipeline suy luận trên GPU.
+    \item \textbf{Message Broker (Redis):} Trung gian truyền tác vụ giữa API và worker, đồng thời lưu trạng thái tác vụ.
+\end{enumerate}
+Kiến trúc này tách biệt luồng tiếp nhận yêu cầu khỏi luồng suy luận nặng trên GPU, giúp backend phản hồi nhanh và tránh timeout khi mô hình đang xử lý.
+
+\subsection{Cơ chế điều kiện kép (Dual-Conditioning)}
+Để vừa bảo toàn khuôn mặt vừa chuyển giao kiểu tóc, hệ thống sử dụng hai nhánh điều kiện hóa song song:
+\begin{itemize}
+    \item \textbf{Nhánh bảo toàn danh tính:} Ảnh người dùng được phân tích bằng InsightFace để trích xuất embedding khuôn mặt 512 chiều. Embedding này kết hợp với ControlNet Depth và InstantID để hạn chế thay đổi ở khuôn mặt. Với khuôn mặt nghiêng ($|yaw| \geq 45\degree$), hệ thống tự động chuyển sang AdaFace IR\nobreakdash-100.
+    \item \textbf{Nhánh truyền tải phong cách tóc:} Ảnh tóc tham chiếu được mã hóa qua IP-Adapter Plus (pipeline chuẩn) hoặc HairTextureEncoder ResNet\nobreakdash-50 (pipeline tùy chỉnh) để tạo style embedding 2048 chiều, dẫn hướng mô hình sinh kiểu tóc phù hợp.
+\end{itemize}
+
+\section{Thiết kế các mô-đun xử lý (Service Modules)}
+Phần backend được chia thành các service module độc lập, mỗi module đảm nhận một chức năng riêng biệt.
+
+\subsection{FaceInfoService -- Phát hiện và phân tích khuôn mặt}
+Service này sử dụng pipeline ba tầng:
+\begin{enumerate}
+    \item \textbf{YOLOv8-Face (TrainingFaceDetector):} Phát hiện toàn bộ khuôn mặt trong ảnh, hỗ trợ cả khuôn mặt nghiêng và một phần bị che. Kết quả qua bước NMS (Non-Maximum Suppression) để loại bỏ bounding box trùng lặp.
+    \item \textbf{InsightFace (antelopev2):} Phân tích chi tiết từng khuôn mặt, trích xuất 106 landmarks, embedding ArcFace 512 chiều và keypoints.
+    \item \textbf{TrainingEmbedder (AdaFace fallback):} Với khuôn mặt mà InsightFace bỏ sót (profile, góc nghiêng lớn), hệ thống dùng AdaFace IR\nobreakdash-100 kết hợp MTCNN alignment để trích xuất embedding. Ngưỡng chuyển đổi là $|yaw| = 45\degree$.
+\end{enumerate}
+Ngoài ra, service tích hợp \textbf{TrainingReconstructor3D} (3DDFA V2) để reconstruct dense 3D face mesh. Dữ liệu 3D vertices được dùng để ngoại suy vùng da đầu (scalp projection) trong trường hợp người dùng ít tóc hoặc trọc đầu.
+
+\subsection{SegmentationService -- Phân đoạn ngữ nghĩa}
+Service sử dụng \textbf{SegFormer} (jonathandinu/face-parsing) để phân đoạn ảnh thành 19 lớp ngữ nghĩa (skin, hair, hat, nose, eyes, v.v.). Hai nhóm mask chính được tạo:
+\begin{itemize}
+    \item \textbf{Hair mask:} Gộp lớp tóc (class 13) và mũ/nón (class 14) để inpainting thay thế toàn bộ vùng tóc, kể cả khi người dùng đội nón.
+    \item \textbf{Face mask:} Tổng hợp 12 lớp thuộc khuôn mặt (skin, nose, eyes, brows, ears, mouth, lips) để bảo vệ khuôn mặt khỏi bị sinh tóc chồng lên.
+\end{itemize}
+Mask được dilate để mở rộng biên, đảm bảo vùng tóc được nhận diện đầy đủ.
+
+\subsection{Kỹ thuật mặt nạ động (Dynamic Masking)}
+Trong bài toán thử tóc ảo, tóc tham chiếu có thể dài hoặc phồng hơn đáng kể so với tóc gốc. Hệ thống xây dựng cơ chế \texttt{expand\_hair\_mask} với các bước:
+\begin{itemize}
+    \item \textbf{Phát hiện trường hợp trọc/ít tóc:} Khi diện tích mask tóc nhỏ hơn 100 pixel, hệ thống tạo scalp mask bằng 3DDFA V2 (ngoại suy đỉnh đầu từ forehead vertices, chiếu convex hull) hoặc fallback sang OpenCV (crop tóc mẫu, scale theo face width, paste lên trán).
+    \item \textbf{Mở rộng theo tỷ lệ:} Nếu diện tích tóc tham chiếu $> 1.5 \times$ diện tích tóc user, mask được dilate với kernel hình chữ nhật hướng ngang (tóc phồng), dọc (tóc dài) hoặc vuông (tóc đều), từ 1--8 iterations tỷ lệ với chênh lệch diện tích.
+    \item \textbf{Bảo vệ khuôn mặt (3 lớp):} Face mask được dilate thêm 10px tạo buffer, trừ khỏi expanded mask, rồi smooth biên bằng Gaussian blur.
+\end{itemize}
+
+\subsection{HairDiffusionService -- Suy luận Diffusion}
+Service hỗ trợ hai chế độ pipeline:
+\begin{enumerate}
+    \item \textbf{Standard Pipeline:} Sử dụng \texttt{StableDiffusionXLControlNetInpaintPipeline} với ControlNet Depth + IP-Adapter Plus. Ảnh tham chiếu được dùng trực tiếp qua IP-Adapter.
+    \item \textbf{Custom Pipeline:} Sử dụng UNet 9 kênh đầu vào (noisy latents + masked latents + mask) được tinh chỉnh bằng LoRA. Style embedding (2048 chiều từ HairTextureEncoder) và identity embedding (512 chiều từ InsightFace) được inject qua CrossAttentionInjector. Quá trình khử nhiễu áp dụng Classifier-Free Guidance.
+\end{enumerate}
+Tất cả ảnh được resize về 512$\times$512 khi suy luận rồi upscale về kích thước gốc bằng Lanczos.
+
+Sau khi giải mã VAE, bước hậu xử lý hòa trộn mềm tại biên mask bằng Gaussian blur ($21 \times 21$, $\sigma = 10$) giúp chuyển tiếp tự nhiên giữa vùng tóc mới và vùng ảnh gốc.
+
+\subsection{HairColorService -- Đổi màu tóc}
+Service đổi màu tóc bằng kỹ thuật HSV Color Transfer mà không cần chạy lại mô hình khuếch tán:
+\begin{enumerate}
+    \item Chuyển ảnh sang không gian HSV.
+    \item Thay thành phần Hue (sắc độ) bằng giá trị màu đích.
+    \item Blend Saturation (độ bão hòa): giữ 20\% gốc, thay 80\% theo màu mới.
+    \item Điều chỉnh Value (độ sáng) nhẹ theo tỷ lệ sáng/tối của màu đích (giới hạn $0.6$--$1.4$).
+    \item Blend bằng Gaussian blur trên biên mask để tránh viền cứng.
+\end{enumerate}
+Hệ thống cung cấp 15 preset màu (đen, nâu, vàng, đỏ, hồng, xanh dương, tím, v.v.) và hỗ trợ hex code tùy chỉnh.
+
+\section{Thiết kế luồng ứng dụng bất đồng bộ}
+Do thời gian suy luận kéo dài vài giây, hệ thống áp dụng mô hình xử lý bất đồng bộ:
+\begin{enumerate}
+    \item Người dùng gửi yêu cầu qua \texttt{POST /generate}.
+    \item Backend lưu ảnh upload, tạo Celery task và trả về \texttt{task\_id} ngay lập tức.
+    \item Celery worker nhận task từ Redis, thực hiện pipeline AI, cập nhật trạng thái (\texttt{PROCESSING}) qua mỗi bước (Face Analysis, Creating Mask, Estimating Depth, Generating Hair, v.v.).
+    \item Frontend poll \texttt{GET /status/\{task\_id\}} mỗi 2 giây cho đến khi nhận \texttt{SUCCESS} hoặc \texttt{FAILURE}.
+    \item Kết quả được lưu theo session folder riêng biệt và phục vụ qua static file server.
+\end{enumerate}
+
+\section{Thiết kế API RESTful}
+Backend cung cấp các endpoint chính được mô tả trong Bảng~\ref{tab:api-endpoints}.
+
+\begin{table}[H]
+    \centering
+    \caption{Danh sách các API endpoint chính}
+    \label{tab:api-endpoints}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{1.5cm}|>{\raggedright\arraybackslash}p{3.5cm}|X|}
+        \hline
+        \textbf{Method} & \textbf{Endpoint} & \textbf{Mô tả} \\
+        \hline
+        POST & \texttt{/generate} & Nhận 2 ảnh (chân dung + tóc tham chiếu), prompt, màu tóc tùy chọn. Trả về \texttt{task\_id}. \\
+        \hline
+        POST & \texttt{/detect-faces} & Quét và cắt chân dung các khuôn mặt trong ảnh. Chạy qua Celery. \\
+        \hline
+        POST & \texttt{/colorize} & Đổi màu tóc trên ảnh gốc (không cần Diffusion Model). \\
+        \hline
+        GET & \texttt{/status/\{task\_id\}} & Kiểm tra trạng thái tác vụ (PENDING, PROCESSING, SUCCESS, FAILURE). \\
+        \hline
+        GET & \texttt{/colors} & Trả về danh sách 15 preset màu tóc. \\
+        \hline
+        GET & \texttt{/random-pair} & Lấy cặp ảnh mẫu ngẫu nhiên từ dataset FFHQ. \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+\end{document}

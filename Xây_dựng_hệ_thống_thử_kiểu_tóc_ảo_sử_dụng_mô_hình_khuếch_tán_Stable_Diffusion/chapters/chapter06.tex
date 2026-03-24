@@ -1,0 +1,47 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Kết quả đạt được}
+Đề tài đã xây dựng được hệ thống \textbf{TryHairStyle} có khả năng tiếp nhận ảnh người dùng và ảnh kiểu tóc tham chiếu để tạo ảnh thử kiểu tóc trên nền tảng web. Các kết quả nổi bật gồm:
+\begin{itemize}
+    \item \textbf{Pipeline AI hoàn chỉnh:} Hệ thống tích hợp 8 service module (FaceInfoService, SegmentationService, HairDiffusionService, HairColorService, TrainingFaceDetector, TrainingEmbedder, TrainingPoseEstimator, TrainingReconstructor3D) thành một quy trình xử lý liên hoàn từ phân tích khuôn mặt đến sinh ảnh kết quả.
+    \item \textbf{Cơ chế điều kiện kép:} Nhánh bảo toàn danh tính (InsightFace/AdaFace + ControlNet Depth) và nhánh chuyển giao kiểu tóc (IP-Adapter Plus/HairTextureEncoder) hoạt động song song, giúp giữ khuôn mặt và chuyển giao tóc đồng thời.
+    \item \textbf{Mặt nạ động:} Cơ chế mở rộng mask tự động dựa trên so sánh diện tích tóc tham chiếu và tóc gốc, hỗ trợ cả trường hợp người dùng trọc đầu thông qua scalp projection bằng 3DDFA V2.
+    \item \textbf{Phát hiện khuôn mặt đa tầng:} Pipeline YOLO $\rightarrow$ InsightFace $\rightarrow$ AdaFace phát hiện được cả khuôn mặt nghiêng, hỗ trợ auto-rotate và chọn mặt khi ảnh có nhiều người.
+    \item \textbf{Đổi màu tóc nhanh:} 15 preset màu + hex tùy chỉnh bằng HSV Color Transfer, không cần chạy lại Diffusion Model.
+    \item \textbf{Kiến trúc bất đồng bộ:} FastAPI + Celery + Redis xử lý tác vụ AI không nghẽn, giao diện phản hồi mượt mà.
+    \item \textbf{Giao diện trực quan:} 7 React component hỗ trợ upload ảnh, prompt, chọn màu, chọn mặt và xem kết quả.
+    \item \textbf{Container hóa:} Docker Compose orchestrate 4 service (Redis, Backend, Celery, Frontend) với GPU passthrough.
+\end{itemize}
+
+\section{Đánh giá ưu và nhược điểm hệ thống}
+
+\subsection{Ưu điểm nổi bật}
+\begin{itemize}
+    \item Cơ chế điều kiện kép giúp hệ thống đồng thời khai thác thông tin từ ảnh người dùng và ảnh tham chiếu, cải thiện khả năng bảo toàn khuôn mặt và chuyển giao kiểu tóc.
+    \item Pipeline phát hiện khuôn mặt đa tầng (YOLO + InsightFace + AdaFace) xử lý được cả khuôn mặt nghiêng và ảnh nhóm.
+    \item Mặt nạ động mở rộng tự động theo đặc điểm tóc tham chiếu, hỗ trợ trường hợp đặc biệt (trọc đầu, tóc ngắn).
+    \item Celery và Redis giúp xử lý bất đồng bộ, giao diện không bị treo khi AI đang suy luận.
+    \item Hỗ trợ đổi màu tóc nhanh mà không cần chạy lại mô hình khuếch tán.
+    \item Docker Compose cho phép triển khai toàn bộ hệ thống bằng một lệnh duy nhất.
+\end{itemize}
+
+\subsection{Hạn chế tồn đọng}
+\begin{itemize}
+    \item \textbf{Độ trễ xử lý còn cao:} Thời gian suy luận vài giây mỗi yêu cầu trên GPU 12GB, chưa phù hợp thời gian thực.
+    \item \textbf{Yêu cầu phần cứng lớn:} Cần GPU NVIDIA có VRAM tối thiểu 12GB để nạp đồng thời nhiều model.
+    \item \textbf{Phụ thuộc chất lượng ảnh đầu vào:} Ảnh quá mờ, che khuất nhiều hoặc ánh sáng phức tạp có thể ảnh hưởng chất lượng mask và ảnh sinh ra.
+    \item \textbf{Vùng biên tóc chưa hoàn hảo:} Một số trường hợp vẫn lộ viền hoặc chuyển tiếp chưa tự nhiên tại ranh giới tóc--da.
+\end{itemize}
+
+\section{Hướng phát triển}
+\begin{itemize}
+    \item Tối ưu thời gian suy luận bằng giảm số bước khuếch tán, distillation hoặc các kiến trúc suy luận nhanh hơn (LCM, Turbo).
+    \item Mở rộng sang xử lý video hoặc thử tóc theo thời gian thực trên webcam.
+    \item Bổ sung các tiêu chí đánh giá định lượng (FID, LPIPS, identity similarity) và xây dựng bộ benchmark phù hợp.
+    \item Triển khai trên hạ tầng điện toán đám mây để phục vụ nhiều người dùng đồng thời.
+    \item Phát triển ứng dụng di động hoặc PWA để mở rộng khả năng tiếp cận.
+\end{itemize}
+
+\end{document}
