@@ -1,5 +1,7 @@
 
 import os
+import sys
+import subprocess
 import cv2
 import torch
 from PIL import Image
@@ -57,7 +59,12 @@ def get_services():
         raise e
 
 @celery_app.task(bind=True)
-def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7):
+def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7, ai_model: str = "HairFusion"):
+    # === Routing: Nếu chọn TryOnHairstyle → chạy subprocess cách ly ===
+    if ai_model == "TryOnHairstyle":
+        return _run_tryonhairstyle(self, user_img_path, hair_img_path)
+    
+    # === Mặc định: HairFusion pipeline ===
     try:
         face_service, mask_service, diffusion_service, depth_estimator, color_service = get_services()
     except Exception as e:
@@ -187,6 +194,96 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return {"status": "FAILURE", "error": str(e)}
+
+
+def _run_tryonhairstyle(self, user_img_path: str, hair_img_path: str):
+    """
+    Chạy mô hình TryOnHairstyle qua subprocess (cách ly hoàn toàn).
+    Tránh xung đột namespace backend.app và phiên bản thư viện.
+    """
+    try:
+        session_name = f"tryon_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.request.id[:8]}"
+        session_dir = os.path.join(str(OUTPUT_DIR), session_name)
+        os.makedirs(session_dir, exist_ok=True)
+        print(f">>> TryOnHairstyle session: {session_dir}")
+        
+        self.update_state(state='PROCESSING', meta={'step': 'Running TryOnHairstyle Model'})
+        
+        # Đường dẫn tới thư mục TryOnHairstyle-master
+        # __file__ = .../TryHairStyle/backend/app/tasks.py → cần 3 lần dirname để lên TryHairStyle
+        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        tryon_dir = os.path.join(project_root, "TryOnHairstyle-master")
+        run_script = os.path.join(tryon_dir, "run_custom.py")
+        
+        if not os.path.exists(run_script):
+            return {"status": "FAILURE", "error": f"TryOnHairstyle script not found: {run_script}"}
+        
+        # Dùng Python từ venv riêng của TryOnHairstyle (tránh xung đột thư viện)
+        tryon_python = os.path.join(tryon_dir, "hairfusion", "bin", "python")
+        if not os.path.exists(tryon_python):
+            return {"status": "FAILURE", "error": f"TryOnHairstyle venv not found. Run: cd TryOnHairstyle-master && python3 -m venv hairfusion && source hairfusion/bin/activate && pip install -r requirements.txt"}
+        
+        # Thiết lập LD_LIBRARY_PATH cho WSL và CUDA/cuDNN trong venv
+        # Dùng shell=True để export trước khi chạy Python → dynamic linker nhận biến RIGHT AWAY
+        site_packages = os.path.join(tryon_dir, "hairfusion", "lib", "python3.8", "site-packages")
+        torch_lib = os.path.join(site_packages, "torch", "lib")
+        vision_lib = os.path.join(site_packages, "torchvision.libs")
+        
+        ld_path = f"/usr/lib/wsl/lib:{torch_lib}:{vision_lib}"
+        
+        # Tạo shell command với export LD_LIBRARY_PATH trước khi gọi Python
+        shell_cmd = (
+            f'export LD_LIBRARY_PATH="{ld_path}:${{LD_LIBRARY_PATH:-}}" && '
+            f'"{tryon_python}" "{run_script}" '
+            f'--face "{user_img_path}" '
+            f'--hair "{hair_img_path}" '
+            f'--output "{session_dir}"'
+        )
+        
+        print(f"  Shell command: {shell_cmd}")
+        
+        # Chạy subprocess cách ly hoàn toàn qua bash shell
+        result = subprocess.run(
+            shell_cmd,
+            shell=True,
+            executable="/bin/bash",
+            cwd=tryon_dir,
+            capture_output=True,
+            text=True,
+            timeout=900  # Timeout 15 phút (model nặng, cần thời gian load + inference)
+        )
+        
+        print(f"  TryOnHairstyle stdout: {result.stdout[-500:] if result.stdout else '(empty)'}")
+        if result.stderr:
+            print(f"  TryOnHairstyle stderr: {result.stderr[-500:]}")
+        
+        if result.returncode != 0:
+            return {"status": "FAILURE", "error": f"TryOnHairstyle failed (code {result.returncode}): {result.stderr[-200:] if result.stderr else 'Unknown error'}"}
+        
+        # Tìm file kết quả trong session_dir
+        result_path = os.path.join(session_dir, "result.png")
+        if not os.path.exists(result_path):
+            # Thử tìm bất kỳ file ảnh nào trong output
+            for f in os.listdir(session_dir):
+                if f.endswith(('.png', '.jpg', '.jpeg')):
+                    result_path = os.path.join(session_dir, f)
+                    break
+        
+        if not os.path.exists(result_path):
+            return {"status": "FAILURE", "error": "TryOnHairstyle completed but no result image found."}
+        
+        print(f"  ✅ TryOnHairstyle result saved: {result_path}")
+        return {
+            "status": "SUCCESS",
+            "result_path": str(result_path),
+            "session_dir": str(session_dir),
+            "url": f"/static/output/{session_name}/{os.path.basename(result_path)}"
+        }
+        
+    except subprocess.TimeoutExpired:
+        return {"status": "FAILURE", "error": "TryOnHairstyle timed out (>15 minutes)"}
+    except Exception as e:
+        return {"status": "FAILURE", "error": f"TryOnHairstyle error: {str(e)}"}
 
 
 @celery_app.task(bind=True)

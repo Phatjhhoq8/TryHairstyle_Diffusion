@@ -1,0 +1,56 @@
+# ============================================================
+# HairFusion — Requirements
+# Python 3.8 | CUDA 11.7
+# ============================================================
+
+# ---- PyTorch + CUDA 11.7 (install separately) ----
+# pip install torch==2.0.0+cu117 torchvision==0.15.1+cu117 --index-url https://download.pytorch.org/whl/cu117
+
+# ---- Core ML ----
+einops==0.8.1
+pytorch-lightning==1.5.0
+omegaconf==2.3.0
+safetensors==0.5.3
+torchmetrics==1.5.2
+
+# ---- Diffusion ----
+diffusers==0.20.2
+transformers==4.33.2
+huggingface-hub==0.23.5
+tokenizers==0.13.3
+open-clip-torch==2.19.0
+xformers==0.0.19
+triton==2.0.0
+
+# ---- Image Processing ----
+opencv-python==4.7.0.72
+Pillow==10.4.0
+scikit-image==0.21.0
+albumentations==1.4.18
+kornia==0.7.3
+imageio==2.35.1
+
+# ---- Face Detection ----
+dlib==19.24.6
+
+# ---- Evaluation ----
+clean-fid==0.1.35
+scipy==1.10.1
+
+# ---- Visualization / Utilities ----
+matplotlib==3.7.5
+numpy==1.24.4
+tqdm==4.67.1
+
+# ---- Web UI (Gradio) ----
+gradio==4.44.1
+fastapi==0.124.4
+uvicorn==0.33.0
+
+# ---- Other ----
+ftfy==6.2.3
+regex==2024.11.6
+timm==1.0.24
+sentencepiece==0.2.0
+ipython==8.12.3
+cmake==3.25.0

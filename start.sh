@@ -12,6 +12,10 @@ source "$VENV"
 export PYTHONPATH="$PROJECT_DIR"
 export REDIS_URL="redis://localhost:6379/0"
 
+# CUDA/cuDNN — cần thiết cho WSL2 (libcuda.so) và PyTorch trong venv TryOnHairstyle
+TRYON_SITE="$PROJECT_DIR/TryOnHairstyle-master/hairfusion/lib/python3.8/site-packages"
+export LD_LIBRARY_PATH="/usr/lib/wsl/lib:$TRYON_SITE/torch/lib:$TRYON_SITE/torchvision.libs:${LD_LIBRARY_PATH:-}"
+
 echo "============================================"
 echo "  TryHairStyle — Starting All Services"
 echo "============================================"

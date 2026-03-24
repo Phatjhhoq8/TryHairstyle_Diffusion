@@ -6,6 +6,7 @@ import ResultPanel from './components/ResultPanel';
 import PromptInput from './components/PromptInput';
 import ColorPicker from './components/ColorPicker';
 import FaceSelector from './components/FaceSelector';
+import ModelSelector from './components/ModelSelector';
 import { generateHair, detectFaces, pollTask, getRandomPair } from './api/hairApi';
 
 export default function App() {
@@ -15,8 +16,10 @@ export default function App() {
 
   // Prompt + Color
   const [prompt, setPrompt] = useState('high quality, realistic hairstyle');
+  const [language, setLanguage] = useState('en');
   const [selectedColor, setSelectedColor] = useState('none');
   const [colorIntensity, setColorIntensity] = useState(0.7);
+  const [aiModel, setAiModel] = useState('HairFusion');
 
   // Pipeline state
   const [loading, setLoading] = useState(false);
@@ -227,7 +230,7 @@ export default function App() {
     setPipelineStatus('Đang tạo kiểu tóc...');
 
     const color = selectedColor !== 'none' ? selectedColor : null;
-    const { task_id } = await generateHair(faceFile, hairFile, prompt, color, colorIntensity);
+    const { task_id } = await generateHair(faceFile, hairFile, prompt, color, colorIntensity, language, aiModel);
 
     const { promise } = pollTask(task_id, (data) => {
       if (data.status === 'PROCESSING') {
@@ -287,23 +290,26 @@ export default function App() {
         />
       </div>
 
-      {/* Prompt + Color row */}
-      <div className="grid grid-cols-[1fr_1fr] gap-4 mb-4">
-        <div className="flex flex-col gap-4">
-          <PromptInput value={prompt} onChange={setPrompt} />
-          <div className="flex gap-3">
-            <button
-              onClick={handleRandomPair}
-              className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm 
-                         hover:bg-gray-200 transition"
-            >
-              Ảnh FFHQ ngẫu nhiên
-            </button>
-            {pipelineStatus && (
-              <span className="flex items-center text-sm text-gray-500">{pipelineStatus}</span>
-            )}
-          </div>
+      {/* Prompt row */}
+      <div className="mb-4">
+        <PromptInput value={prompt} onChange={setPrompt} language={language} onLanguageChange={setLanguage} />
+        <div className="flex gap-3 mt-2">
+          <button
+            onClick={handleRandomPair}
+            className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm 
+                       hover:bg-gray-200 transition"
+          >
+            Ảnh FFHQ ngẫu nhiên
+          </button>
+          {pipelineStatus && (
+            <span className="flex items-center text-sm text-gray-500">{pipelineStatus}</span>
+          )}
         </div>
+      </div>
+
+      {/* Model Selector + Color Picker row */}
+      <div className="grid grid-cols-[1fr_1fr] gap-4 mb-4">
+        <ModelSelector value={aiModel} onChange={setAiModel} />
         <ColorPicker
           selectedColor={selectedColor}
           onColorChange={setSelectedColor}

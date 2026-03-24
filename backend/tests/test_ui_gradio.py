@@ -24,6 +24,7 @@ from backend.app.services.face import FaceInfoService
 from backend.app.services.mask import SegmentationService
 from backend.app.services.diffusion import HairDiffusionService
 from backend.app.services.hair_color_service import HairColorService, PRESET_COLORS
+from backend.app.services.translate_service import translate_vi_to_en
 
 # Global Services (lazy loaded)
 face_service = None
@@ -106,11 +107,20 @@ def get_random_ffhq_image():
     return Image.open(img_path).convert("RGB")
 
 
-def process_pipeline(user_image, hair_image, prompt):
-    """Chạy full pipeline: Face → Mask → Depth → Diffusion."""
+def process_pipeline(user_image, hair_image, prompt, language="English", ai_model="HairFusion"):
+    """Chạy full pipeline: Face → Mask → Depth → Diffusion. Hoặc route sang TryOnHairstyle."""
     if user_image is None or hair_image is None:
         return None, "⚠️ Please select both images."
     
+    # === Route to TryOnHairstyle (subprocess) ===
+    if "TryOnHairstyle" in ai_model:
+        return _run_tryonhairstyle_gradio(user_image, hair_image)
+    
+    # Dịch prompt nếu người dùng chọn tiếng Việt
+    final_prompt = prompt
+    if language == "Tiếng Việt":
+        final_prompt = translate_vi_to_en(prompt)
+        print(f"  🌐 Đã dịch prompt: '{prompt}' → '{final_prompt}'")
     # Auto-load services nếu chưa load
     global face_service, mask_service, diffusion_service, depth_estimator
     if face_service is None or diffusion_service is None or depth_estimator is None:
@@ -172,7 +182,7 @@ def process_pipeline(user_image, hair_image, prompt):
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_image,
-            prompt=prompt
+            prompt=final_prompt
         )
         
         # Resize kết quả về kích thước gốc để không bị méo
@@ -196,6 +206,95 @@ def process_pipeline(user_image, hair_image, prompt):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return None, f"❌ Error: {str(e)}"
+
+
+def _run_tryonhairstyle_gradio(user_image, hair_image):
+    """
+    Chạy mô hình TryOnHairstyle qua subprocess (cách ly hoàn toàn).
+    Dùng cho Gradio Test UI.
+    """
+    import subprocess, sys, tempfile
+    from datetime import datetime as dt
+    
+    try:
+        session_name = f"tryon_{dt.now().strftime('%Y%m%d_%H%M%S')}"
+        session_dir = os.path.join(str(OUTPUT_DIR), session_name)
+        os.makedirs(session_dir, exist_ok=True)
+        
+        # Lưu ảnh tạm
+        face_path = os.path.join(session_dir, "input_face.png")
+        hair_path = os.path.join(session_dir, "input_hair.png")
+        user_image.save(face_path)
+        hair_image.save(hair_path)
+        
+        # Tìm thư mục TryOnHairstyle
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        tryon_dir = os.path.join(base_dir, "TryOnHairstyle-master")
+        run_script = os.path.join(tryon_dir, "run_custom.py")
+        
+        if not os.path.exists(run_script):
+            return None, f"❌ TryOnHairstyle script not found: {run_script}"
+        
+        # Dùng Python từ venv riêng của TryOnHairstyle (tránh xung đột thư viện)
+        tryon_python = os.path.join(tryon_dir, "hairfusion", "bin", "python")
+        if not os.path.exists(tryon_python):
+            return None, "❌ TryOnHairstyle venv not found. Cần tạo venv `hairfusion` riêng trước."
+        
+        print(f">>> Running TryOnHairstyle subprocess...")
+        
+        # Thiết lập LD_LIBRARY_PATH: libcuda.so (WSL) + libcudnn*.so (torch)
+        site_packages = os.path.join(tryon_dir, "hairfusion", "lib", "python3.8", "site-packages")
+        torch_lib = os.path.join(site_packages, "torch", "lib")
+        vision_lib = os.path.join(site_packages, "torchvision.libs")
+        ld_path = f"/usr/lib/wsl/lib:{torch_lib}:{vision_lib}"
+        
+        shell_cmd = (
+            f'export LD_LIBRARY_PATH="{ld_path}:${{LD_LIBRARY_PATH:-}}" && '
+            f'"{tryon_python}" "{run_script}" '
+            f'--face "{face_path}" --hair "{hair_path}" --output "{session_dir}"'
+        )
+        print(f"  Shell cmd: {shell_cmd}")
+        
+        result = subprocess.run(
+            shell_cmd, shell=True, executable="/bin/bash",
+            cwd=tryon_dir, capture_output=True, text=True, timeout=900
+        )
+        
+        # Debug: in stdout/stderr từ subprocess
+        if result.stdout:
+            print(f"  TryOnHairstyle stdout:\n{result.stdout[-1000:]}")
+        if result.stderr:
+            print(f"  TryOnHairstyle stderr:\n{result.stderr[-500:]}")
+        
+        if result.returncode != 0:
+            error_detail = result.stderr[-300:] if result.stderr else (result.stdout[-300:] if result.stdout else 'Unknown')
+            return None, f"❌ TryOnHairstyle failed (code {result.returncode}): {error_detail}"
+        
+        # Tìm kết quả — liệt kê tất cả file trong session_dir
+        all_files = os.listdir(session_dir) if os.path.exists(session_dir) else []
+        print(f"  Session dir files: {all_files}")
+        
+        result_path = os.path.join(session_dir, "result.png")
+        if not os.path.exists(result_path):
+            # Tìm bất kỳ file ảnh nào (không chỉ bắt đầu bằng 'result')
+            for f in all_files:
+                if f.endswith(('.png', '.jpg', '.jpeg')) and f not in ('input_face.png', 'input_hair.png'):
+                    result_path = os.path.join(session_dir, f)
+                    print(f"  Found result file: {f}")
+                    break
+        
+        if not os.path.exists(result_path):
+            stdout_hint = result.stdout[-300:] if result.stdout else '(empty)'
+            return None, f"❌ TryOnHairstyle xong nhưng không tìm thấy ảnh kết quả.\nFiles: {all_files}\nStdout: {stdout_hint}"
+        
+        return Image.open(result_path).convert("RGB"), f"✅ TryOnHairstyle thành công\n📁 Session: {session_name}"
+    
+    except subprocess.TimeoutExpired:
+        return None, "❌ TryOnHairstyle timeout (>15 phút)"
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return None, f"❌ TryOnHairstyle Error: {str(e)}"
 
 def process_colorize_pipeline(user_image, color_name, intensity):
     """Chạy pipeline đổi màu tóc (không cần Diffusion)."""
@@ -455,7 +554,6 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         with gr.Column(scale=3):
             gr.Markdown("### ẢNH ĐẦU VÀO 1: CHÂN DUNG")
             user_input = gr.Image(
-                label="Tải ảnh chân dung lên (PNG, JPG)",
                 type="pil",
                 height=300,
                 elem_classes="upload-box"
@@ -465,7 +563,6 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         with gr.Column(scale=3):
             gr.Markdown("### ẢNH ĐẦU VÀO 2: THAM KHẢO KIỂU TÓC")
             hair_input = gr.Image(
-                label="Tải ảnh kiểu tóc tham khảo",
                 type="pil",
                 height=300,
                 elem_classes="upload-box"
@@ -494,16 +591,30 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             with gr.Row():
                 download_btn = gr.Button("Tải xuống kết quả", variant="primary", size="sm")
     
-    # ===== Text Prompt (dưới 2 ảnh) =====
+    # ===== Text Prompt + Language Selector (dưới 2 ảnh) =====
     with gr.Row():
-        with gr.Column(scale=6):
+        with gr.Column(scale=5):
             prompt_input = gr.Textbox(
                 label="Text Prompt",
                 value="high quality, realistic hairstyle",
                 placeholder="Mô tả kiểu tóc mong muốn...",
                 lines=2
             )
-        with gr.Column(scale=4):
+        with gr.Column(scale=1, min_width=150):
+            language_radio = gr.Radio(
+                choices=["English", "Tiếng Việt"],
+                value="English",
+                label="Ngôn ngữ Prompt",
+                info="Nếu chọn Tiếng Việt, prompt sẽ tự động dịch sang Anh"
+            )
+        with gr.Column(scale=2, min_width=200):
+            model_radio = gr.Radio(
+                choices=["HairFusion", "TryOnHairstyle"],
+                value="HairFusion",
+                label="Mô hình AI",
+                info="Chọn mô hình sử dụng để tạo kiểu tóc"
+            )
+        with gr.Column(scale=2):
             pass  # khoảng trống cân đối
     
     # ===== Color Picker (dưới prompt) =====
@@ -560,7 +671,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
     random_btn.click(fn=random_pair, outputs=[user_input, hair_input])
     
     # --- Click VẼ TÓC: validate → detect faces → popup hoặc chạy luôn ---
-    def on_draw_click(user_img, hair_img, prompt, color_name, hex_input, intensity):
+    def on_draw_click(user_img, hair_img, prompt, lang, ai_model, color_name, hex_input, intensity):
         """
         Bước 1: Validate input.
         Bước 2: Detect faces trong ảnh chân dung.
@@ -643,7 +754,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             gr.update(value=loading_content, visible=True),  # hiện loading
         )
         
-        result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt)
+        result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt, lang, ai_model)
         
         # Nếu có chọn color → colorize thêm
         if result_img is not None:
@@ -670,7 +781,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
     
     draw_btn.click(
         fn=on_draw_click,
-        inputs=[user_input, hair_input, prompt_input, color_dropdown, color_hex_input, color_intensity_slider],
+        inputs=[user_input, hair_input, prompt_input, language_radio, model_radio, color_dropdown, color_hex_input, color_intensity_slider],
         outputs=[
             output_image, log_output,
             popup_panel, popup_title, popup_gallery,

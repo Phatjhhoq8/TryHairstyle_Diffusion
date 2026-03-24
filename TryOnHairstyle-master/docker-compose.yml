@@ -1,0 +1,28 @@
+version: "3.8"
+
+services:
+  hairfusion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hairfusion-app
+    ports:
+      - "7860:7860"
+    volumes:
+      # Model weights (mount từ máy host, không cần COPY vào image)
+      - ./backend/models:/app/backend/models
+      - ./backend/logs:/app/backend/logs
+      # Output data (lưu kết quả ra máy host)
+      - ./backend/data/output:/app/backend/data/output
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
+    environment:
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    restart: unless-stopped

@@ -20,7 +20,7 @@ Stable Diffusion \cite{rombach2022latent} là một đại diện tiêu biểu c
 \subsection{Mạng U-Net dự đoán nhiễu}
 U-Net là thành phần trung tâm trong quá trình khử nhiễu. Mạng nhận đầu vào là biểu diễn ảnh đang nhiễu ở bước thời gian $t$ cùng với các điều kiện dẫn hướng, sau đó dự đoán phần nhiễu cần loại bỏ. Việc lặp lại quá trình này qua nhiều bước giúp mô hình dần tái tạo ảnh có nội dung phù hợp với điều kiện đặt ra.
 
-\section{Kỹ thuật điều khiển bổ trợ (Control Techniques)}
+\section{Kỹ thuật điều khiển bổ trợ}
 Để giải quyết bài toán thử kiểu tóc ảo, việc chỉ sử dụng Stable Diffusion là chưa đủ. Hệ thống cần bổ sung các cơ chế điều kiện hóa để kiểm soát tốt hơn cấu trúc khuôn mặt, đặc trưng kiểu tóc và vùng cần chỉnh sửa. Các kỹ thuật chính được sử dụng gồm:
 \begin{itemize}
     \item \textbf{ControlNet} \cite{zhang2023controlnet}\textbf{:}
@@ -43,7 +43,7 @@ U-Net là thành phần trung tâm trong quá trình khử nhiễu. Mạng nhậ
 \section{Phân đoạn ngữ nghĩa với SegFormer}
 SegFormer \cite{xie2021segformer} là mô hình phân đoạn ngữ nghĩa dựa trên kiến trúc Transformer. Trong hệ thống, SegFormer (jonathandinu/face-parsing) được sử dụng để tách ảnh thành 19 lớp ngữ nghĩa (background, skin, hair, hat, nose, eyes, brows, ears, mouth, lips, v.v.). Kết quả phân đoạn phục vụ hai mục đích chính: xác định vùng tóc cần inpainting (hair mask) và xác định vùng khuôn mặt cần bảo vệ (face mask).
 
-\section{Công nghệ triển khai ứng dụng (Tech Stack)}
+\section{Công nghệ triển khai ứng dụng}
 Hệ thống được xây dựng trên nhiều thành phần công nghệ, từ mô hình AI đến nền tảng triển khai ứng dụng.
 \begin{itemize}
     \item \textbf{Python, PyTorch và Diffusers:} Đây là nền tảng chính phục vụ việc xây dựng, nạp và suy luận các mô hình học sâu trong hệ thống.

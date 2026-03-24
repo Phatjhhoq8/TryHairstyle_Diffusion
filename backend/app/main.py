@@ -11,6 +11,7 @@ from pathlib import Path
 from backend.app.schemas import HairTransferResponse, TaskStatusResponse, HairColorResponse, DetectFacesResponse
 from backend.app.tasks import process_hair_transfer, process_hair_colorize, process_detect_faces, celery_app
 from backend.app.services.hair_color_service import HairColorService
+from backend.app.services.translate_service import translate_vi_to_en
 from celery.result import AsyncResult
 
 app = FastAPI(title="TryHairStyle API")
@@ -59,12 +60,15 @@ async def generate_hair(
     hair_image: UploadFile = File(...),
     description: str = Form("high quality realistic hair"),
     hair_color: str = Form(None),
-    color_intensity: float = Form(0.7)
+    color_intensity: float = Form(0.7),
+    language: str = Form("en"),
+    ai_model: str = Form("HairFusion")
 ):
     """
     Endpoint tương thích với React Frontend.
     Nhận 2 file ảnh và prompt, tự động upload rồi gửi task.
     Hỗ trợ thêm hair_color (tên preset hoặc hex) và color_intensity (0.0–1.0).
+    Nếu language="vi", prompt sẽ được dịch sang tiếng Anh trước khi xử lý.
     """
     # Validate file type
     ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "webp", "bmp"}
@@ -72,6 +76,11 @@ async def generate_hair(
     hair_ext = hair_image.filename.split('.')[-1].lower()
     if face_ext not in ALLOWED_EXTENSIONS or hair_ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail=f"Unsupported file type. Allowed: {ALLOWED_EXTENSIONS}")
+    
+    # Dịch prompt nếu ngôn ngữ là tiếng Việt
+    final_description = description
+    if language == "vi":
+        final_description = translate_vi_to_en(description)
     
     # 1. Save uploaded files
     face_filename = f"{uuid.uuid4()}_face.{face_ext}"
@@ -88,8 +97,9 @@ async def generate_hair(
         
     # 2. Trigger Celery Task (truyền thêm hair_color nếu có)
     task = process_hair_transfer.delay(
-        str(face_path), str(hair_path), description,
-        hair_color=hair_color, color_intensity=color_intensity
+        str(face_path), str(hair_path), final_description,
+        hair_color=hair_color, color_intensity=color_intensity,
+        ai_model=ai_model
     )
     
     return {

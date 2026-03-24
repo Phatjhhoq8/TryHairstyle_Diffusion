@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+hairfusion/
+.venv/
+
+# ML models / weights
+*.ckpt
+*.pt
+*.pth
+*.onnx
+*.safetensors
+
+# Cache / outputs
+outputs/
+logs/
+tmp/
+.cache/
+
+# OS
+.DS_Store
+Thumbs.db
