@@ -3,9 +3,12 @@ const API_BASE = '/api';
 /**
  * POST /generate — Gửi 2 ảnh + prompt => nhận task_id
  */
-export async function generateHair(faceFile, hairFile, prompt, hairColor, colorIntensity, language = 'en', aiModel = 'HairFusion') {
+export async function generateHair(originalFaceFile, faceCropFile, hairFile, prompt, hairColor, colorIntensity, language = 'en', aiModel = 'HairFusion', bbox = null) {
   const form = new FormData();
-  form.append('face_image', faceFile);
+  form.append('face_image', faceCropFile);
+  if (originalFaceFile) {
+    form.append('original_face_image', originalFaceFile);
+  }
   form.append('hair_image', hairFile);
   form.append('description', prompt || 'high quality realistic hair');
   form.append('language', language);
@@ -14,6 +17,10 @@ export async function generateHair(faceFile, hairFile, prompt, hairColor, colorI
   if (hairColor && hairColor !== 'none') {
     form.append('hair_color', hairColor);
     form.append('color_intensity', String(colorIntensity ?? 0.7));
+  }
+  
+  if (bbox) {
+    form.append('bbox', JSON.stringify(bbox));
   }
 
   const res = await fetch(`${API_BASE}/generate`, { method: 'POST', body: form });

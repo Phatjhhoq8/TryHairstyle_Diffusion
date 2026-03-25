@@ -143,7 +143,19 @@ export default function App() {
       }
 
       // 3. Generate
-      await runGenerate(faceFile, hairFile);
+      // Mặc định nếu không có bbox (không tìm thấy mặt), truyền null
+      let bbox = null;
+      let faceCropFile = faceFile;
+      
+      // Nếu tìm thấy chính xác 1 mặt:
+      if (faceResult.faces && faceResult.faces.length === 1) {
+        bbox = faceResult.faces[0].bbox;
+        const faceRes = await fetch(faceResult.faces[0].cropped_image_url);
+        const faceBlob = await faceRes.blob();
+        faceCropFile = new File([faceBlob], 'face_crop.png', { type: faceBlob.type });
+      }
+
+      await runGenerate(faceFile, faceCropFile, hairFile, bbox);
     } catch (err) {
       setPipelineError(err.message);
       setPipelineStatus('');
@@ -159,6 +171,7 @@ export default function App() {
     if (data.source === 'face') {
       // Đã chọn face → tiếp tục check hair
       const croppedUrl = face.cropped_image_url;
+      const bbox = face.bbox;
       setSelectedFaceUrl(croppedUrl);
       setFaceImage(croppedUrl);  // Cập nhật ảnh ở ô input
 
@@ -178,6 +191,7 @@ export default function App() {
             pendingHairFile: data.pendingHairFile,
             pendingFaceFile: data.pendingFaceFile,
             resolvedFaceUrl: croppedUrl,
+            resolvedFaceBbox: bbox,
           });
           return;
         }
@@ -187,7 +201,7 @@ export default function App() {
         const faceBlob = await faceRes.blob();
         const faceFile = new File([faceBlob], 'face_crop.png', { type: faceBlob.type });
 
-        await runGenerate(faceFile, data.pendingHairFile);
+        await runGenerate(data.pendingFaceFile, faceFile, data.pendingHairFile, bbox);
       } catch (err) {
         setPipelineError(err.message);
         setPipelineStatus('');
@@ -203,12 +217,22 @@ export default function App() {
       try {
         // Lấy face file
         let faceFile;
+        let faceCropFile;
+        let bbox = data.resolvedFaceBbox || null;
         if (data.resolvedFaceUrl) {
           const res = await fetch(data.resolvedFaceUrl);
           const blob = await res.blob();
-          faceFile = new File([blob], 'face_crop.png', { type: blob.type });
+          faceCropFile = new File([blob], 'face_crop.png', { type: blob.type });
         } else {
-          faceFile = data.pendingFaceFile;
+          // If 1 face was detected originally, use it
+          if (data.faces && data.faces.length === 1 && data.source !== 'hair') {
+            bbox = data.faces[0].bbox;
+            const res = await fetch(data.faces[0].cropped_image_url);
+            const blob = await res.blob();
+            faceCropFile = new File([blob], 'face_crop.png', { type: blob.type });
+          } else {
+            faceCropFile = data.pendingFaceFile;
+          }
         }
 
         // Lấy hair crop
@@ -216,7 +240,7 @@ export default function App() {
         const hairBlob = await hairRes.blob();
         const hairFile = new File([hairBlob], 'hair_crop.png', { type: hairBlob.type });
 
-        await runGenerate(faceFile, hairFile);
+        await runGenerate(data.pendingFaceFile, faceCropFile, hairFile, bbox);
       } catch (err) {
         setPipelineError(err.message);
         setPipelineStatus('');
@@ -226,11 +250,11 @@ export default function App() {
   };
 
   // ========== Generate API + Poll ==========
-  const runGenerate = async (faceFile, hairFile) => {
+  const runGenerate = async (originalFaceFile, faceCropFile, hairFile, bbox) => {
     setPipelineStatus('Đang tạo kiểu tóc...');
 
     const color = selectedColor !== 'none' ? selectedColor : null;
-    const { task_id } = await generateHair(faceFile, hairFile, prompt, color, colorIntensity, language, aiModel);
+    const { task_id } = await generateHair(originalFaceFile, faceCropFile, hairFile, prompt, color, colorIntensity, language, aiModel, bbox);
 
     const { promise } = pollTask(task_id, (data) => {
       if (data.status === 'PROCESSING') {

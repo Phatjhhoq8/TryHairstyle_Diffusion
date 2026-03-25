@@ -192,6 +192,18 @@ class SegmentationService:
         for cls in SEGFORMER_FACE_CLASSES:
             face_mask[parsing == cls] = 255
         
+        # Forehead Unmasking: xóa khiên bảo vệ phần trán (phía trên mắt/lông mày)
+        # để AI có thể vẽ tóc mái (bangs) rủ xuống trán tự nhiên
+        # Class 3: kính, 4: mắt trái, 5: mắt phải, 6: mày trái, 7: mày phải
+        eye_brow_indices = np.where(np.isin(parsing, [3, 4, 5, 6, 7]))
+        if len(eye_brow_indices[0]) > 0:
+            highest_eye_y = np.min(eye_brow_indices[0])
+            # Dịch lên 2% chiều cao ảnh để không cấn vào lông mày
+            safe_margin = int(h * 0.02)
+            cut_y = max(0, highest_eye_y - safe_margin)
+            # Xóa khiên bảo vệ từ đường cắt trở lên đỉnh đầu
+            face_mask[0:cut_y, :] = 0
+        
         # Dilate
         kernel = np.ones((5, 5), np.uint8)
         hair_mask = cv2.dilate(hair_mask, kernel, iterations=2)

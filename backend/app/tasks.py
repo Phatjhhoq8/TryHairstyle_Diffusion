@@ -59,16 +59,19 @@ def get_services():
         raise e
 
 @celery_app.task(bind=True)
-def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7, ai_model: str = "HairFusion"):
+def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7, ai_model: str = "HairFusion", original_face_path: str = None, bbox: list = None):
+    # Biến lưu kết quả trả về chung
+    result_data = None
+
     # === Routing: Nếu chọn TryOnHairstyle → chạy subprocess cách ly ===
     if ai_model == "TryOnHairstyle":
-        return _run_tryonhairstyle(self, user_img_path, hair_img_path)
-    
-    # === Mặc định: HairFusion pipeline ===
-    try:
-        face_service, mask_service, diffusion_service, depth_estimator, color_service = get_services()
-    except Exception as e:
-        return {"status": "FAILURE", "error": f"Model Load Failed: {str(e)}"}
+        result_data = _run_tryonhairstyle(self, user_img_path, hair_img_path)
+    else:
+        # === Mặc định: HairFusion pipeline ===
+        try:
+            face_service, mask_service, diffusion_service, depth_estimator, color_service = get_services()
+        except Exception as e:
+            return {"status": "FAILURE", "error": f"Model Load Failed: {str(e)}"}
 
     try:
         # Tạo session folder cho lần inference này
@@ -182,7 +185,7 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        return {
+        result_data = {
             "status": "SUCCESS", 
             "result_path": str(save_path),
             "session_dir": str(session_dir),
@@ -193,7 +196,34 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         # Cleanup GPU memory ngay cả khi lỗi
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return {"status": "FAILURE", "error": str(e)}
+        result_data = {"status": "FAILURE", "error": str(e)}
+
+    # Paste back logic for ALL models
+    if result_data.get("status") == "SUCCESS" and original_face_path and bbox:
+        print(f">>> Bắt đầu ghép kết quả trả về ảnh gốc... bbox: {bbox}")
+        try:
+            from PIL import Image
+            orig_img = Image.open(original_face_path).convert("RGB")
+            res_img = Image.open(result_data["result_path"]).convert("RGB")
+            
+            x1, y1, x2, y2 = bbox
+            w, h = x2 - x1, y2 - y1
+            
+            res_resized = res_img.resize((w, h), Image.LANCZOS)
+            orig_img.paste(res_resized, (x1, y1))
+            
+            final_path = result_data["result_path"].replace("result.png", "result_full.png")
+            orig_img.save(final_path)
+            print(f"  ✅ Đã ghép mặt và lưu thành công: {final_path}")
+            
+            result_data["result_path"] = str(final_path)
+            result_data["url"] = result_data["url"].replace("result.png", "result_full.png")
+        except Exception as e:
+            print(f"Error pasting back: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    return result_data
 
 
 def _run_tryonhairstyle(self, user_img_path: str, hair_img_path: str):
@@ -378,13 +408,19 @@ def process_detect_faces(self, image_path: str):
             w = x2 - x1
             h = y2 - y1
             
-            # Mở rộng 80% (1.8x) để lấy đầy đủ cả mái tóc và cổ áo.
+            # Lấy vùng crop hình vuông và đẩy tâm lên trên để lấy trọn mái tóc
             cx, cy = x1 + w/2, y1 + h/2
-            new_w, new_h = w * 1.8, h * 1.8
-            new_x1 = max(0, int(cx - new_w/2))
-            new_y1 = max(0, int(cy - new_h/2))
-            new_x2 = min(user_pil.width, int(cx + new_w/2))
-            new_y2 = min(user_pil.height, int(cy + new_h/2))
+            
+            # Mở rộng khung thành hình vuông gấp 2.5 lần cạnh lớn nhất của khuôn mặt
+            size = max(w, h) * 2.5
+            
+            # Đẩy tâm y lên cao 20% để không bị mất đỉnh đầu
+            cy -= h * 0.2
+            
+            new_x1 = max(0, int(cx - size/2))
+            new_y1 = max(0, int(cy - size/2))
+            new_x2 = min(user_pil.width, int(cx + size/2))
+            new_y2 = min(user_pil.height, int(cy + size/2))
             
             crop = user_pil.crop((new_x1, new_y1, new_x2, new_y2))
             crop_filename = f"face_{i}.png"

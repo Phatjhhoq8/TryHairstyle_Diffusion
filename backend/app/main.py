@@ -58,6 +58,8 @@ async def upload_image(file: UploadFile = File(...)):
 async def generate_hair(
     face_image: UploadFile = File(...),
     hair_image: UploadFile = File(...),
+    original_face_image: UploadFile = File(None),
+    bbox: str = Form(None),
     description: str = Form("high quality realistic hair"),
     hair_color: str = Form(None),
     color_intensity: float = Form(0.7),
@@ -95,11 +97,30 @@ async def generate_hair(
     with open(hair_path, "wb") as f:
         shutil.copyfileobj(hair_image.file, f)
         
-    # 2. Trigger Celery Task (truyền thêm hair_color nếu có)
+    original_face_path = None
+    if original_face_image:
+        orig_ext = original_face_image.filename.split('.')[-1].lower()
+        orig_filename = f"{uuid.uuid4()}_orig.{orig_ext}"
+        original_face_path = UPLOAD_DIR / orig_filename
+        with open(original_face_path, "wb") as f:
+            shutil.copyfileobj(original_face_image.file, f)
+            
+    import json
+    parsed_bbox = None
+    if bbox:
+        try:
+            parsed_bbox = json.loads(bbox)
+        except Exception as e:
+            print(f"Error parsing bbox: {bbox}, {e}")
+            pass
+        
+    # 2. Trigger Celery Task (truyền thêm hair_color, original_face_path, bbox)
     task = process_hair_transfer.delay(
         str(face_path), str(hair_path), final_description,
         hair_color=hair_color, color_intensity=color_intensity,
-        ai_model=ai_model
+        ai_model=ai_model,
+        original_face_path=str(original_face_path) if original_face_path else None,
+        bbox=parsed_bbox
     )
     
     return {
