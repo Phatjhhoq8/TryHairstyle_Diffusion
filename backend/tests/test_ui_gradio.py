@@ -926,26 +926,29 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         ]
     )
     
-    # --- Quick Color: đổi màu nhanh trên ảnh kết quả ---
-    def on_quick_color_click(result_img, color_name, hex_input, intensity):
-        """Đổi màu tóc nhanh trên ảnh kết quả (không cần Diffusion)."""
-        if result_img is None:
-            raise gr.Error("⚠️ Chưa có ảnh kết quả để đổi màu! Hãy Vẽ Tóc trước.")
+    # --- Quick Color: đổi màu nhanh trên ảnh kết quả hoặc ảnh đầu vào ---
+    def on_quick_color_click(result_img, user_img, color_name, hex_input, intensity):
+        """Đổi màu tóc nhanh (không cần Diffusion). Ưu tiên ảnh kết quả, không thì dùng ảnh đầu vào."""
+        # Chọn ảnh nguồn: kết quả > đầu vào
+        source_img = result_img if result_img is not None else user_img
+        if source_img is None:
+            raise gr.Error("⚠️ Chưa có ảnh nào để đổi màu! Hãy tải ảnh chân dung lên hoặc Vẽ Tóc trước.")
         
         # Ưu tiên hex nếu có, ngược lại dùng preset
         actual_color = hex_input.strip() if hex_input and hex_input.strip() else color_name
         if not actual_color or actual_color == "none":
             raise gr.Error("⚠️ Vui lòng chọn màu tóc trước khi đổi màu!")
         
-        colored_img, status_msg = process_colorize_pipeline(result_img, actual_color, intensity)
+        label = "ảnh kết quả" if result_img is not None else "ảnh đầu vào"
+        colored_img, status_msg = process_colorize_pipeline(source_img, actual_color, intensity)
         if colored_img is not None:
-            return colored_img, status_msg
+            return colored_img, f"{status_msg}\n🖼️ Đổi màu trên {label}"
         else:
             return gr.update(), status_msg
     
     quick_color_btn.click(
         fn=on_quick_color_click,
-        inputs=[output_image, color_dropdown, color_hex_input, color_intensity_slider],
+        inputs=[output_image, user_input, color_dropdown, color_hex_input, color_intensity_slider],
         outputs=[output_image, log_output]
     )
     

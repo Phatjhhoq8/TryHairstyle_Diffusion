@@ -277,9 +277,13 @@ export default function App() {
   };
 
   // ========== Quick Colorize (Đổi màu nhanh) ==========
+  // Ưu tiên ảnh kết quả, nếu chưa có thì dùng ảnh đầu vào (chân dung)
   const handleQuickColorize = async () => {
-    if (!resultUrl) {
-      showToast('Chưa có ảnh kết quả để đổi màu!');
+    const sourceUrl = resultUrl;  // ảnh kết quả
+    const sourceFile = faceImage; // ảnh đầu vào
+
+    if (!sourceUrl && !sourceFile) {
+      showToast('Chưa có ảnh nào để đổi màu! Hãy tải ảnh chân dung lên.');
       return;
     }
     if (!selectedColor || selectedColor === 'none') {
@@ -292,10 +296,22 @@ export default function App() {
     setPipelineStatus('Đang đổi màu tóc...');
 
     try {
-      // Fetch ảnh kết quả hiện tại → File
-      const res = await fetch(resultUrl);
-      const blob = await res.blob();
-      const imageFile = new File([blob], 'result.png', { type: blob.type });
+      let imageFile;
+
+      if (sourceUrl) {
+        // Có ảnh kết quả → đổi màu trên kết quả
+        const res = await fetch(sourceUrl);
+        const blob = await res.blob();
+        imageFile = new File([blob], 'result.png', { type: blob.type });
+      } else if (sourceFile instanceof File) {
+        // Chưa có kết quả → đổi màu trên ảnh đầu vào (File)
+        imageFile = sourceFile;
+      } else if (typeof sourceFile === 'string') {
+        // Ảnh đầu vào là URL (random pair) → fetch thành File
+        const res = await fetch(sourceFile);
+        const blob = await res.blob();
+        imageFile = new File([blob], 'face.png', { type: blob.type });
+      }
 
       // Gọi API /colorize
       const { task_id } = await colorizeHair(imageFile, selectedColor, colorIntensity);
@@ -360,7 +376,7 @@ export default function App() {
             loading={loading}
             onQuickColor={handleQuickColorize}
             colorLoading={colorLoading}
-            hasResult={!!resultUrl}
+            hasResult={!!resultUrl || !!faceImage}
           />
         </div>
         <ResultPanel
