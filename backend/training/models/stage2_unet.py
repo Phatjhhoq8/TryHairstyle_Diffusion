@@ -38,10 +38,12 @@ class HairInpaintingUNet(nn.Module):
                 new_conv_in = nn.Conv2d(
                     13, old_conv_in.out_channels, 
                     kernel_size=old_conv_in.kernel_size, 
-                    padding=old_conv_in.padding
+                    padding=old_conv_in.padding,
+                    dtype=old_conv_in.weight.dtype,
+                    device=old_conv_in.weight.device
                 )
-                new_conv_in.weight[:, :4, :, :] = old_conv_in.weight.clone()
-                nn.init.zeros_(new_conv_in.weight[:, 4:, :, :])
+                new_conv_in.weight.data[:, :4, :, :] = old_conv_in.weight.data.clone()
+                nn.init.zeros_(new_conv_in.weight.data[:, 4:, :, :])
                 new_conv_in.bias.data = old_conv_in.bias.data.clone()
                 self.unet.conv_in = new_conv_in
                 
@@ -50,10 +52,12 @@ class HairInpaintingUNet(nn.Module):
                 new_conv_in = nn.Conv2d(
                     13, old_conv_in.out_channels, 
                     kernel_size=old_conv_in.kernel_size, 
-                    padding=old_conv_in.padding
+                    padding=old_conv_in.padding,
+                    dtype=old_conv_in.weight.dtype,
+                    device=old_conv_in.weight.device
                 )
-                new_conv_in.weight[:, :9, :, :] = old_conv_in.weight.clone()
-                nn.init.zeros_(new_conv_in.weight[:, 9:, :, :])
+                new_conv_in.weight.data[:, :9, :, :] = old_conv_in.weight.data.clone()
+                nn.init.zeros_(new_conv_in.weight.data[:, 9:, :, :])
                 new_conv_in.bias.data = old_conv_in.bias.data.clone()
                 self.unet.conv_in = new_conv_in
                 
