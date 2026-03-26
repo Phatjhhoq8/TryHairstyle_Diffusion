@@ -7,7 +7,7 @@ import PromptInput from './components/PromptInput';
 import ColorPicker from './components/ColorPicker';
 import FaceSelector from './components/FaceSelector';
 import ModelSelector from './components/ModelSelector';
-import { generateHair, detectFaces, pollTask, getRandomPair } from './api/hairApi';
+import { generateHair, detectFaces, pollTask, getRandomPair, colorizeHair } from './api/hairApi';
 
 export default function App() {
   // Images (File objects hoặc URL string)
@@ -23,6 +23,7 @@ export default function App() {
 
   // Pipeline state
   const [loading, setLoading] = useState(false);
+  const [colorLoading, setColorLoading] = useState(false);
   const [resultUrl, setResultUrl] = useState(null);
   const [pipelineStatus, setPipelineStatus] = useState('');
   const [pipelineError, setPipelineError] = useState('');
@@ -275,6 +276,55 @@ export default function App() {
     }
   };
 
+  // ========== Quick Colorize (Đổi màu nhanh) ==========
+  const handleQuickColorize = async () => {
+    if (!resultUrl) {
+      showToast('Chưa có ảnh kết quả để đổi màu!');
+      return;
+    }
+    if (!selectedColor || selectedColor === 'none') {
+      showToast('Vui lòng chọn màu tóc trước khi đổi màu!', 'info');
+      return;
+    }
+
+    setColorLoading(true);
+    setPipelineError('');
+    setPipelineStatus('Đang đổi màu tóc...');
+
+    try {
+      // Fetch ảnh kết quả hiện tại → File
+      const res = await fetch(resultUrl);
+      const blob = await res.blob();
+      const imageFile = new File([blob], 'result.png', { type: blob.type });
+
+      // Gọi API /colorize
+      const { task_id } = await colorizeHair(imageFile, selectedColor, colorIntensity);
+
+      // Poll task
+      const { promise } = pollTask(task_id, (data) => {
+        if (data.status === 'PROCESSING') {
+          setPipelineStatus('Đang đổi màu tóc...');
+        }
+      });
+
+      const result = await promise;
+      setColorLoading(false);
+
+      if (result && result.status === 'SUCCESS' && result.result_url) {
+        setResultUrl(result.result_url);
+        setPipelineStatus('');
+        showToast('Đổi màu tóc thành công!', 'success');
+      } else {
+        setPipelineError(result?.error || 'Đổi màu thất bại');
+        setPipelineStatus('');
+      }
+    } catch (err) {
+      setPipelineError(err.message);
+      setPipelineStatus('');
+      setColorLoading(false);
+    }
+  };
+
   // ========== Random Pair ==========
   const handleRandomPair = async () => {
     try {
@@ -305,7 +355,13 @@ export default function App() {
           onImageSelect={setHairImage}
         />
         <div className="min-w-[120px] flex items-center">
-          <DrawButton onClick={handleDraw} loading={loading} />
+          <DrawButton
+            onClick={handleDraw}
+            loading={loading}
+            onQuickColor={handleQuickColorize}
+            colorLoading={colorLoading}
+            hasResult={!!resultUrl}
+          />
         </div>
         <ResultPanel
           resultUrl={resultUrl}

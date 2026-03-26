@@ -1,4 +1,4 @@
-export default function DrawButton({ onClick, loading, disabled }) {
+export default function DrawButton({ onClick, loading, disabled, onQuickColor, colorLoading, hasResult }) {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-3">
       <button
@@ -16,6 +16,24 @@ export default function DrawButton({ onClick, loading, disabled }) {
         )}
       </button>
       <p className="text-xs text-gray-400 text-center">Nhấn để tạo kết quả</p>
+
+      {/* Nút đổi màu nhanh — chỉ hiện khi đã có ảnh kết quả */}
+      {hasResult && (
+        <button
+          className="quick-color-btn"
+          onClick={onQuickColor}
+          disabled={colorLoading || loading}
+        >
+          {colorLoading ? (
+            <>
+              <span className="spinner spinner-sm" />
+              Đang đổi màu...
+            </>
+          ) : (
+            '🎨 ĐỔI MÀU NHANH'
+          )}
+        </button>
+      )}
     </div>
   );
 }

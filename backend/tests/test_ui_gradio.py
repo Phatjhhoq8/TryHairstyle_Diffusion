@@ -450,6 +450,24 @@ custom_css = """
     color: #888;
     font-size: 0.85em;
 }
+
+/* Nút ĐỔI MÀU NHANH */
+.quick-color-btn {
+    background: linear-gradient(135deg, #2d9b8e, #1a7a6d) !important;
+    color: white !important;
+    font-size: 0.95em !important;
+    font-weight: 600 !important;
+    border-radius: 12px !important;
+    min-height: 50px !important;
+    border: none !important;
+    box-shadow: 0 3px 12px rgba(45,155,142,0.3) !important;
+    transition: transform 0.2s, box-shadow 0.2s !important;
+    margin-top: 4px !important;
+}
+.quick-color-btn:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 5px 16px rgba(45,155,142,0.5) !important;
+}
 """
 
 # JavaScript: MutationObserver quản lý popup overlay display
@@ -569,7 +587,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
                 elem_classes="upload-box"
             )
         
-        # --- Column 3: Nút VẼ TÓC ---
+        # --- Column 3: Nút VẼ TÓC + ĐỔI MÀU NHANH ---
         with gr.Column(scale=1, min_width=140):
             gr.Markdown("&nbsp;")  # spacer
             draw_btn = gr.Button(
@@ -578,6 +596,12 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
                 elem_classes="draw-btn"
             )
             gr.Markdown("<center>Nhấn để tạo kết quả</center>")
+            quick_color_btn = gr.Button(
+                "🎨 ĐỔI MÀU NHANH",
+                variant="secondary",
+                elem_classes="quick-color-btn"
+            )
+            gr.Markdown("<center><small>Đổi màu tóc trên ảnh kết quả</small></center>")
         
         # --- Column 4: Kết quả ---
         with gr.Column(scale=3, elem_classes="result-panel"):
@@ -900,6 +924,29 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             popup_source_state, popup_selected_preview,
             user_input, hair_input
         ]
+    )
+    
+    # --- Quick Color: đổi màu nhanh trên ảnh kết quả ---
+    def on_quick_color_click(result_img, color_name, hex_input, intensity):
+        """Đổi màu tóc nhanh trên ảnh kết quả (không cần Diffusion)."""
+        if result_img is None:
+            raise gr.Error("⚠️ Chưa có ảnh kết quả để đổi màu! Hãy Vẽ Tóc trước.")
+        
+        # Ưu tiên hex nếu có, ngược lại dùng preset
+        actual_color = hex_input.strip() if hex_input and hex_input.strip() else color_name
+        if not actual_color or actual_color == "none":
+            raise gr.Error("⚠️ Vui lòng chọn màu tóc trước khi đổi màu!")
+        
+        colored_img, status_msg = process_colorize_pipeline(result_img, actual_color, intensity)
+        if colored_img is not None:
+            return colored_img, status_msg
+        else:
+            return gr.update(), status_msg
+    
+    quick_color_btn.click(
+        fn=on_quick_color_click,
+        inputs=[output_image, color_dropdown, color_hex_input, color_intensity_slider],
+        outputs=[output_image, log_output]
     )
     
     # --- Popup: cancel ---

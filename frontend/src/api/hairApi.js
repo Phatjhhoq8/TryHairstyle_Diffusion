@@ -59,6 +59,20 @@ export async function getColors() {
 }
 
 /**
+ * POST /colorize — Đổi màu tóc nhanh (không cần Diffusion Model)
+ */
+export async function colorizeHair(imageFile, hairColor, intensity = 0.7) {
+  const form = new FormData();
+  form.append('face_image', imageFile);
+  form.append('hair_color', hairColor);
+  form.append('intensity', String(intensity));
+
+  const res = await fetch(`${API_BASE}/colorize`, { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`Colorize failed: ${res.status}`);
+  return res.json(); // { task_id, status, message }
+}
+
+/**
  * GET /random-pair — Lấy 2 ảnh FFHQ ngẫu nhiên
  */
 export async function getRandomPair() {
