@@ -45,19 +45,36 @@ Ngoài việc sử dụng mô hình SDXL Inpainting có sẵn, hệ thống xây
 Bộ mã hóa sử dụng backbone ResNet\nobreakdash-50 để trích xuất vector đặc trưng tóc 2048 chiều. Quá trình huấn luyện sử dụng ảnh crop vùng tóc (xác định bằng SegFormer), resize về $128\times 128$ và chuẩn hóa theo ImageNet. Vector đặc trưng này phục vụ cho nhánh style conditioning trong quá trình suy luận.
 
 \subsection{Giai đoạn 2: Tinh chỉnh UNet Inpainting bằng LoRA}
-Mô hình UNet 13 kênh đầu vào (4 kênh nhiễu \textit{noisy latents} + 4 kênh ảnh gốc khoét vùng cần vẽ \textit{masked latents} + 1 kênh \textit{mask} + 4 kênh ảnh tóc tham chiếu \textit{reference hair latents}) được tinh chỉnh bằng LoRA trên nền SDXL. Các thành phần chính:
+Mô hình UNet được mở rộng lên 13 kênh đầu vào để hỗ trợ \textbf{direct reference conditioning} -- cho phép mô hình trực tiếp nhận ảnh tóc mẫu làm điều kiện sinh ảnh thay vì chỉ dựa vào style embedding. Cấu trúc 13 kênh:
 \begin{itemize}
-    \item \textbf{HairInpaintingUNet:} UNet wrapper cho 13 kênh đầu vào, tích hợp tự động phát hiện số kênh tương thích cho cả 9-kênh và 13-kênh.
-    \item \textbf{CrossAttentionInjector:} Module inject style embedding (2048-d) và identity embedding (512-d) vào các tầng cross-attention của UNet. Các embedding được project thông qua linear layer riêng biệt.
-    \item \textbf{Hàm mất mát đa thành phần:}
-    \begin{itemize}
-        \item Mask-aware loss: Tăng trọng số cho pixel vùng tóc và biên tóc.
-        \item Latent loss: So sánh đặc trưng trong không gian tiềm ẩn.
-        \item Cơ chế weighting theo timestep: Hỗ trợ hội tụ ổn định.
-    \end{itemize}
-    \item \textbf{Classifier-Free Guidance:} Được áp dụng cả trong huấn luyện (dropout conditioning) và suy luận.
+    \item 4 kênh \textit{noisy latents}: Ảnh nhiễu ở bước khuếch tán hiện tại.
+    \item 1 kênh \textit{mask}: Vùng tóc cần vẽ lại (binary mask downsampled).
+    \item 4 kênh \textit{masked latents}: Ảnh gốc đã khoét vùng tóc (qua VAE Encoder).
+    \item 4 kênh \textit{reference hair latents}: Ảnh tóc tham chiếu (qua VAE Encoder).
 \end{itemize}
-Quá trình huấn luyện sử dụng độ phân giải $512\times 512$, phù hợp với tài nguyên GPU 12GB.
+
+\subsubsection{Kiến trúc mạng}
+\begin{itemize}
+    \item \textbf{HairInpaintingUNet:} Wrapper mở rộng lớp \texttt{conv\_in} của SDXL từ 4/9 kênh lên 13 kênh. Trọng số cũ được giữ nguyên, 4 kênh mới khởi tạo bằng zero. Hệ thống tự động phát hiện và tương thích ngược với checkpoint 9-kênh.
+    \item \textbf{CrossAttentionInjector:} Module inject style embedding (2048-d) và identity embedding (512-d) vào các tầng cross-attention của UNet thông qua linear projection riêng biệt.
+\end{itemize}
+
+\subsubsection{Chiến lược huấn luyện}
+\begin{itemize}
+    \item \textbf{Cross-Person Pairing:} 70\% mẫu huấn luyện ghép tóc từ \textit{người khác}, 30\% tự tham chiếu (self-reference). Chiến lược này buộc mô hình học cách tái tạo kiểu tóc từ ảnh mẫu bất kỳ thay vì chỉ ghi nhớ.
+    \item \textbf{VAE Latent Caching:} Ảnh ground truth được pre-encode qua VAE Encoder thành latent $4 \times 64 \times 64$ và lưu cache trên đĩa (${\sim}32$KB/file). Cơ chế này giúp bỏ qua bước VAE encoding trong vòng lặp huấn luyện, tiết kiệm đáng kể VRAM và thời gian.
+    \item \textbf{Mixed-Precision Training:} Lớp \texttt{conv\_in} (lớp duy nhất cần học trọng số mới) được giữ ở FP32 để đảm bảo gradient không bị underflow. Phần còn lại của UNet chạy ở FP16 thông qua \texttt{torch.amp.autocast}. Cơ chế \texttt{GradScaler} phóng đại loss trước khi lan truyền ngược rồi thu nhỏ lại, đảm bảo độ chính xác số học cho toàn pipeline.
+    \item \textbf{Classifier-Free Guidance Dropout:} 10\% bước huấn luyện đặt toàn bộ conditioning (style, identity, reference latents) về zero, cho phép áp dụng CFG khi suy luận.
+\end{itemize}
+
+\subsubsection{Hàm mất mát}
+\begin{itemize}
+    \item \textbf{Mask-aware loss:} Tăng trọng số cho pixel vùng tóc và biên tóc.
+    \item \textbf{Latent loss:} So sánh đặc trưng trong không gian tiềm ẩn.
+    \item \textbf{Cơ chế weighting theo timestep:} Hỗ trợ hội tụ ổn định.
+\end{itemize}
+
+Quá trình huấn luyện sử dụng LoRA rank 16, độ phân giải $512\times 512$, batch size 2 với gradient accumulation 4 bước. Chỉ khoảng 35 triệu tham số (${\sim}1.3$\% tổng mô hình) được huấn luyện, phù hợp với tài nguyên GPU 12--16GB (RTX 3060 / Colab T4).
 
 \section{Xây dựng Backend API}
 Backend được xây dựng bằng FastAPI với cấu trúc module rõ ràng.
