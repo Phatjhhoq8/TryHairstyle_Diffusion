@@ -107,7 +107,7 @@ def get_random_ffhq_image():
     return Image.open(img_path).convert("RGB")
 
 
-def process_pipeline(user_image, hair_image, prompt, language="English", ai_model="HairFusion"):
+def process_pipeline(user_image, hair_image, prompt, language="English", ai_model="HairFusion", latent_injection_weight=0.3):
     """Chạy full pipeline: Face → Mask → Depth → Diffusion. Hoặc route sang TryOnHairstyle."""
     if user_image is None or hair_image is None:
         return None, "⚠️ Please select both images."
@@ -182,7 +182,8 @@ def process_pipeline(user_image, hair_image, prompt, language="English", ai_mode
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_image,
-            prompt=final_prompt
+            prompt=final_prompt,
+            latent_injection_weight=latent_injection_weight
         )
         
         # Resize kết quả về kích thước gốc để không bị méo
@@ -643,6 +644,17 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
         with gr.Column(scale=1):
             random_btn = gr.Button("FFHQ ngẫu nhiên", variant="secondary", size="sm")
     
+    # ===== Latent Injection Slider =====
+    with gr.Row():
+        with gr.Column(scale=3):
+            injection_slider = gr.Slider(
+                label="Latent Injection Weight",
+                minimum=0.0, maximum=0.5, value=0.3, step=0.05,
+                info="Truyền kiểu tóc mẫu trực tiếp vào latent space. 0 = tắt, 0.3 = mặc định, 0.5 = mạnh nhất"
+            )
+        with gr.Column(scale=3):
+            pass  # khoảng trống cân đối
+    
     # ===== POPUP: Chọn khuôn mặt / tóc (ẩn mặc định) =====
     with gr.Column(visible=False, elem_classes="popup-overlay") as popup_panel:
         with gr.Column(elem_classes="popup-content"):
@@ -671,7 +683,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
     random_btn.click(fn=random_pair, outputs=[user_input, hair_input])
     
     # --- Click VẼ TÓC: validate → detect faces → popup hoặc chạy luôn ---
-    def on_draw_click(user_img, hair_img, prompt, lang, ai_model, color_name, hex_input, intensity):
+    def on_draw_click(user_img, hair_img, prompt, lang, ai_model, color_name, hex_input, intensity, injection_weight):
         """
         Bước 1: Validate input.
         Bước 2: Detect faces trong ảnh chân dung.
@@ -754,7 +766,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             gr.update(value=loading_content, visible=True),  # hiện loading
         )
         
-        result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt, lang, ai_model)
+        result_img, status_msg = process_pipeline(chosen_face, chosen_hair, prompt, lang, ai_model, injection_weight)
         
         # Nếu có chọn color → colorize thêm
         if result_img is not None:
@@ -781,7 +793,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
     
     draw_btn.click(
         fn=on_draw_click,
-        inputs=[user_input, hair_input, prompt_input, language_radio, model_radio, color_dropdown, color_hex_input, color_intensity_slider],
+        inputs=[user_input, hair_input, prompt_input, language_radio, model_radio, color_dropdown, color_hex_input, color_intensity_slider, injection_slider],
         outputs=[
             output_image, log_output,
             popup_panel, popup_title, popup_gallery,

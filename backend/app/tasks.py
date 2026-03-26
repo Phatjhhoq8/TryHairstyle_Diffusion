@@ -73,7 +73,8 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         except Exception as e:
             return {"status": "FAILURE", "error": f"Model Load Failed: {str(e)}"}
 
-    try:
+    if ai_model != "TryOnHairstyle":
+      try:
         # Tạo session folder cho lần inference này
         session_name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self.request.id[:8]}"
         session_dir = os.path.join(str(OUTPUT_DIR), session_name)
@@ -157,7 +158,8 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
             mask_image=hair_mask,
             control_image=depth_map,
             ref_hair_image=hair_pil,
-            prompt=finalPrompt
+            prompt=finalPrompt,
+            latent_injection_weight=0.3
         )
         
         # Resize kết quả về kích thước gốc để không bị méo
@@ -192,7 +194,7 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
             "url": f"/static/output/{session_name}/result.png"
         }
 
-    except Exception as e:
+      except Exception as e:
         # Cleanup GPU memory ngay cả khi lỗi
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -202,7 +204,6 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
     if result_data.get("status") == "SUCCESS" and original_face_path and bbox:
         print(f">>> Bắt đầu ghép kết quả trả về ảnh gốc... bbox: {bbox}")
         try:
-            from PIL import Image
             orig_img = Image.open(original_face_path).convert("RGB")
             res_img = Image.open(result_data["result_path"]).convert("RGB")
             

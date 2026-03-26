@@ -86,12 +86,12 @@ Mô hình phân đoạn ngữ nghĩa mạnh mẽ dựa trên Transformer (jonath
 ### V. Chiến lược Huấn luyện
 Hệ thống chia thành **2 giai đoạn huấn luyện** (2-stage training):
 - **Stage 1 — Texture Encoder** (`texture_encoder.py`): Finetune ResNet-50 trên K-Hairstyle hair patches (128×128). Học phân loại curl (4 classes: thẳng/vểnh/xoăn/xoăn tít) và volume (3 classes). Dùng `CrossEntropyLoss` + `SupConLoss` (Supervised Contrastive). Output: vector 2048-d mã hóa đặc trưng texture tóc.
-- **Stage 2 — Inpainting UNet** (`train_stage2.py`): Freeze Texture Encoder → lấy style embedding 2048-d. Train LoRA (r=16) trên SDXL UNet 9-channel + CrossAttentionInjector. Data: K-Hairstyle + FFHQ. Loss tích hợp 5 cải tiến: `Edge-weighted MaskAwareLoss` (phạt nặng viền tóc), `Latent Perceptual Loss` (giữ chi tiết sợi tóc), `Min-SNR Weighting` (tăng tốc hội tụ), `CFG Dropout 10%` (dạy model bám sát ảnh mẫu) và `Noise Offset 0.1` (cân bằng tương phản). Monitor thêm độ tương đồng qua `TextureConsistencyLoss` & `IdentityCosineLoss` (mỗi 50 steps). Gradient Accumulation 8 steps, AMP FP16, AdamW8bit (VRAM ~15GB).
+- **Stage 2 — Inpainting UNet** (`train_stage2.py`): Freeze Texture Encoder → lấy style embedding 2048-d. Train LoRA (r=16) trên SDXL UNet 13-channel (nhận thêm 4 kênh ảnh tóc tham chiếu - ref_hair_latents) + CrossAttentionInjector. Data: K-Hairstyle + FFHQ. Lấy nguyên lý đổi nền chéo (Cross-person pairing). Loss tích hợp 5 cải tiến: `Edge-weighted MaskAwareLoss` (phạt nặng viền tóc), `Latent Perceptual Loss` (giữ chi tiết sợi tóc), `Min-SNR Weighting` (tăng tốc hội tụ), `CFG Dropout 10%` (dạy model bám sát ảnh mẫu) và `Noise Offset 0.1` (cân bằng tương phản). Monitor thêm độ tương đồng qua `TextureConsistencyLoss` & `IdentityCosineLoss` (mỗi 50 steps). Gradient Accumulation 8 steps, AMP FP16, AdamW8bit (VRAM ~15GB).
 
 ### VI. Inference Pipeline
 Hệ thống hỗ trợ **2 pipeline** — tự động chọn dựa trên checkpoint có sẵn:
 
-**Pipeline A — Custom 9-Channel UNet (khi có model đã train):**
+**Pipeline A — Custom 13-Channel UNet (khi có model đã train):**
 1. **Face Analysis:** YOLOv8-Face → InsightFace (antelopev2) → AdaFace fallback. Auto-rotate nếu không detect mặt. Gắn 3D vertices (3DDFA V2) cho mặt chính.
 2. **Segmentation:** SegFormer (`jonathandinu/face-parsing`) → hair mask (class 13+14) + face mask (class 1-12). Tạo mask cho cả ảnh mẫu.
 3. **Dynamic Masking:** `expand_hair_mask()` xử lý 3 trường hợp:
@@ -130,7 +130,7 @@ File [diffusion.py](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/serv
     - Khởi tạo Service và xác định cấu hình phần cứng (FP16 nếu có CUDA, FP32 nếu chạy CPU). 
     - Kiểm tra xem hệ thống có model Custom UNet 9-channel đã train không. Nếu có → [_load_custom_pipeline()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/diffusion.py#55-167). Nếu không → fallback [_load_sdxl_pipeline()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/diffusion.py#168-238).
 *   [_load_custom_pipeline(checkpoint_path)](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/diffusion.py#55-167): 
-    - Tải **Custom 9-channel UNet** (đã được fine-tune). 9-channels = 4 kênh noisy_latents (VAE) + 1 kênh mask + 4 kênh masked_latents (ảnh gốc đã khoét tóc).
+    - Tải **Custom 13-channel UNet** (đã được fine-tune) hoặc fallback tự động về 9-channel cũ. 13-channels = 4 kênh noisy_latents (VAE) + 1 kênh mask + 4 kênh masked_latents (ảnh gốc đã khoét tóc) + 4 kênh ref_hair_latents (ảnh tóc mẫu tham chiếu).
     - Tải **CrossAttentionInjector**: Module siêu nhẹ inject Identity (512D→2048D) + Style (2048D) embeddings vào UNet cross-attention mà không cần CLIP Vision.
     - Tải **HairTextureEncoder** (ResNet-50, 2048-d) từ [texture_encoder.py](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/texture_encoder.py) — **cùng model đã dùng lúc training**, tránh distribution mismatch khi dùng CLIP.
 *   [_load_sdxl_pipeline()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/diffusion.py#168-238):
@@ -197,12 +197,12 @@ Class `SegmentationService` là "Bộ Não" chịu trách nhiệm tạo mask và
     - Đáng chú ý là kỹ thuật **Lazy Loading** và **Disk Caching**: Để tiết kiệm VRAM trên Google Colab (vốn hay sập RAM), hệ thống tính toán trước (`pre-encode`) tất cả các CLIP Text Prompts và lưu ra ổ đĩa dưới dạng file `.pt`. Khi cần, nó mới bốc file từ đĩa thay vì bắt card đồ họa dịch text thành vector hàng nghìn lần.
 
 ### B. Huấn luyện thực tế ([Stage2Trainer](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#533-1982))
-*   [__init__()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#539-667): Thiết lập **LoRA** (Low-Rank Adaptation) với hạng `r=16`, target_modules: `to_q, to_k, to_v, to_out.0`. Đóng băng 99.7% trọng số SDXL (2.6B params), chỉ train ~0.3% qua LoRA + conv_in (9-channel) + CrossAttentionInjector. VAE đẩy sang CPU (on-demand GPU offload). AdamW8bit + AMP FP16 → VRAM ~8GB.
+*   [__init__()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#539-667): Thiết lập **LoRA** (Low-Rank Adaptation) với hạng `r=16`, target_modules: `to_q, to_k, to_v, to_out.0`. Đóng băng 99.7% trọng số SDXL (2.6B params), chỉ train ~0.3% qua LoRA + conv_in (13-channel) + CrossAttentionInjector. VAE đẩy sang CPU (on-demand GPU offload). AdamW8bit + AMP FP16 → VRAM ~8GB.
 *   [train_step()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#747-927): Chu trình back-propagation:
     1. **VAE Encode**: GT → `latents` (4ch). Masked image (`gt × (1-mask)`) → `masked_latents` (4ch). VAE CPU↔GPU offload mỗi encode.
     2. **Noise Scheduling**: Phủ **Noise Offset 0.1** (giúp sinh dải màu siêu tối/sáng tự nhiên). Random timestep `t` → `noisy_latents = scheduler.add_noise(latents, noise, t)`.
     3. **Conditioning**: Áp dụng **CFG Dropout 10%** (set style/id về zeros) để dạy model theo luật Classifier-Free Guidance. CrossAttentionInjector inject `[style_token, id_token]` → concat với text.
-    4. **Forward (AMP)**: UNet 9-channel: `[noisy_latents(4), mask(1), masked_latents(4)]` → `noise_pred`.
+    4. **Forward (AMP)**: UNet 13-channel: `[noisy_latents(4), mask(1), masked_latents(4), ref_hair_latents(4)]` → `noise_pred`.
     5. **Loss (Tích hợp 3 tinh chỉnh)**: 
        - **Edge-weighted MaskAwareLoss** (Core): Phạt sai số vùng tóc weight=1.0, vùng viền chân tóc weight=3.0 (giúp hairline tự nhiên), vùng nền weight=0.1.
        - **Min-SNR-γ Weighting**: Nhân trọng số tốc độ học theo từng timestep → ưu tiên bước quan trọng, hội tụ nhanh hơn 30%.
@@ -276,13 +276,14 @@ Class `SegmentationService` là "Bộ Não" chịu trách nhiệm tạo mask và
 
 ---
 
-## 9. Kiến Trúc UNet 9-Channel & Cross-Attention Injector ([stage2_unet.py](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/stage2_unet.py))
+## 9. Kiến Trúc UNet 13-Channel & Cross-Attention Injector ([stage2_unet.py](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/stage2_unet.py))
 
-*   **[HairInpaintingUNet](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/stage2_unet.py#8-99)**: "Phẫu thuật" lớp `conv_in` của SDXL UNet, mở rộng từ 4 kênh gốc → **9 kênh**:
+*   **[HairInpaintingUNet](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/stage2_unet.py#8-99)**: "Phẫu thuật" lớp `conv_in` của SDXL UNet, mở rộng từ 4 kênh gốc → **13 kênh**:
     - 4 kênh: `noisy_latents` (latent nhiễu từ VAE Encode + Gaussian Noise)
     - 1 kênh: [mask](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/app/services/mask.py#119-162) (vùng tóc cần vẽ lại)
     - 4 kênh: `masked_latents` (ảnh gốc đã khoét mất vùng tóc, qua VAE).
-    - Trọng số cũ được giữ nguyên ở 4 kênh đầu, 5 kênh mới khởi tạo `zeros` để không phá hỏng weights SDXL gốc.
+    - 4 kênh: `ref_hair_latents` (ảnh chứa phong cách và hình dáng tóc mẫu, đóng vai trò Direct Reference Conditioning).
+    - Trọng số cũ được giữ nguyên ở các kênh đầu, các kênh mới khởi tạo `zeros` để không phá hỏng weights SDXL gốc. Hỗ trợ backwards compatibility load được cả checkpoint 9 kênh cũ.
     - Kích hoạt **Gradient Checkpointing** + **xFormers Memory-Efficient Attention** để tiết kiệm VRAM.
 *   **[CrossAttentionInjector](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/stage2_unet.py#104-144)**: Module siêu nhẹ nằm cạnh UNet, chiếu (project) 2 vector:
     - `identity_proj`: Identity Embedding 512D → 2048D (cùng chiều với text prompt).

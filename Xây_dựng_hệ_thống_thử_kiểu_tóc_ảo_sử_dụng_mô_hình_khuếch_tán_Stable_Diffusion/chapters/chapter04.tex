@@ -45,9 +45,9 @@ Ngoài việc sử dụng mô hình SDXL Inpainting có sẵn, hệ thống xây
 Bộ mã hóa sử dụng backbone ResNet\nobreakdash-50 để trích xuất vector đặc trưng tóc 2048 chiều. Quá trình huấn luyện sử dụng ảnh crop vùng tóc (xác định bằng SegFormer), resize về $128\times 128$ và chuẩn hóa theo ImageNet. Vector đặc trưng này phục vụ cho nhánh style conditioning trong quá trình suy luận.
 
 \subsection{Giai đoạn 2: Tinh chỉnh UNet Inpainting bằng LoRA}
-Mô hình UNet 9 kênh đầu vào (3 kênh noisy latents + 3 kênh masked latents + 1 kênh mask + 2 kênh padding) được tinh chỉnh bằng LoRA trên nền SDXL. Các thành phần chính:
+Mô hình UNet 13 kênh đầu vào (4 kênh nhiễu \textit{noisy latents} + 4 kênh ảnh gốc khoét vùng cần vẽ \textit{masked latents} + 1 kênh \textit{mask} + 4 kênh ảnh tóc tham chiếu \textit{reference hair latents}) được tinh chỉnh bằng LoRA trên nền SDXL. Các thành phần chính:
 \begin{itemize}
-    \item \textbf{HairInpaintingUNet:} UNet wrapper cho 9 kênh đầu vào, tích hợp với VAE encoder.
+    \item \textbf{HairInpaintingUNet:} UNet wrapper cho 13 kênh đầu vào, tích hợp tự động phát hiện số kênh tương thích cho cả 9-kênh và 13-kênh.
     \item \textbf{CrossAttentionInjector:} Module inject style embedding (2048-d) và identity embedding (512-d) vào các tầng cross-attention của UNet. Các embedding được project thông qua linear layer riêng biệt.
     \item \textbf{Hàm mất mát đa thành phần:}
     \begin{itemize}
@@ -65,21 +65,21 @@ Backend được xây dựng bằng FastAPI với cấu trúc module rõ ràng.
 \subsection{Cấu trúc source code}
 \begin{Verbatim}[frame=single]
 backend/app/
-├── main.py          # FastAPI endpoints + CORS + Static Files
-├── tasks.py         # 3 Celery tasks (hair_transfer, colorize, detect_faces)
-├── config.py        # Model paths + App settings
-├── schemas.py       # Pydantic request/response schemas
-├── services/
-│   ├── diffusion.py       # Dual pipeline (Standard + Custom)
-│   ├── face.py            # YOLO + InsightFace + AdaFace
-│   ├── mask.py            # SegFormer + Dynamic Masking
-│   ├── hair_color_service.py  # HSV Color Transfer
-│   ├── embedder.py        # Yaw-based embedding switching
-│   ├── face_detector.py   # YOLOv8-Face + NMS
-│   ├── pose_estimator.py  # InsightFace landmarks + 3DDFA pose
-│   └── reconstructor_3d.py   # 3DDFA V2 dense mesh
-└── utils/
-    └── torch_patch.py     # PyTorch compatibility patches
+|-- main.py          # FastAPI endpoints + CORS + Static Files
+|-- tasks.py         # 3 Celery tasks (hair_transfer, colorize, detect_faces)
+|-- config.py        # Model paths + App settings
+|-- schemas.py       # Pydantic request/response schemas
+|-- services/
+|   |-- diffusion.py       # Dual pipeline (Standard + Custom)
+|   |-- face.py            # YOLO + InsightFace + AdaFace
+|   |-- mask.py            # SegFormer + Dynamic Masking
+|   |-- hair_color_service.py  # HSV Color Transfer
+|   |-- embedder.py        # Yaw-based embedding switching
+|   |-- face_detector.py   # YOLOv8-Face + NMS
+|   |-- pose_estimator.py  # InsightFace landmarks + 3DDFA pose
+|   \-- reconstructor_3d.py   # 3DDFA V2 dense mesh
+\-- utils/
+    \-- torch_patch.py     # PyTorch compatibility patches
 \end{Verbatim}
 
 \subsection{Celery Tasks và Lazy Loading}

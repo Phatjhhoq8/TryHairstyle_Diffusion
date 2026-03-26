@@ -3,21 +3,36 @@
 \begin{document}
 
 \section{Kiến trúc tổng thể hệ thống}
-Hệ thống TryHairStyle được tổ chức theo kiến trúc client--server với bốn thành phần chính:
+Hệ thống TryHairStyle được tổ chức theo kiến trúc client--server với bốn thành phần chính, đảm bảo khả năng mở rộng và xử lý hiệu quả các tác vụ tính toán nặng:
+
 \begin{enumerate}
-    \item \textbf{Frontend (React/Vite):} Giao diện web cho phép người dùng tải ảnh, chọn kiểu tóc tham chiếu, chọn màu tóc và xem kết quả.
-    \item \textbf{Backend API (FastAPI):} Tiếp nhận yêu cầu HTTP, kiểm tra dữ liệu đầu vào, tạo tác vụ xử lý và phục vụ file tĩnh.
-    \item \textbf{Worker AI (Celery):} Nhận tác vụ từ hàng đợi Redis, thực hiện toàn bộ pipeline suy luận trên GPU.
-    \item \textbf{Message Broker (Redis):} Trung gian truyền tác vụ giữa API và worker, đồng thời lưu trạng thái tác vụ.
+    \item \textbf{Frontend (React/Vite):}
+    Giao diện web cho phép người dùng tải ảnh đầu vào, lựa chọn kiểu tóc tham chiếu, tùy chỉnh màu tóc và theo dõi kết quả. Frontend được thiết kế để tương tác thời gian thực với backend thông qua các API.
+
+    \item \textbf{Backend API (FastAPI):}
+    Thành phần này tiếp nhận các yêu cầu HTTP từ phía người dùng, thực hiện kiểm tra dữ liệu đầu vào và khởi tạo tác vụ xử lý. Ngoài ra, backend còn chịu trách nhiệm quản lý trạng thái và cung cấp các tài nguyên tĩnh như ảnh kết quả.
+
+    \item \textbf{Worker AI (Celery):}
+    Worker đảm nhận việc xử lý các tác vụ suy luận AI. Sau khi nhận nhiệm vụ từ hàng đợi, worker thực thi toàn bộ pipeline bao gồm tiền xử lý, suy luận mô hình và hậu xử lý trên GPU, đảm bảo hiệu suất cho các tác vụ nặng.
+
+    \item \textbf{Message Broker (Redis):}
+    Redis đóng vai trò trung gian truyền tải tác vụ giữa backend và worker, đồng thời lưu trữ trạng thái xử lý. Cơ chế hàng đợi giúp hệ thống xử lý bất đồng bộ và tăng khả năng chịu tải.
 \end{enumerate}
-Kiến trúc này tách biệt luồng tiếp nhận yêu cầu khỏi luồng suy luận nặng trên GPU, giúp backend phản hồi nhanh và tránh timeout khi mô hình đang xử lý.
+
+Kiến trúc này tách biệt rõ ràng giữa luồng tiếp nhận yêu cầu và luồng xử lý suy luận, cho phép backend phản hồi nhanh chóng mà không bị chặn bởi các tác vụ tính toán phức tạp. Nhờ đó, hệ thống hạn chế tình trạng timeout và nâng cao trải nghiệm người dùng.
 
 \subsection{Cơ chế điều kiện kép}
-Để vừa bảo toàn khuôn mặt vừa chuyển giao kiểu tóc, hệ thống sử dụng hai nhánh điều kiện hóa song song:
+Để vừa bảo toàn khuôn mặt vừa chuyển giao kiểu tóc, hệ thống sử dụng hai nhánh điều kiện hóa song song, mỗi nhánh đảm nhận một vai trò riêng biệt nhưng bổ trợ lẫn nhau:
+
 \begin{itemize}
-    \item \textbf{Nhánh bảo toàn danh tính:} Ảnh người dùng được phân tích bằng InsightFace để trích xuất embedding khuôn mặt 512 chiều. Embedding này kết hợp với ControlNet Depth và InstantID để hạn chế thay đổi ở khuôn mặt. Với khuôn mặt nghiêng ($|yaw| \geq 45\degree$), hệ thống tự động chuyển sang AdaFace IR\nobreakdash-100.
-    \item \textbf{Nhánh truyền tải phong cách tóc:} Ảnh tóc tham chiếu được mã hóa qua IP-Adapter Plus (pipeline chuẩn) hoặc HairTextureEncoder ResNet\nobreakdash-50 (pipeline tùy chỉnh) để tạo style embedding 2048 chiều, dẫn hướng mô hình sinh kiểu tóc phù hợp.
+    \item \textbf{Nhánh bảo toàn danh tính:}
+    Ảnh người dùng được phân tích bằng InsightFace để trích xuất embedding khuôn mặt 512 chiều, đóng vai trò biểu diễn danh tính. Embedding này được kết hợp với ControlNet Depth nhằm duy trì cấu trúc hình học, đồng thời tích hợp InstantID để tăng cường khả năng giữ nguyên đặc trưng nhận dạng. Đối với các trường hợp khuôn mặt nghiêng ($|yaw| \geq 45^\circ$), hệ thống tự động chuyển sang sử dụng AdaFace IR\nobreakdash-100 để đảm bảo độ ổn định của embedding.
+
+    \item \textbf{Nhánh truyền tải phong cách tóc:}
+    Ảnh tóc tham chiếu được mã hóa thành vector đặc trưng thông qua IP-Adapter Plus trong pipeline chuẩn, hoặc HairTextureEncoder (ResNet\nobreakdash-50) trong pipeline tùy chỉnh. Vector này chứa thông tin về cấu trúc, hình dạng và kết cấu tóc, từ đó dẫn hướng mô hình sinh ảnh tạo ra kiểu tóc phù hợp với tham chiếu.
 \end{itemize}
+
+Hai nhánh điều kiện này được tích hợp đồng thời vào quá trình suy luận của mô hình khuếch tán, giúp cân bằng giữa việc giữ nguyên danh tính khuôn mặt và áp dụng chính xác kiểu tóc mong muốn.
 
 \section{Thiết kế các mô-đun xử lý}
 Phần backend được chia thành các service module độc lập, mỗi module đảm nhận một chức năng riêng biệt.
@@ -59,7 +74,7 @@ Trong bài toán thử tóc ảo, tóc tham chiếu có thể dài hoặc phồn
 Service hỗ trợ hai chế độ pipeline:
 \begin{enumerate}
     \item \textbf{Standard Pipeline:} Sử dụng \texttt{StableDiffusionXLControlNetInpaintPipeline} với ControlNet Depth + IP-Adapter Plus. Ảnh tham chiếu được dùng trực tiếp qua IP-Adapter.
-    \item \textbf{Custom Pipeline:} Sử dụng UNet 9 kênh đầu vào (noisy latents + masked latents + mask) được tinh chỉnh bằng LoRA. Style embedding (2048 chiều từ HairTextureEncoder) và identity embedding (512 chiều từ InsightFace) được inject qua CrossAttentionInjector. Quá trình khử nhiễu áp dụng Classifier-Free Guidance.
+    \item \textbf{Custom Pipeline:} Sử dụng UNet 13 kênh đầu vào (noisy latents + masked latents + mask + reference hair latents) được tinh chỉnh bằng LoRA. Style embedding (2048 chiều từ HairTextureEncoder) và identity embedding (512 chiều từ InsightFace) được inject qua CrossAttentionInjector. Quá trình khử nhiễu áp dụng Classifier-Free Guidance.
 \end{enumerate}
 Tất cả ảnh được resize về 512$\times$512 khi suy luận rồi upscale về kích thước gốc bằng Lanczos.
 

@@ -5,13 +5,13 @@ const MODELS = [
     id: 'HairFusion',
     label: 'HairFusion',
     desc: 'Mô hình hiện tại — SDXL + ControlNet + IP-Adapter',
-    icon: '🎨',
+    icon: '',
   },
   {
     id: 'TryOnHairstyle',
     label: 'TryOnHairstyle',
     desc: 'Mô hình thay thế — HairFusion ControlNet v1',
-    icon: '✂️',
+    icon: '',
   },
 ];
 
@@ -29,7 +29,7 @@ export default function ModelSelector({ value, onChange }) {
         color: '#495057',
         marginBottom: '10px',
       }}>
-        🧠 Mô hình AI
+          Mô hình AI
       </div>
       <div style={{ display: 'flex', gap: '10px' }}>
         {MODELS.map((model) => (
