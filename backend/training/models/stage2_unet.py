@@ -9,10 +9,11 @@ class HairInpaintingUNet(nn.Module):
     """
     Stage 2: Mask-Conditioned Hair Inpainting UNet.
     Vận dụng trọng số của SDXL Inpainting làm nền tảng (Base).
-    Input 9 Channels: 
+    Input 13 Channels: 
      - 4 kênh Latent (Noised Hair Input)
-     - 4 kênh Bald Latent (Mặt trọc làm tham chiếu bối cảnh)
      - 1 kênh Mask (Downsampled Vùng Tóc)
+     - 4 kênh Bald Latent (Mặt trọc làm tham chiếu bối cảnh)
+     - 4 kênh Reference Hair Latent (Ảnh tóc mẫu đã VAE encode)
     """
     
     def __init__(self, sd_model_id=LOCAL_SDXL_PATH):
@@ -26,31 +27,38 @@ class HairInpaintingUNet(nn.Module):
             torch_dtype=torch.float16
         )
         
-        # 2. Thay đổi lớp Conv_in để nhận 9-channels thay vì 4-channels chuẩn
-        # Điều này rất quan trọng để mô hình hiểu được Mask và phối cảnh mặt trọc.
-        # Format: (B, 9, H, W)
+        # 2. Thay đổi lớp Conv_in để nhận 13-channels
+        # Format: (B, 13, H, W) = [noisy(4) + mask(1) + masked(4) + ref_hair(4)]
         with torch.no_grad():
             old_conv_in = self.unet.conv_in
             in_channels = old_conv_in.weight.shape[1]
             
             if in_channels == 4:
+                # SDXL base (4-ch) → mở rộng lên 13
                 new_conv_in = nn.Conv2d(
-                    9, old_conv_in.out_channels, 
+                    13, old_conv_in.out_channels, 
                     kernel_size=old_conv_in.kernel_size, 
                     padding=old_conv_in.padding
                 )
-                
-                # Copy trọng số cũ sang 4 kênh đầu của lớp mới
                 new_conv_in.weight[:, :4, :, :] = old_conv_in.weight.clone()
-                
-                # Khởi tạo giá trị zero (hoặc phân phối rất nhỏ) cho 5 kênh mở rộng 
-                # để không phá hỏng Weight SDXL gốc lúc ban đầu
                 nn.init.zeros_(new_conv_in.weight[:, 4:, :, :])
                 new_conv_in.bias.data = old_conv_in.bias.data.clone()
-                
                 self.unet.conv_in = new_conv_in
+                
             elif in_channels == 9:
-                pass # Model này đã là bản Inpainting xịn 9 channels, không cần phẫu thuật nữa!
+                # SDXL Inpainting (9-ch) → mở rộng lên 13 (copy 9 cũ, thêm 4 zeros)
+                new_conv_in = nn.Conv2d(
+                    13, old_conv_in.out_channels, 
+                    kernel_size=old_conv_in.kernel_size, 
+                    padding=old_conv_in.padding
+                )
+                new_conv_in.weight[:, :9, :, :] = old_conv_in.weight.clone()
+                nn.init.zeros_(new_conv_in.weight[:, 9:, :, :])
+                new_conv_in.bias.data = old_conv_in.bias.data.clone()
+                self.unet.conv_in = new_conv_in
+                
+            elif in_channels == 13:
+                pass  # Đã là 13-ch, không cần thay đổi
             else:
                 raise ValueError(f"UNet Input Channels không hợp lệ: {in_channels}")
             
@@ -69,6 +77,7 @@ class HairInpaintingUNet(nn.Module):
         noisy_latents: torch.Tensor, 
         masked_latents: torch.Tensor, 
         mask: torch.Tensor, 
+        ref_hair_latents: torch.Tensor,
         timestep: torch.Tensor, 
         encoder_hidden_states: torch.Tensor,
         added_cond_kwargs: dict = None
@@ -78,14 +87,17 @@ class HairInpaintingUNet(nn.Module):
             noisy_latents: (B, 4, H/8, W/8) - Sinh ra từ VAE Encode + Noise
             masked_latents: (B, 4, H/8, W/8) - Sinh ra từ VAE Encode (ảnh gốc × (1-mask))
             mask: (B, 1, H/8, W/8) - Downsampled Hair Mask (0: Nền giữ nguyên, 1: Cần vẽ tóc)
+            ref_hair_latents: (B, 4, H/8, W/8) - VAE Encode ảnh tóc mẫu (reference hairstyle)
             timestep: Tensor chứa bước khuếch tán hiện tại
             encoder_hidden_states: (B, SeqLen, Dim) - Style + Text Prompt Embeddings
             added_cond_kwargs: Thông tin text/time embeddings của SDXL
         """
         
-        # Ghép 3 thành phần lại tạo thành input 9-channels
-        # Convention chuẩn SDXL Inpainting: [noisy_latents(4), mask(1), masked_image_latents(4)]
-        latent_model_input = torch.cat([noisy_latents, mask, masked_latents], dim=1)
+        # Ghép 4 thành phần lại tạo thành input 13-channels
+        # [noisy(4) + mask(1) + masked_image(4) + ref_hair(4)]
+        latent_model_input = torch.cat(
+            [noisy_latents, mask, masked_latents, ref_hair_latents], dim=1
+        )
         
         # Feed-forward qua UNet
         noise_pred = self.unet(

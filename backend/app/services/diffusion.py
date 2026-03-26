@@ -1,5 +1,6 @@
 
 import os
+import math
 import torch
 
 import backend.app.utils.torch_patch
@@ -53,8 +54,8 @@ class HairDiffusionService:
             self._load_sdxl_pipeline()
 
     def _load_custom_pipeline(self, checkpoint_path):
-        """Tải Custom 9-Channel UNet Pipeline"""
-        print(">>> Loading Custom 9-Channel UNet Pipeline for Inpainting...")
+        """Tải Custom UNet Pipeline (9-ch hoặc 13-ch auto-detect)"""
+        print(">>> Loading Custom UNet Pipeline for Inpainting...")
         
         # We need the custom network definitions
         # Make sure they are available or imported correctly
@@ -100,13 +101,17 @@ class HairDiffusionService:
         ).to(self.device).eval()
         
         # UNet
-        print("  → Loading UNet 9-channel...")
+        print("  → Loading UNet (auto-detect channels)...")
         self.unet = HairInpaintingUNet().to(self.device)
         
         print(f"  → Loading checkpoint: {checkpoint_path}")
         state_dict = load_file(checkpoint_path)
         self.unet.load_state_dict(state_dict, strict=False)
         self.unet.eval()
+        
+        # Detect số input channels từ conv_in đã load
+        self.unet_in_channels = self.unet.unet.conv_in.weight.shape[1]
+        print(f"  → UNet input channels: {self.unet_in_channels} ({'13-ch direct ref' if self.unet_in_channels == 13 else '9-ch + Latent Injection'})")
         
         # Injector
         self.injector = CrossAttentionInjector(self.unet.unet).to(self.device)
@@ -250,7 +255,8 @@ class HairDiffusionService:
         num_inference_steps: int = 30,
         guidance_scale: float = 7.5,
         controlnet_scale: float = 0.5,
-        ip_adapter_scale: float = 0.6
+        ip_adapter_scale: float = 0.6,
+        latent_injection_weight: float = 0.3
     ):
         """
         Thực hiện Inpainting thay tóc (SDXL 1024x1024).
@@ -282,10 +288,11 @@ class HairDiffusionService:
              control = Image.new("RGB", target_size, (0, 0, 0))
 
         if self.is_custom_pipeline:
-            print(f"Running Custom Inpainting Inference...")
+            print(f"Running Custom Inpainting Inference (latent_injection={latent_injection_weight})...")
             return self._generate_custom(
                 image, mask, ref_hair, control, 
-                prompt, negative_prompt, num_inference_steps, guidance_scale, target_size
+                prompt, negative_prompt, num_inference_steps, guidance_scale, target_size,
+                latent_injection_weight=latent_injection_weight
             )
         else:
             print(f"Running SDXL Standard Inference...")
@@ -294,7 +301,7 @@ class HairDiffusionService:
                 prompt, negative_prompt, num_inference_steps, guidance_scale, controlnet_scale, ip_adapter_scale, target_size
             )
             
-    def _generate_custom(self, target_pil, mask_pil, ref_pil, control_pil, prompt, negative_prompt, num_steps, guidance_scale, target_size):
+    def _generate_custom(self, target_pil, mask_pil, ref_pil, control_pil, prompt, negative_prompt, num_steps, guidance_scale, target_size, latent_injection_weight=0.3):
         from torchvision import transforms
         
         # Identity Embeddings via InsightFace (should be injected outside or just zeroed if not available)
@@ -369,6 +376,15 @@ class HairDiffusionService:
             masked_latents = self.vae.encode(masked_tensor.to(self.vae.dtype)).latent_dist.sample() * self.vae_scale_factor
             gt_latents = gt_latents.float()
             masked_latents = masked_latents.float()
+            
+            # Latent Injection: encode ảnh tóc mẫu vào latent space
+            # Truyền thông tin kiểu tóc ở mức spatial (chi tiết hơn CLIP/IP-Adapter)
+            ref_latents = None
+            if latent_injection_weight > 0:
+                ref_tensor = img_transform(ref_pil).unsqueeze(0).to(self.device)
+                ref_latents = self.vae.encode(ref_tensor.to(self.vae.dtype)).latent_dist.sample() * self.vae_scale_factor
+                ref_latents = ref_latents.float()
+                print(f"  ✅ Reference hair encoded to latent space (shape: {ref_latents.shape})")
 
         mask_down = F.interpolate(mask_tensor, size=gt_latents.shape[-2:], mode='nearest')
         
@@ -449,6 +465,26 @@ class HairDiffusionService:
                 "time_ids": time_ids
             }
 
+        # Latent Injection Setup (chỉ dùng cho model 9-ch)
+        injection_schedule = None
+        if self.unet_in_channels == 9 and latent_injection_weight > 0 and ref_latents is not None:
+            injection_schedule = [
+                latent_injection_weight * (0.5 * (1 + math.cos(math.pi * i / num_steps)))
+                for i in range(num_steps)
+            ]
+            print(f"  → Latent Injection ON (9-ch fallback): weight={latent_injection_weight}")
+        
+        # Direct Reference Conditioning (cho model 13-ch)
+        if self.unet_in_channels == 13 and ref_latents is not None:
+            print(f"  → Direct ref conditioning ON (13-ch model)")
+            # ref_latents đã được VAE encode ở trước, dùng trực tiếp
+            direct_ref_latents = ref_latents
+        elif self.unet_in_channels == 13:
+            # 13-ch nhưng không có ref → zeros (như CFG dropout lúc train)
+            direct_ref_latents = torch.zeros_like(gt_latents)
+        else:
+            direct_ref_latents = None
+
         print(f"  → Bắt đầu Denoising ({num_steps} steps, CFG={'ON scale='+str(guidance_scale) if do_cfg else 'OFF'})...")
         self.scheduler.set_timesteps(num_steps, device=self.device)
         timesteps = self.scheduler.timesteps
@@ -457,8 +493,8 @@ class HairDiffusionService:
         for i, t in enumerate(tqdm(timesteps, desc="Denoising")):
             with torch.amp.autocast('cuda', dtype=torch.float16):
                 with torch.no_grad():
-                    # Forward pass conditional (với prompt + style + identity)
-                    noise_pred_cond = self.unet(
+                    # Build UNet kwargs
+                    unet_kwargs = dict(
                         noisy_latents=latents,
                         masked_latents=masked_latents,
                         mask=mask_down,
@@ -466,10 +502,13 @@ class HairDiffusionService:
                         encoder_hidden_states=encoder_hidden_states,
                         added_cond_kwargs=added_cond_kwargs
                     )
+                    if direct_ref_latents is not None:
+                        unet_kwargs["ref_hair_latents"] = direct_ref_latents
+                    
+                    noise_pred_cond = self.unet(**unet_kwargs)
                     
                     if do_cfg:
-                        # Forward pass unconditional (negative prompt + zero conditioning)
-                        noise_pred_uncond = self.unet(
+                        uncond_kwargs = dict(
                             noisy_latents=latents,
                             masked_latents=masked_latents,
                             mask=mask_down,
@@ -477,13 +516,24 @@ class HairDiffusionService:
                             encoder_hidden_states=uncond_encoder_hidden_states,
                             added_cond_kwargs=uncond_added_cond_kwargs
                         )
-                        # Classifier-Free Guidance: đẩy mạnh đặc trưng theo prompt
+                        if direct_ref_latents is not None:
+                            # CFG: uncond pass cũng dùng ref_latents (giống train, chỉ dropout style/id)
+                            uncond_kwargs["ref_hair_latents"] = torch.zeros_like(direct_ref_latents)
+                        
+                        noise_pred_uncond = self.unet(**uncond_kwargs)
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
                     else:
                         noise_pred = noise_pred_cond
 
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
             latents = latents * mask_down + masked_latents * (1 - mask_down)
+            
+            # Latent Injection fallback (chỉ model 9-ch)
+            if injection_schedule is not None and injection_schedule[i] > 0.01:
+                w = injection_schedule[i]
+                noise = torch.randn_like(ref_latents)
+                noisy_ref = self.scheduler.add_noise(ref_latents, noise, t.unsqueeze(0))
+                latents = latents * (1 - w * mask_down) + noisy_ref * (w * mask_down)
 
         print("  → VAE decoding...")
         with torch.no_grad():

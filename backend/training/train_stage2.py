@@ -169,12 +169,13 @@ class SDXLTextEncoder:
 
 class HairInpaintingDataset(Dataset):
     def __init__(self, data_dir: Path, text_encoder: SDXLTextEncoder = None, 
-                 texture_encoder=None, target_size=(512, 512), max_samples: int = 0):
+                 texture_encoder=None, vae=None, target_size=(512, 512), max_samples: int = 0):
         """
         Args:
             data_dir: Thư mục processed data
             text_encoder: SDXLTextEncoder để pre-encode prompts (None = load từ cache)
             texture_encoder: HairTextureEncoder đã train (None = dùng zeros fallback)
+            vae: AutoencoderKL để pre-encode GT images → latents (None = load từ cache)
             target_size: Kích thước ảnh đầu vào (512x512 cho tiết kiệm VRAM)
             max_samples: Số lượng samples tối đa (0 = dùng tất cả)
         """
@@ -348,6 +349,81 @@ class HairInpaintingDataset(Dataset):
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5])
         ])
+        
+        # ==============================================================
+        # Pre-encode GT images → latents cho Reference Hair Conditioning
+        # Mỗi ảnh GT → VAE encode → (4, H/8, W/8) tensor → cache trên disk
+        # ==============================================================
+        self.latent_cache_dir = data_dir / "gt_latents_cache"
+        
+        if vae is not None:
+            ensureDir(str(self.latent_cache_dir))
+            uncached_latent_items = []
+            cached_latent_count = 0
+            
+            for item in self.metadata:
+                cache_file = self.latent_cache_dir / f"{item['id']}.pt"
+                if cache_file.exists():
+                    cached_latent_count += 1
+                else:
+                    uncached_latent_items.append(item)
+            
+            if not uncached_latent_items:
+                logger.info(f"✅ Tất cả {cached_latent_count} GT latents đã cache — skip encoding")
+            else:
+                logger.info(
+                    f"Pre-encoding GT images → latents: {len(uncached_latent_items)} chưa cache "
+                    f"({cached_latent_count} đã cache / {len(self.metadata)} tổng)"
+                )
+                vae_scale_factor = vae.config.scaling_factor
+                vae.to(DEVICE)
+                
+                vae_transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize([0.5], [0.5])
+                ])
+                
+                LATENT_BATCH = 4  # Batch nhỏ vì VAE tốn VRAM
+                with torch.no_grad():
+                    for batch_start in tqdm(range(0, len(uncached_latent_items), LATENT_BATCH), desc="Encoding GT→Latents"):
+                        batch_items = uncached_latent_items[batch_start:batch_start + LATENT_BATCH]
+                        batch_tensors = []
+                        batch_ids = []
+                        
+                        for item in batch_items:
+                            img_id = item["id"]
+                            # Tìm GT image
+                            gt_dir = data_dir / "ground_truth_images"
+                            img_candidates = list(gt_dir.glob(f"{img_id}.*"))
+                            if not img_candidates:
+                                img_candidates = list(gt_dir.glob(f"{img_id.replace('_', '-')}.*"))
+                            if img_candidates:
+                                gt_img = cv2.cvtColor(cv2.imread(str(img_candidates[0])), cv2.COLOR_BGR2RGB)
+                                gt_img = cv2.resize(gt_img, self.target_size)
+                                batch_tensors.append(vae_transform(gt_img))
+                                batch_ids.append(img_id)
+                            else:
+                                # Ảnh thiếu → save zeros latent
+                                zero_latent = torch.zeros(4, self.target_size[0] // 8, self.target_size[1] // 8)
+                                torch.save(zero_latent, str(self.latent_cache_dir / f"{img_id}.pt"))
+                        
+                        if batch_tensors:
+                            batch_tensor = torch.stack(batch_tensors).to(DEVICE).to(vae.dtype)
+                            latents = vae.encode(batch_tensor).latent_dist.sample() * vae_scale_factor
+                            latents = latents.float().cpu()
+                            
+                            for img_id, latent in zip(batch_ids, latents):
+                                torch.save(latent, str(self.latent_cache_dir / f"{img_id}.pt"))
+                            
+                            del batch_tensor, latents
+                            torch.cuda.empty_cache()
+                
+                vae.to('cpu')
+                torch.cuda.empty_cache()
+                logger.info(f"✅ GT latents encoding hoàn tất! ({len(uncached_latent_items)} mới cache)")
+        else:
+            # Lazy loading: latents load on-demand trong _load_sample()
+            pass
 
     def _augment_mask(self, mask, face_mask=None):
         """
@@ -511,6 +587,29 @@ class HairInpaintingDataset(Dataset):
             else:
                 style_embed = np.zeros(2048, dtype=np.float32)
         
+        # ==============================================================
+        # Reference Hair Latent — Cross-Person Pairing
+        # 70% lấy tóc từ người KHÁC, 30% self-reference
+        # ==============================================================
+        if random.random() < 0.7 and len(self.metadata) > 1:
+            ref_idx = random.randint(0, len(self.metadata) - 1)
+            while ref_idx == idx:
+                ref_idx = random.randint(0, len(self.metadata) - 1)
+            ref_id = self.metadata[ref_idx]["id"]
+        else:
+            ref_id = img_id  # self-reference
+        
+        # Load pre-computed ref latent từ cache
+        ref_latent_file = self.latent_cache_dir / f"{ref_id}.pt"
+        ref_latent_file_dashed = self.latent_cache_dir / f"{ref_id.replace('_', '-')}.pt"
+        if ref_latent_file.exists():
+            ref_hair_latent = torch.load(str(ref_latent_file), map_location="cpu", weights_only=True)
+        elif ref_latent_file_dashed.exists():
+            ref_hair_latent = torch.load(str(ref_latent_file_dashed), map_location="cpu", weights_only=True)
+        else:
+            # Fallback: zeros nếu chưa có cache
+            ref_hair_latent = torch.zeros(4, self.target_size[0] // 8, self.target_size[1] // 8)
+        
         # Trả về Tensors (bald_image không load vì train_step tự tạo masked_images)
         return {
             "image": self.img_transform(gt_img),
@@ -519,6 +618,7 @@ class HairInpaintingDataset(Dataset):
             "identity_embed": torch.from_numpy(id_embed).squeeze(0).float(),
             "text_embeds": text_embeds,
             "pooled_text_embeds": pooled_text_embeds,
+            "ref_hair_latent": ref_hair_latent.float(),
             "time_ids": torch.tensor([
                 1024, 1024,   # SDXL native resolution — nhất quán với inference
                 0, 0,
@@ -722,13 +822,15 @@ class Stage2Trainer:
         """Lấy LoRA adapter weights + conv_in weights để save checkpoint."""
         from peft import get_peft_model_state_dict
         lora_weights = dict(get_peft_model_state_dict(self.unet.unet))
-        # Thêm conv_in weights (9-channel layer, train riêng)
+        # Thêm conv_in weights (13-channel layer, train riêng)
         for k, v in self.unet.unet.base_model.model.conv_in.state_dict().items():
             lora_weights[f"conv_in.{k}"] = v
         return lora_weights
     
     def _load_lora_weights(self, path):
-        """Load LoRA + conv_in weights từ checkpoint."""
+        """Load LoRA + conv_in weights từ checkpoint.
+        Hỗ trợ resume từ checkpoint 9-ch vào model 13-ch (copy 9 kênh cũ, giữ 4 mới = zeros).
+        """
         from safetensors.torch import load_file as load_safetensors
         from peft import set_peft_model_state_dict
         state_dict = load_safetensors(str(path))
@@ -741,7 +843,19 @@ class Stage2Trainer:
                 lora_state[k] = v
         set_peft_model_state_dict(self.unet.unet, lora_state)
         if conv_in_state:
-            self.unet.unet.base_model.model.conv_in.load_state_dict(conv_in_state)
+            current_conv_in = self.unet.unet.base_model.model.conv_in
+            old_weight = conv_in_state.get("weight")
+            if old_weight is not None and old_weight.shape[1] != current_conv_in.weight.shape[1]:
+                # Mismatch channels (vd: checkpoint 9-ch → model 13-ch)
+                old_ch = old_weight.shape[1]
+                logger.info(f"  → conv_in mismatch: checkpoint {old_ch}-ch → model {current_conv_in.weight.shape[1]}-ch")
+                logger.info(f"  → Copy {old_ch} kênh cũ, giữ {current_conv_in.weight.shape[1] - old_ch} kênh mới = zeros")
+                with torch.no_grad():
+                    current_conv_in.weight.data[:, :old_ch, :, :] = old_weight
+                    if "bias" in conv_in_state:
+                        current_conv_in.bias.data = conv_in_state["bias"]
+            else:
+                current_conv_in.load_state_dict(conv_in_state)
         logger.info(f"  → LoRA + conv_in loaded từ {Path(path).name}")
         
     def train_step(self, batch, global_step: int, accumulation_steps: int = 8):
@@ -817,12 +931,14 @@ class Stage2Trainer:
         time_ids = batch['time_ids'].to(DEVICE)
         
         # [CẢI TIẾN 2] CFG Dropout 10% — cho phép Classifier-Free Guidance lúc inference
-        # Random set style+identity về zeros → model học phân biệt "có conditioning" vs "không"
+        # Random set style+identity+ref_hair về zeros → model học phân biệt "có conditioning" vs "không"
         # Lúc inference dùng guidance_scale > 1 để ép tóc bám sát ảnh mẫu
         # train_step() chỉ gọi trong training → không cần guard self.training
+        ref_hair_latents = batch['ref_hair_latent'].to(DEVICE)
         if torch.rand(1).item() < 0.1:
             style_embeds = torch.zeros_like(style_embeds)
             id_embeds = torch.zeros_like(id_embeds)
+            ref_hair_latents = torch.zeros_like(ref_hair_latents)
         
         # Gộp Style + Identity conditioning qua IP-Adapter
         injected_conds = self.injector.inject_conditioning(style_embeds, id_embeds)
@@ -841,6 +957,7 @@ class Stage2Trainer:
                 noisy_latents=noisy_latents,
                 masked_latents=masked_latents,
                 mask=masks_latent,
+                ref_hair_latents=ref_hair_latents,
                 timestep=timesteps,
                 encoder_hidden_states=encoder_hidden_states,
                 added_cond_kwargs=added_cond_kwargs
@@ -1481,7 +1598,7 @@ class Stage2Trainer:
                 _ste = texture_encoder if chunk_dir in chunks_need_style else None
                 _ = HairInpaintingDataset(
                     chunk_dir, text_encoder=_te, texture_encoder=_ste,
-                    target_size=target_size, max_samples=max_samples_per_chunk
+                    vae=self.vae, target_size=target_size, max_samples=max_samples_per_chunk
                 )
                 del _
             chunk_pbar.close()
@@ -1773,7 +1890,7 @@ class Stage2Trainer:
                 
                 # Load dataset cho chunk hiện tại (lazy loading — không tốn RAM cho embeddings)
                 dataset = HairInpaintingDataset(
-                    chunk_dir, target_size=target_size, max_samples=max_samples_per_chunk
+                    chunk_dir, vae=self.vae, target_size=target_size, max_samples=max_samples_per_chunk
                 )
                 
                 if len(dataset) == 0:
