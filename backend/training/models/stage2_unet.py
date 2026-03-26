@@ -103,6 +103,17 @@ class HairInpaintingUNet(nn.Module):
             [noisy_latents, mask, masked_latents, ref_hair_latents], dim=1
         )
         
+        # Đảm bảo dtype nhất quán với conv_in (có thể là fp32 khi training, fp16 khi inference)
+        # Tránh lỗi "Input type (Half) and bias type (float)" khi PEFT wrapper bypass autocast
+        conv_in_dtype = self.unet.conv_in.weight.dtype if hasattr(self.unet, 'conv_in') else None
+        if conv_in_dtype is None:
+            # PEFT wraps model: conv_in nằm ở base_model.model.conv_in
+            try:
+                conv_in_dtype = self.unet.base_model.model.conv_in.weight.dtype
+            except AttributeError:
+                conv_in_dtype = latent_model_input.dtype
+        latent_model_input = latent_model_input.to(conv_in_dtype)
+        
         # Feed-forward qua UNet
         noise_pred = self.unet(
             latent_model_input, 

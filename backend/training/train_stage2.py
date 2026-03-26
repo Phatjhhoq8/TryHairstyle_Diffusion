@@ -851,11 +851,17 @@ class Stage2Trainer:
                 logger.info(f"  → conv_in mismatch: checkpoint {old_ch}-ch → model {current_conv_in.weight.shape[1]}-ch")
                 logger.info(f"  → Copy {old_ch} kênh cũ, giữ {current_conv_in.weight.shape[1] - old_ch} kênh mới = zeros")
                 with torch.no_grad():
-                    current_conv_in.weight.data[:, :old_ch, :, :] = old_weight
+                    current_conv_in.weight.data[:, :old_ch, :, :] = old_weight.to(current_conv_in.weight.dtype)
                     if "bias" in conv_in_state:
-                        current_conv_in.bias.data = conv_in_state["bias"]
+                        current_conv_in.bias.data = conv_in_state["bias"].to(current_conv_in.weight.dtype)
             else:
+                # Đảm bảo tensor từ safetensors được cast về đúng dtype (thường saved ở fp32)
+                for k, v in conv_in_state.items():
+                    conv_in_state[k] = v.to(current_conv_in.weight.dtype)
                 current_conv_in.load_state_dict(conv_in_state)
+            
+            # Ép lại để ăn chắc
+            current_conv_in.to(current_conv_in.weight.dtype)
         logger.info(f"  → LoRA + conv_in loaded từ {Path(path).name}")
         
     def train_step(self, batch, global_step: int, accumulation_steps: int = 8):
