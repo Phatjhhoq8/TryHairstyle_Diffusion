@@ -677,8 +677,8 @@ class Stage2Trainer:
         
         # 3b. Unfreeze conv_in (13-channel layer mới, cần train)
         self.unet.unet.base_model.model.conv_in.requires_grad_(True)
-        # BỎ HOÀN TOÀN ép .float() ở đây để tránh lỗi Autocast Bias Type Crash.
-        # GradScaler sẽ tự lo khâu underflow của dtype float16 khi train.
+        # BẮT BUỘC ÉP LÊN FP32: PyTorch GradScaler chỉ chấp nhận giải mã Gradient ở dạng 32-bit.
+        self.unet.unet.base_model.model.conv_in.float()
         
         # Log trainable params
         trainable_n = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
@@ -852,29 +852,16 @@ class Stage2Trainer:
                 logger.info(f"  → conv_in mismatch: checkpoint {old_ch}-ch → model {current_conv_in.weight.shape[1]}-ch")
                 logger.info(f"  → Copy {old_ch} kênh cũ, giữ {current_conv_in.weight.shape[1] - old_ch} kênh mới = zeros")
                 with torch.no_grad():
-                    current_conv_in.weight.data[:, :old_ch, :, :] = old_weight.to(
-                        device=current_conv_in.weight.device, 
-                        dtype=current_conv_in.weight.dtype
-                    )
+                    # Dùng copy_() giữ nguyên định dạng FP32 hiện tại và Parameter hook cho autocast
+                    current_conv_in.weight.data[:, :old_ch, :, :].copy_(old_weight)
                     if "bias" in conv_in_state:
-                        current_conv_in.bias.data = conv_in_state["bias"].to(
-                            device=current_conv_in.weight.device, 
-                            dtype=current_conv_in.weight.dtype
-                        )
+                        current_conv_in.bias.data.copy_(conv_in_state["bias"])
             else:
-                # Đảm bảo tensor từ safetensors được cast về đúng dtype và device
-                for k, v in conv_in_state.items():
-                    conv_in_state[k] = v.to(
-                        device=current_conv_in.weight.device, 
-                        dtype=current_conv_in.weight.dtype
-                    )
+                # Nếu khớp kênh thì nạp thẳng (PyTorch load_state_dict tự động cast dtype/device)
                 current_conv_in.load_state_dict(conv_in_state)
             
-            # Ép lại toàn bộ module để ăn chắc nó nằm trên GPU
-            current_conv_in.to(
-                device=current_conv_in.weight.device, 
-                dtype=current_conv_in.weight.dtype
-            )
+            # Ép lại toàn khối sang FP32 lần cuối cho yên tâm phần Gradient
+            current_conv_in.float()
         logger.info(f"  → LoRA + conv_in loaded từ {Path(path).name}")
         
     def train_step(self, batch, global_step: int, accumulation_steps: int = 8):
