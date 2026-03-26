@@ -675,9 +675,10 @@ class Stage2Trainer:
         )
         self.unet.unet = get_peft_model(self.unet.unet, lora_config)
         
-        # 3b. Unfreeze conv_in (9-channel layer mới, cần train)
+        # 3b. Unfreeze conv_in (13-channel layer mới, cần train)
         self.unet.unet.base_model.model.conv_in.requires_grad_(True)
-        self.unet.unet.base_model.model.conv_in.float()  # FP32 cho training precision
+        # BỎ HOÀN TOÀN ép .float() ở đây để tránh lỗi Autocast Bias Type Crash.
+        # GradScaler sẽ tự lo khâu underflow của dtype float16 khi train.
         
         # Log trainable params
         trainable_n = sum(p.numel() for p in self.unet.parameters() if p.requires_grad)
