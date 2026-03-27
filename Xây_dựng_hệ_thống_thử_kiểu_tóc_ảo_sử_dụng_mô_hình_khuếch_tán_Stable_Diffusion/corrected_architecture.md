@@ -207,9 +207,15 @@ Class `SegmentationService` là "Bộ Não" chịu trách nhiệm tạo mask và
        - **Edge-weighted MaskAwareLoss** (Core): Phạt sai số vùng tóc weight=1.0, vùng viền chân tóc weight=3.0 (giúp hairline tự nhiên), vùng nền weight=0.1.
        - **Min-SNR-γ Weighting**: Nhân trọng số tốc độ học theo từng timestep → ưu tiên bước quan trọng, hội tụ nhanh hơn 30%.
        - **Latent Perceptual Loss**: So sánh L1 giữa latent `pred_x0` và Ground Truth. Ép pixel tóc sắc nét trực tiếp trên không gian tiềm ẩn (tiết kiệm 100% VRAM decode).
-       - *[Monitor Only, mỗi 50 steps, no_grad]*: VAE decode `pred_original` → [TextureConsistencyLoss](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/losses.py#34-81) (VGG16 Gram Matrix) + [IdentityCosineLoss](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/losses.py#109-129) (InceptionResnetV1). Chỉ log chart, KHÔNG cộng vào total_loss → tiết kiệm ~2GB VRAM.
+       - *[Monitor Only, mỗi 200 steps, no_grad, chạy SAU backward()]*: VAE decode `pred_original` → [TextureConsistencyLoss](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/losses.py#34-81) (VGG16 Gram Matrix) + [IdentityCosineLoss](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/models/losses.py#109-129) (InceptionResnetV1). Chỉ log chart, KHÔNG cộng vào total_loss → tiết kiệm ~2GB VRAM. Monitor block đặt **sau** `scaler.update()` (post-backward) để xả autograd graph trước khi load VGG16/Inception — chống OOM trên T4 với UNet 13-channel.
     6. **Gradient Accumulation**: `scaled_loss = total_loss / accum_steps`. Clip grad_norm=1.0. Scheduler step mỗi accum_steps.
-*   [train_loop()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#1502-1981): Chunked Loading — 1 epoch = tất cả chunks. Shuffle thứ tự chunks mỗi epoch (deterministic seed). Mid-chunk save mỗi N samples + end-chunk save + end-epoch save. Resume state lưu trên HF Hub (cross-account resume). Graceful SIGINT/SIGTERM handling. Validation qua tối đa 3 chunks cố định (seed 42).
+*   [train_loop()](file:///c:/Users/Admin/Desktop/TryHairStyle/backend/training/train_stage2.py#1502-1981): Chunked Loading — 1 epoch = tất cả chunks. Shuffle thứ tự chunks mỗi epoch (deterministic seed). Mid-chunk save mỗi N samples + end-chunk save + end-epoch save. Resume state lưu trên HF Hub (cross-account resume). Graceful SIGINT/SIGTERM handling. Validation qua tối đa 3 chunks cố định (seed 42). Ép `num_workers=0` trên Colab/Windows để tránh DataLoader hang do Drive FUSE. Heartbeat VRAM log mỗi 100 steps (`💓`) giúp chẩn đoán hang chính xác.
+*   **Auto-Caching (Drive ↔ SSD)**: Hệ thống tự động tối ưu I/O cho Colab:
+    1. `_sync_chunk_local()`: Copy chunk 6.7GB từ Google Drive → `/tmp/` (SSD nội bộ) trước khi xử lý. Giảm VAE encode từ ~45 phút → ~3 phút.
+    2. `HairInpaintingDataset()`: Chạy trên SSD, kiểm tra **từng file `.pt`** — chỉ nén file thiếu, bỏ qua file đã có.
+    3. `_sync_chunk_back()`: Đồng bộ **chỉ** thư mục `gt_latents_cache` về Drive **ngay lập tức trước khi train** (fail-safe: dù Colab sập giữa chừng, latents vẫn an toàn trên Drive).
+    4. Auto-cleanup: `shutil.rmtree` dọn `/tmp/` sau mỗi chunk → luôn chỉ chiếm 6.7GB tại mọi thời điểm.
+    5. Trên Windows: cả 2 hàm sync return ngay (`os.name == 'nt'`) → không ảnh hưởng train local.
 
 ---
 

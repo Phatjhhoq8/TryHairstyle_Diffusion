@@ -65,6 +65,12 @@ Mô hình UNet được mở rộng lên 13 kênh đầu vào để hỗ trợ \
     \item \textbf{VAE Latent Caching:} Ảnh ground truth được pre-encode qua VAE Encoder thành latent $4 \times 64 \times 64$ và lưu cache trên đĩa (${\sim}32$KB/file). Cơ chế này giúp bỏ qua bước VAE encoding trong vòng lặp huấn luyện, tiết kiệm đáng kể VRAM và thời gian.
     \item \textbf{Mixed-Precision Training:} Lớp \texttt{conv\_in} (lớp duy nhất cần học trọng số mới) được giữ ở FP32 để đảm bảo gradient không bị underflow. Phần còn lại của UNet chạy ở FP16 thông qua \texttt{torch.amp.autocast}. Cơ chế \texttt{GradScaler} phóng đại loss trước khi lan truyền ngược rồi thu nhỏ lại, đảm bảo độ chính xác số học cho toàn pipeline.
     \item \textbf{Classifier-Free Guidance Dropout:} 10\% bước huấn luyện đặt toàn bộ conditioning (style, identity, reference latents) về zero, cho phép áp dụng CFG khi suy luận.
+    \item \textbf{Quản lý bộ nhớ (OOM Prevention):} UNet 13-kênh tiêu tốn lượng VRAM lớn. Để tránh tràn bộ nhớ (Out-Of-Memory) trên GPU 15GB (Google Colab T4), khối phân tích (Monitor Block) sử dụng VGG16 và InceptionResnetV1 được cấu hình chạy \textit{sau} quá trình \texttt{backward()} nhằm giải phóng đồ thị tính toán đạo hàm (autograd graph) trước khi tải thêm mô hình vào VRAM. Kỹ thuật này tái sử dụng $\sim$3-4GB VRAM bị chiếm dụng. Bên cạnh đó, hệ thống bổ sung cơ chế kiểm soát nhịp đập bộ nhớ (Heartbeat Logging) mỗi 100 bước để theo dõi tình trạng phân bổ RAM.
+    \item \textbf{Tối ưu hóa I/O cục bộ (Auto-Caching):} Quá trình truy xuất dữ liệu trên ổ đĩa mạng lưới (Google Drive FUSE) thường xuyên gây nghẽn cổ chai (bottleneck) và làm treo luồng DataLoader. Hệ thống áp dụng cơ chế Caching phần cứng hai chiều (Two-Way Sync):
+    \begin{enumerate}
+        \item Từng cụm dữ liệu phân mảnh (Chunk) dung lượng $\sim$6.7GB được sao chép hoàn toàn sang ổ đĩa trạng thái rắn (SSD) siêu tốc đặt tại \texttt{/tmp/} của máy chủ trước khi đọc. Điều này loại bỏ hoàn toàn độ trễ mạng, giảm thời gian giải mã VAE xuống $\sim$15 lần (từ 45 phút xuống dưới 3 phút).
+        \item Hệ thống sau đó quét trên SSD, chỉ trích xuất các tệp latent còn thiếu và đồng bộ tức thì thư mục \texttt{gt\_latents\_cache} về lại lưu trữ đám mây. Kiến trúc "Fail-Safe" này đảm bảo dữ liệu quá trình không bị mất ngay cả khi máy chủ ảo đột ngột sập nguồn. DataLoader cũng được ép buộc dùng luồng đơn (\texttt{num\_workers=0}) để tối đa hóa tính ổn định.
+    \end{enumerate}
 \end{itemize}
 
 \subsubsection{Hàm mất mát}
