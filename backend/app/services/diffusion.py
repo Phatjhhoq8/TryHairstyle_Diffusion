@@ -100,12 +100,22 @@ class HairDiffusionService:
             model_paths.SDXL_BASE, subfolder="text_encoder_2", torch_dtype=torch.float16
         ).to(self.device).eval()
         
-        # UNet
-        print("  → Loading UNet (auto-detect channels)...")
-        self.unet = HairInpaintingUNet().to(self.device)
-        
         print(f"  → Loading checkpoint: {checkpoint_path}")
         state_dict = load_file(checkpoint_path)
+
+        # Trích xuất số kênh đầu vào từ state_dict để khởi tạo UNet tương ứng (9-ch hoặc 13-ch)
+        target_channels = 13
+        if "unet.conv_in.weight" in state_dict:
+            target_channels = state_dict["unet.conv_in.weight"].shape[1]
+        elif "conv_in.weight" in state_dict:
+            target_channels = state_dict["conv_in.weight"].shape[1]
+            
+        print(f"  → Detected target in_channels from checkpoint: {target_channels}")
+
+        # UNet
+        print(f"  → Loading UNet ({target_channels}-ch)...")
+        self.unet = HairInpaintingUNet(in_channels_target=target_channels).to(self.device)
+        
         self.unet.load_state_dict(state_dict, strict=False)
         self.unet.eval()
         
