@@ -1679,6 +1679,44 @@ class Stage2Trainer:
         return {'val_loss': avg_val, 'val_lpips': avg_lpips}
     
     # ==============================================================================
+    # AUTO-CACHING: Google Drive ↔ Colab Local SSD
+    # ==============================================================================
+    
+    def _sync_chunk_local(self, chunk_dir: Path) -> Path:
+        """Copy chunk từ Google Drive sang ổ SSD nội bộ Colab (/tmp/) để tăng tốc I/O."""
+        import shutil
+        # Trên Windows hoặc ổ cứng thường → không cần copy
+        if os.name == 'nt' or "drive" not in str(chunk_dir).lower():
+            return chunk_dir
+        
+        local_dir = Path("/tmp") / chunk_dir.name
+        if local_dir.exists():
+            shutil.rmtree(local_dir, ignore_errors=True)
+        
+        logger.info(f"\n  ⏳ [Auto-Cache] Đang kéo chunk {chunk_dir.name} từ Drive về Local SSD (~1-2 phút)...")
+        shutil.copytree(chunk_dir, local_dir)
+        logger.info(f"  ✅ Copy thành công! Toàn bộ I/O sẽ chạy trên SSD cục bộ.")
+        return local_dir
+    
+    def _sync_chunk_back(self, local_dir: Path, drive_dir: Path):
+        """Đồng bộ gt_latents_cache vừa sinh ra ở Local về lại Drive (chỉ thư mục này)."""
+        import shutil
+        if os.name == 'nt' or local_dir == drive_dir:
+            return
+        
+        cache_name = "gt_latents_cache"
+        local_cache = local_dir / cache_name
+        drive_cache = drive_dir / cache_name
+        
+        if local_cache.exists() and any(local_cache.iterdir()):
+            n_files = sum(1 for _ in local_cache.glob("*.pt"))
+            logger.info(f"  ⏳ [Auto-Sync] Đồng bộ {n_files} file {cache_name} về Drive...")
+            shutil.copytree(local_cache, drive_cache, dirs_exist_ok=True)
+            logger.info(f"  ✅ Đã lưu {cache_name} vĩnh viễn lên Drive. An toàn 100%!")
+        else:
+            logger.info(f"  ℹ️ Không có {cache_name} mới cần sync.")
+    
+    # ==============================================================================
     # MAIN TRAINING LOOP — Chunked Loading, Global Epoch
     # ==============================================================================
     
@@ -1905,10 +1943,17 @@ class Stage2Trainer:
                     continue
                 chunk_start = time.time()
                 
-                # Load dataset cho chunk hiện tại (lazy loading — không tốn RAM cho embeddings)
+                # AUTO-CACHE: Copy từ Google Drive sang /tmp/ cục bộ
+                original_chunk_dir = chunk_dir
+                chunk_dir = self._sync_chunk_local(chunk_dir)
+                
+                # Load dataset (VAE encode chạy siêu nhanh trên ổ SSD)
                 dataset = HairInpaintingDataset(
                     chunk_dir, vae=self.vae, target_size=target_size, max_samples=max_samples_per_chunk
                 )
+                
+                # AUTO-SYNC: Đẩy gt_latents_cache về Drive NGAY trước khi train
+                self._sync_chunk_back(chunk_dir, original_chunk_dir)
                 
                 if len(dataset) == 0:
                     logger.warning(f"  ⚠️ Chunk {chunk_dir.name} trống, bỏ qua.")
@@ -2048,6 +2093,12 @@ class Stage2Trainer:
                 # Reset mid-chunk resume flag sau khi chunk resume xong
                 if resume_step_in_chunk > 0:
                     resume_step_in_chunk = 0
+                
+                # AUTO-CACHE CLEANUP: Dọn sạch local copy để giải phóng SSD
+                if chunk_dir != original_chunk_dir:
+                    import shutil
+                    logger.info(f"  🧹 Dọn rác {chunk_dir.name} trên SSD để nhường chỗ chunk tiếp...")
+                    shutil.rmtree(chunk_dir, ignore_errors=True)
             
             # ==================================================
             # VALIDATION sau mỗi epoch đầy đủ
