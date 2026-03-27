@@ -1016,13 +1016,37 @@ class Stage2Trainer:
         # Cast sang fp32 TRƯỚC khi backprop
         total_loss = total_loss.float()
         
-        # 2. Texture & Identity Loss — MONITOR ONLY (mỗi 50 steps)
-        # Dùng no_grad: chỉ log giá trị lên chart, KHÔNG cộng vào total_loss
-        # → Tiết kiệm ~2GB VRAM, cho phép batch_size=2 trên T4 15GB
+        # ==========================================
+        # BACKPROP (AMP + Gradient Accumulation)
+        # ==========================================
+        # Chia loss cho accumulation_steps để trung bình gradient
+        scaled_loss = total_loss / accumulation_steps
+        self.scaler.scale(scaled_loss).backward()
+        
+        # Chỉ cập nhật weights mỗi accumulation_steps
+        if (global_step + 1) % accumulation_steps == 0:
+            self.scaler.unscale_(self.optimizer)
+            torch.nn.utils.clip_grad_norm_(
+                self._trainable_params,  # Chỉ LoRA + conv_in + Injector
+                max_norm=1.0
+            )
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.scheduler.step()
+        
+        # 2. Texture & Identity Loss — MONITOR ONLY (mỗi 200 steps)
+        # Chuyển XUỐNG DƯỚI backward() để đồ thị gradient đã được giải phóng
+        # → Tiết kiệm ~4GB VRAM, tránh OOM khi load VGG16 + InceptionResnet
         loss_id_val = 0.0
         loss_tex_val = 0.0
         
-        if global_step % 50 == 0 and global_step > 0:
+        # Heartbeat logging mỗi 100 steps
+        if global_step % 100 == 0 and global_step > 0:
+            allocated = torch.cuda.memory_allocated() / 1024**3
+            reserved = torch.cuda.memory_reserved() / 1024**3
+            logger.info(f"  💓 Heartbeat [Step {global_step}]: VRAM Alloc={allocated:.1f}GB | Resv={reserved:.1f}GB")
+            
+        if global_step % 200 == 0 and global_step > 0:
             try:
                 with torch.no_grad():
                     # Re-load pixel tensors từ batch (đã free ở trên)
@@ -1073,22 +1097,9 @@ class Stage2Trainer:
                     raise
         
         # ==========================================
-        # BACKPROP (AMP + Gradient Accumulation)
+        # TRẢ VỀ KẾT QUẢ MONITOR
         # ==========================================
-        # Chia loss cho accumulation_steps để trung bình gradient
-        scaled_loss = total_loss / accumulation_steps
-        self.scaler.scale(scaled_loss).backward()
-        
-        # Chỉ cập nhật weights mỗi accumulation_steps
-        if (global_step + 1) % accumulation_steps == 0:
-            self.scaler.unscale_(self.optimizer)
-            torch.nn.utils.clip_grad_norm_(
-                self._trainable_params,  # Chỉ LoRA + conv_in + Injector
-                max_norm=1.0
-            )
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.scheduler.step()
+
         
         return {
             "total_loss": total_loss.item(),
@@ -1903,7 +1914,7 @@ class Stage2Trainer:
                     logger.warning(f"  ⚠️ Chunk {chunk_dir.name} trống, bỏ qua.")
                     continue
                 
-                num_workers = 0 if os.name == 'nt' else 2
+                num_workers = 0  # BẮT BUỘC = 0 trên Colab/Windows để tránh DataLoader OOM/hang
                 
                 # Mid-chunk resume: cắt Dataset bằng Subset thay vì skip trong loop
                 # Cách cũ (continue) vẫn bắt DataLoader đọc file ảnh → tốn ~2 tiếng
