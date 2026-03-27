@@ -9,6 +9,7 @@
     \item \textbf{Cơ chế điều kiện kép:} Nhánh bảo toàn danh tính (InsightFace/AdaFace + ControlNet Depth) và nhánh chuyển giao kiểu tóc (IP-Adapter Plus/HairTextureEncoder) hoạt động song song, giúp giữ khuôn mặt và chuyển giao tóc đồng thời.
     \item \textbf{Mặt nạ động:} Cơ chế mở rộng mask tự động dựa trên so sánh diện tích tóc tham chiếu và tóc gốc, hỗ trợ cả trường hợp người dùng trọc đầu thông qua scalp projection bằng 3DDFA V2.
     \item \textbf{Phát hiện khuôn mặt đa tầng:} Pipeline YOLO $\rightarrow$ InsightFace $\rightarrow$ AdaFace phát hiện được cả khuôn mặt nghiêng, hỗ trợ auto-rotate và chọn mặt khi ảnh có nhiều người.
+    \item \textbf{Tối ưu hóa tài nguyên phần cứng:} Áp dụng thành công các kỹ thuật quản lý VRAM (tái cấu trúc đồ thị đạo hàm) và bộ lưu trữ tĩnh (I/O Auto-Caching hai chiều), cho phép huấn luyện ổn định các mô hình học sâu phức tạp trên cấu hình máy chủ giới hạn (Google Colab T4 15GB).
     \item \textbf{Đổi màu tóc nhanh:} 15 preset màu + hex tùy chỉnh bằng HSV Color Transfer, không cần chạy lại Diffusion Model.
     \item \textbf{Kiến trúc bất đồng bộ:} FastAPI + Celery + Redis xử lý tác vụ AI không nghẽn, giao diện phản hồi mượt mà.
     \item \textbf{Giao diện trực quan:} 7 React component hỗ trợ upload ảnh, prompt, chọn màu, chọn mặt và xem kết quả.
