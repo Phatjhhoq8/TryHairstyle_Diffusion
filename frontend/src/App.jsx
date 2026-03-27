@@ -381,6 +381,7 @@ export default function App() {
         </div>
         <ResultPanel
           resultUrl={resultUrl}
+          onClear={() => setResultUrl(null)}
           status={loading ? 'PROCESSING' : ''}
           error={pipelineError}
         />

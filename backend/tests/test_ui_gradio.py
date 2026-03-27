@@ -615,6 +615,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             log_output = gr.Textbox(label="Trạng thái", lines=2, interactive=False)
             with gr.Row():
                 download_btn = gr.Button("Tải xuống kết quả", variant="primary", size="sm")
+                clear_result_btn = gr.Button("❌ Xóa kết quả", variant="secondary", size="sm")
     
     # ===== Text Prompt + Language Selector (dưới 2 ảnh) =====
     with gr.Row():
@@ -698,6 +699,11 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
     # ===============================================================
     
     load_btn.click(fn=load_services, outputs=status_box)
+    
+    clear_result_btn.click(
+        fn=lambda: (None, "Trạng thái: Đã xóa kết quả"),
+        outputs=[output_image, log_output]
+    )
     
     # --- Random FFHQ pair ---
     def random_pair():
