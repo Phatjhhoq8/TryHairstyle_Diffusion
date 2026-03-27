@@ -44,17 +44,17 @@ Service này sử dụng pipeline ba tầng:
     \item \textbf{InsightFace (antelopev2):} Phân tích chi tiết từng khuôn mặt, trích xuất 106 landmarks, embedding ArcFace 512 chiều và keypoints.
     \item \textbf{TrainingEmbedder (AdaFace fallback):} Với khuôn mặt mà InsightFace bỏ sót (profile, góc nghiêng lớn), hệ thống dùng AdaFace IR\nobreakdash-100 kết hợp MTCNN alignment để trích xuất embedding. Ngưỡng chuyển đổi là $|yaw| = 45\degree$.
 \end{enumerate}
-Ngoài ra, service tích hợp \textbf{TrainingReconstructor3D} (3DDFA V2) để reconstruct dense 3D face mesh. Dữ liệu 3D vertices được dùng để ngoại suy vùng da đầu (scalp projection) trong trường hợp người dùng ít tóc hoặc trọc đầu.
+Ngoài ra, service tích hợp \textbf{TrainingReconstructor3D} (3DDFA V2) để reconstruct dense 3D face mesh. Dữ liệu 3D vertices được dùng để ngoại suy vùng da đầu trong trường hợp người dùng ít tóc hoặc trọc đầu.
 
 \subsection{SegmentationService -- Phân đoạn ngữ nghĩa}
-Service sử dụng \textbf{SegFormer} (jonathandinu/face-parsing) để phân đoạn ảnh thành 19 lớp ngữ nghĩa (skin, hair, hat, nose, eyes, v.v.). Hai nhóm mask chính được tạo:
+Service sử dụng \textit{SegFormer} (jonathandinu/face-parsing) để phân đoạn ảnh thành 19 lớp ngữ nghĩa (skin, hair, hat, nose, eyes, v.v.). Hai nhóm mask chính được tạo:
 \begin{itemize}
     \item \textbf{Hair mask:} Gộp lớp tóc (class 13) và mũ/nón (class 14) để inpainting thay thế toàn bộ vùng tóc, kể cả khi người dùng đội nón.
     \item \textbf{Face mask:} Tổng hợp 12 lớp thuộc khuôn mặt (skin, nose, eyes, brows, ears, mouth, lips) để bảo vệ khuôn mặt khỏi bị sinh tóc chồng lên.
 \end{itemize}
 Mask được dilate để mở rộng biên, đảm bảo vùng tóc được nhận diện đầy đủ.
 
-Tuy nhiên, cơ chế bảo vệ toàn bộ vùng da mặt tạo ra một hạn chế đối với các kiểu tóc có phần mái (bangs) phủ xuống trán. Do vùng trán thuộc lớp skin (class~1) nằm trong tập face mask, mô hình sinh ảnh không thể tạo tóc tại vùng này, dẫn đến kết quả bị cắt ngang bất tự nhiên tại đường viền da trán. Để giải quyết vấn đề này, hệ thống áp dụng kỹ thuật \textbf{Forehead Unmasking} nhằm loại bỏ có chọn lọc phần bảo vệ vùng trán trong face mask mà vẫn duy trì bảo vệ cho các vùng nhạy cảm phía dưới. Quy trình gồm ba bước:
+Tuy nhiên, cơ chế bảo vệ toàn bộ vùng da mặt tạo ra một hạn chế đối với các kiểu tóc có phần mái (bangs) phủ xuống trán. Do vùng trán thuộc lớp skin (class~1) nằm trong tập face mask, mô hình sinh ảnh không thể tạo tóc tại vùng này, dẫn đến kết quả bị cắt ngang bất tự nhiên tại đường viền da trán. Để giải quyết vấn đề này, hệ thống áp dụng kỹ thuật \textit{Forehead Unmasking} nhằm loại bỏ có chọn lọc phần bảo vệ vùng trán trong face mask mà vẫn duy trì bảo vệ cho các vùng nhạy cảm phía dưới. Quy trình gồm ba bước:
 \begin{enumerate}
     \item Xác định tọa độ $y_{min}$ của tập hợp các pixel thuộc lớp mắt và lông mày (class 3--7 trong SegFormer). Giá trị $y_{min}$ này đóng vai trò đường ranh giới nằm ngang, phân tách vùng trán phía trên và vùng mặt dưới chứa các đặc trưng nhận dạng.
     \item Áp dụng biên an toàn bằng cách dịch đường ranh giới lên trên một khoảng $\delta = 0{,}02 \times H$ (với $H$ là chiều cao ảnh) nhằm tránh xâm phạm vùng lông mày.
@@ -63,11 +63,15 @@ Tuy nhiên, cơ chế bảo vệ toàn bộ vùng da mặt tạo ra một hạn 
 Nhờ kỹ thuật này, mô hình khuếch tán có thể sinh tóc mái phủ tự nhiên xuống trán mà không ảnh hưởng đến các đặc trưng nhận dạng khuôn mặt phía dưới. Trong trường hợp SegFormer không phát hiện được pixel thuộc lớp mắt hoặc lông mày (do ảnh bị che khuất nặng hoặc góc nghiêng lớn), hệ thống bỏ qua bước Forehead Unmasking và giữ nguyên face mask ban đầu nhằm đảm bảo tính ổn định.
 
 \subsection{Kỹ thuật mặt nạ động}
-Trong bài toán thử tóc ảo, tóc tham chiếu có thể dài hoặc phồng hơn đáng kể so với tóc gốc. Hệ thống xây dựng cơ chế \texttt{expand\_hair\_mask} với các bước:
+
+Trong bài toán thử kiểu tóc ảo, sự khác biệt đáng kể về độ dài và độ phồng giữa tóc tham chiếu và tóc gốc của người dùng đặt ra yêu cầu phải điều chỉnh linh hoạt vùng mặt nạ (mask) tóc. Để giải quyết vấn đề này, hệ thống đề xuất cơ chế \texttt{expand\_hair\_mask} nhằm mở rộng và hiệu chỉnh vùng tóc một cách thích ứng, đảm bảo kết quả tự nhiên và không ảnh hưởng đến khuôn mặt. Quy trình bao gồm các bước chính như sau:
+
 \begin{itemize}
-    \item \textbf{Phát hiện trường hợp trọc/ít tóc:} Khi diện tích mask tóc nhỏ hơn 100 pixel, hệ thống tạo scalp mask bằng 3DDFA V2 (ngoại suy đỉnh đầu từ forehead vertices, chiếu convex hull) hoặc fallback sang OpenCV (crop tóc mẫu, scale theo face width, paste lên trán).
-    \item \textbf{Mở rộng theo tỷ lệ:} Nếu diện tích tóc tham chiếu $> 1.5 \times$ diện tích tóc user, mask được dilate với kernel hình chữ nhật hướng ngang (tóc phồng), dọc (tóc dài) hoặc vuông (tóc đều), từ 1--8 iterations tỷ lệ với chênh lệch diện tích.
-    \item \textbf{Bảo vệ khuôn mặt (3 lớp):} Face mask được dilate thêm 10px tạo buffer, trừ khỏi expanded mask, rồi smooth biên bằng Gaussian blur.
+    \item \textbf{Phát hiện trường hợp trọc hoặc ít tóc:} Khi diện tích mặt nạ tóc ban đầu nhỏ hơn ngưỡng 100 pixel, hệ thống xem đây là trường hợp thiếu thông tin tóc. Khi đó, một \textit{scalp mask} (mặt nạ da đầu) sẽ được tạo bằng mô hình 3DDFA V2 thông qua việc ngoại suy vùng đỉnh đầu từ các điểm đặc trưng vùng trán và chiếu bao lồi. Trong trường hợp không khả dụng, hệ thống sử dụng phương pháp dự phòng với OpenCV: cắt vùng tóc từ ảnh tham chiếu, chuẩn hóa theo độ rộng khuôn mặt, sau đó chèn lên vùng trán để ước lượng vùng tóc.
+    
+    \item \textbf{Mở rộng mặt nạ theo tỷ lệ:} Khi diện tích tóc của ảnh tham chiếu lớn hơn $1.5 \times$ so với tóc của người dùng, mặt nạ sẽ được mở rộng bằng phép toán giãn (dilation). Hình dạng kernel được lựa chọn tùy theo đặc trưng kiểu tóc: kernel chữ nhật ngang cho tóc phồng, chữ nhật dọc cho tóc dài, và kernel vuông cho tóc cân đối. Số lần lặp dilation dao động từ 1 đến 8 lần, tỷ lệ thuận với mức chênh lệch diện tích giữa hai vùng tóc.
+    
+    \item \textbf{Bảo vệ khuôn mặt với ba lớp xử lý:} Để tránh việc vùng tóc lấn vào khuôn mặt, hệ thống áp dụng cơ chế bảo vệ gồm ba bước: (i) giãn mặt nạ khuôn mặt thêm 10 pixel để tạo vùng đệm (buffer), (ii) loại bỏ phần giao giữa mặt nạ tóc mở rộng và vùng đệm này, và (iii) làm mượt biên bằng bộ lọc Gaussian nhằm đảm bảo sự chuyển tiếp tự nhiên giữa tóc và khuôn mặt.
 \end{itemize}
 
 \subsection{HairDiffusionService -- Suy luận Diffusion}
@@ -81,18 +85,25 @@ Tất cả ảnh được resize về 512$\times$512 khi suy luận rồi upscal
 Sau khi giải mã VAE, bước hậu xử lý hòa trộn mềm tại biên mask bằng Gaussian blur ($21 \times 21$, $\sigma = 10$) giúp chuyển tiếp tự nhiên giữa vùng tóc mới và vùng ảnh gốc.
 
 \subsection{HairColorService -- Đổi màu tóc}
-Service đổi màu tóc bằng kỹ thuật HSV Color Transfer mà không cần chạy lại mô hình khuếch tán:
+
+Nhằm tăng tính linh hoạt và giảm chi phí tính toán, hệ thống triển khai \textit{HairColorService} cho phép thay đổi màu tóc trực tiếp trên ảnh kết quả mà không cần thực thi lại mô hình khuếch tán. Phương pháp được xây dựng dựa trên kỹ thuật \textit{HSV Color Transfer}, giúp bảo toàn cấu trúc và độ chi tiết của tóc trong khi thay đổi sắc độ mong muốn. Quy trình thực hiện bao gồm các bước sau:
+
 \begin{enumerate}
-    \item Chuyển ảnh sang không gian HSV.
-    \item Thay thành phần Hue (sắc độ) bằng giá trị màu đích.
-    \item Blend Saturation (độ bão hòa): giữ 20\% gốc, thay 80\% theo màu mới.
-    \item Điều chỉnh Value (độ sáng) nhẹ theo tỷ lệ sáng/tối của màu đích (giới hạn $0.6$--$1.4$).
-    \item Blend bằng Gaussian blur trên biên mask để tránh viền cứng.
+    \item \textbf{Chuyển đổi không gian màu:} Ảnh đầu vào được chuyển từ không gian màu RGB sang HSV nhằm tách biệt rõ ràng các thành phần sắc độ (Hue), độ bão hòa (Saturation) và độ sáng (Value).
+    
+    \item \textbf{Thay đổi sắc độ (Hue):} Thành phần Hue của vùng tóc được thay thế bằng giá trị màu mục tiêu, đảm bảo sự thay đổi màu sắc chính xác theo lựa chọn.
+    
+    \item \textbf{Điều chỉnh độ bão hòa (Saturation):} Để giữ lại một phần đặc trưng tự nhiên của tóc gốc, hệ thống thực hiện trộn tuyến tính giữa giá trị Saturation ban đầu và giá trị từ màu mới theo tỷ lệ 20\% : 80\%.
+    
+    \item \textbf{Hiệu chỉnh độ sáng (Value):} Thành phần Value được điều chỉnh nhẹ dựa trên độ sáng tương đối của màu mục tiêu, với hệ số giới hạn trong khoảng $0.6$ đến $1.4$ nhằm tránh hiện tượng quá sáng hoặc quá tối.
+    
+    \item \textbf{Làm mượt biên:} Sau khi thay đổi màu, vùng tóc được hòa trộn với ảnh gốc thông qua mặt nạ (mask) kết hợp bộ lọc Gaussian tại biên, giúp loại bỏ hiện tượng viền cứng và tăng tính tự nhiên của kết quả.
 \end{enumerate}
-Hệ thống cung cấp 15 preset màu (đen, nâu, vàng, đỏ, hồng, xanh dương, tím, v.v.) và hỗ trợ hex code tùy chỉnh.
+
+Hệ thống cung cấp sẵn 15 cấu hình màu (\textit{preset}) phổ biến như đen, nâu, vàng, đỏ, hồng, xanh dương, tím, \textit{v.v.}, đồng thời hỗ trợ nhập mã màu \textit{hex} tùy chỉnh để đáp ứng nhu cầu đa dạng của người dùng.
 
 \section{Thiết kế luồng ứng dụng bất đồng bộ}
-Do thời gian suy luận kéo dài vài giây, hệ thống áp dụng mô hình xử lý bất đồng bộ:
+Do thời gian suy luận kéo dài vài giây cho đến vài phút, hệ thống áp dụng mô hình xử lý bất đồng bộ:
 \begin{enumerate}
     \item Người dùng gửi yêu cầu qua \texttt{POST /generate}.
     \item Backend lưu ảnh upload, tạo Celery task và trả về \texttt{task\_id} ngay lập tức.
