@@ -1,0 +1,231 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Kiến trúc tổng thể hệ thống}
+Hệ thống TryHairStyle được tổ chức theo kiến trúc client--server với bốn thành phần chính, đảm bảo khả năng mở rộng và xử lý hiệu quả các tác vụ tính toán nặng:
+
+\begin{enumerate}
+    \item \textbf{Frontend (React/Vite):}
+    Giao diện web cho phép người dùng tải ảnh đầu vào, lựa chọn kiểu tóc tham chiếu, tùy chỉnh màu tóc và theo dõi kết quả. Frontend được thiết kế để tương tác thời gian thực với backend thông qua các API.
+
+    \item \textbf{Backend API (FastAPI):}
+    Thành phần này tiếp nhận các yêu cầu HTTP từ phía người dùng, thực hiện kiểm tra dữ liệu đầu vào và khởi tạo tác vụ xử lý. Ngoài ra, backend còn chịu trách nhiệm quản lý trạng thái và cung cấp các tài nguyên tĩnh như ảnh kết quả.
+
+    \item \textbf{Worker AI (Celery):}
+    Worker đảm nhận việc xử lý khối tác vụ đồ sộ bất đồng bộ. Sau khi nhận nhiệm vụ từ Redis, worker thực thi toàn bộ pipeline bao gồm tiền xử lý ảnh, suy luận mô hình sinh học sâu theo tiến trình (Subprocess hoặc Inline) và kết thúc bằng việc hậu xử lý cắt ghép hoàn thiện (paste-back) khuôn mặt mới trả về đúng tọa độ \texttt{bbox} gốc, bảo tồn nguyên vẹn môi trường hình nền.
+
+    \item \textbf{Message Broker (Redis):}
+    Redis đóng vai trò trung gian truyền tải tác vụ giữa backend và worker, đồng thời lưu trữ trạng thái xử lý. Cơ chế hàng đợi giúp hệ thống xử lý bất đồng bộ và tăng khả năng chịu tải.
+\end{enumerate}
+
+Kiến trúc này tách biệt rõ ràng giữa luồng tiếp nhận yêu cầu và luồng xử lý suy luận, cho phép backend phản hồi nhanh chóng mà không bị chặn bởi các tác vụ tính toán phức tạp. Nhờ đó, hệ thống hạn chế tình trạng timeout và nâng cao trải nghiệm người dùng.
+
+\begin{figure}[H]
+    \centering
+    % TODO: Chèn ảnh sơ đồ kiến trúc tổng quát
+    \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Sơ đồ kiến trúc tổng thể hệ thống]}}
+    \caption{Sơ đồ kiến trúc tổng thể hệ thống TryHairStyle}
+    \label{fig:overall-architecture}
+\end{figure}
+
+\subsection{Cơ chế điều kiện kép}
+Để vừa bảo toàn khuôn mặt vừa chuyển giao kiểu tóc, hệ thống sử dụng hai nhánh điều kiện hóa song song, mỗi nhánh đảm nhận một vai trò riêng biệt nhưng bổ trợ lẫn nhau:
+
+\begin{itemize}
+    \item \textbf{Nhánh bảo toàn danh tính:}
+    Ảnh người dùng được phân tích bằng InsightFace để trích xuất embedding khuôn mặt 512 chiều, đóng vai trò biểu diễn danh tính. Embedding này được kết hợp với ControlNet Depth nhằm duy trì cấu trúc hình học, đồng thời tích hợp InstantID để tăng cường khả năng giữ nguyên đặc trưng nhận dạng. Đối với các trường hợp khuôn mặt nghiêng ($|yaw| \geq 45^\circ$), hệ thống tự động chuyển sang sử dụng AdaFace IR\nobreakdash-100 để đảm bảo độ ổn định của embedding.
+
+    \item \textbf{Nhánh truyền tải phong cách tóc:}
+    Ảnh tóc tham chiếu được mã hóa thành vector đặc trưng thông qua IP-Adapter Plus trong pipeline chuẩn, hoặc HairTextureEncoder (ResNet\nobreakdash-50) trong pipeline tùy chỉnh. Vector này chứa thông tin về cấu trúc, hình dạng và kết cấu tóc, từ đó dẫn hướng mô hình sinh ảnh tạo ra kiểu tóc phù hợp với tham chiếu.
+\end{itemize}
+
+Hai nhánh điều kiện này được tích hợp đồng thời vào quá trình suy luận của mô hình khuếch tán, giúp cân bằng giữa việc giữ nguyên danh tính khuôn mặt và áp dụng chính xác kiểu tóc mong muốn.
+
+\begin{figure}[H]
+    \centering
+    % TODO: Chèn ảnh sơ đồ cơ chế điều kiện kép
+    \framebox[0.9\textwidth]{\rule{0pt}{5cm} \textbf{[KHUNG GIỮ CHỖ: Sơ đồ cơ chế điều kiện kép]}}
+    \caption{Cơ chế điều kiện kép kết hợp InsightFace và IP-Adapter}
+    \label{fig:dual-condition}
+\end{figure}
+
+\section{Thiết kế các mô-đun xử lý}
+Phần backend được chia thành các service module độc lập, mỗi module đảm nhận một chức năng riêng biệt.
+
+\subsection{FaceInfoService -- Phát hiện và phân tích khuôn mặt}
+
+FaceInfoService đóng vai trò là thành phần cốt lõi trong pipeline xử lý ảnh, chịu trách nhiệm phát hiện, chuẩn hóa và trích xuất đặc trưng khuôn mặt nhằm phục vụ các bước xử lý phía sau như giữ nguyên danh tính, ghép kiểu tóc và tái tạo hình học. Để đảm bảo vừa đạt độ chính xác cao vừa tối ưu thời gian xử lý, hệ thống được thiết kế theo kiến trúc pipeline ba tầng kết hợp nhiều mô hình chuyên biệt.
+
+\begin{enumerate}
+    \item \textbf{YOLOv8-Face (Phiên bản YOLOv8n):} 
+    Tại tầng đầu tiên của pipeline, hệ thống triển khai mô hình YOLOv8-Face với kiến trúc \textbf{YOLOv8n (Nano)} siêu nhẹ nhằm tối ưu hóa tốc độ suy luận mà vẫn đảm bảo độ chính xác cao. Mô hình này đóng vai trò là \textit{TrainingFaceDetector}, có khả năng phát hiện toàn bộ khuôn mặt trong ảnh kể cả trong các điều kiện khó như góc nghiêng lớn, bị che khuất một phần hoặc ảnh đông người. Kết quả dự đoán được tinh lọc lập tức qua thuật toán \textit{Non-Maximum Suppression} (NMS) để loại bỏ các bounding box trùng lấn, giúp quy trình xử lý hàng loạt đạt hiệu năng tối ưu và ổn định cho các bước phân tích sâu phía sau.
+
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.8\textwidth]{images/anh_nhan_dien_yolo.png}
+        \caption{Ví dụ phát hiện khuôn mặt và bounding box bằng YOLOv8-Face}
+        \label{fig:yolo_face}
+    \end{figure}
+
+    \item \textbf{InsightFace (antelopev2):} 
+    Sau khi xác định được vị trí khuôn mặt, hệ thống tiến hành phân tích chi tiết từng vùng mặt bằng mô hình InsightFace (antelopev2). Tại đây, các thông tin quan trọng được trích xuất bao gồm 106 điểm landmarks, embedding khuôn mặt 512 chiều theo chuẩn ArcFace, cùng với các keypoints đặc trưng. Những thông tin này đóng vai trò quan trọng trong việc bảo toàn danh tính và hỗ trợ các tác vụ căn chỉnh (alignment) ở các bước tiếp theo.
+
+    \item \textbf{TrainingEmbedder (AdaFace fallback):} 
+    Trong một số trường hợp đặc biệt khi InsightFace không thể phát hiện hoặc trích xuất đặc trưng (ví dụ: khuôn mặt quay nghiêng lớn hoặc góc nhìn profile), hệ thống sử dụng cơ chế dự phòng (fallback) với mô hình AdaFace IR-100. Trước khi đưa vào AdaFace, khuôn mặt được căn chỉnh bằng MTCNN (\textit{Multi-task Cascaded Convolutional Networks}) để đảm bảo tính nhất quán hình học. Việc chuyển sang pipeline này được kích hoạt khi góc quay đầu vượt quá ngưỡng $|yaw| = 45^\circ$, giúp tăng độ bao phủ và tính ổn định của hệ thống.
+    \item \textbf{TrainingReconstructor3D (3DDFA V2):} Thực hiện tái dựng khuôn mặt 3D từ ảnh 2D, cung cấp lưới điểm 3D dày đặc (dense vertices) cùng các thông tin về góc quay (yaw, pitch, roll). Dữ liệu này được dùng để ngoại suy vùng da đầu (scalp) trong trường hợp người dùng ít tóc hoặc trọc đầu, đảm bảo việc sinh tóc mới diễn ra tự nhiên.
+
+\end{enumerate}
+
+Bên cạnh pipeline 2D, service còn tích hợp mô-đun \textbf{TrainingReconstructor3D} dựa trên mô hình 3DDFA V2 nhằm tái tạo hình học khuôn mặt trong không gian ba chiều. Kết quả là một tập các đỉnh (vertices) biểu diễn mesh khuôn mặt dày đặc. Dữ liệu 3D này đặc biệt hữu ích trong việc ngoại suy vùng da đầu, nhất là trong các trường hợp người dùng có ít tóc hoặc không có tóc, từ đó hỗ trợ quá trình tổng hợp kiểu tóc diễn ra tự nhiên và chính xác hơn.
+
+\subsection{FaceNormalizationService -- Chuẩn hóa và cắt ảnh khuôn mặt}
+
+FaceNormalizationService đóng vai trò là tầng trung gian trong pipeline, chịu trách nhiệm chuyển đổi kết quả từ bước phát hiện khuôn mặt sang một biểu diễn ảnh chuẩn hóa, phù hợp cho các tác vụ phân tích chuyên sâu phía sau. Phân hệ này hướng đến việc đảm bảo tính nhất quán về hình học, tỷ lệ và hệ tọa độ ảnh, từ đó nâng cao độ ổn định và khả năng tổng quát của toàn bộ hệ thống.
+
+\begin{itemize}
+    \item \textbf{Mở rộng vùng cắt (2.5x Expansion):} 
+    Từ bounding box được phát hiện bởi YOLOv8n, hệ thống mở rộng vùng cắt với hệ số 2.5 lần so với kích thước ban đầu. Việc mở rộng này nhằm đảm bảo bao phủ đầy đủ các vùng quan trọng như tóc phía trên và cổ phía dưới, vốn đóng vai trò thiết yếu trong các bài toán phân đoạn tóc. Nhờ đó, mô hình phía sau có đủ ngữ cảnh để xác định chính xác ranh giới giữa tóc và nền.
+
+    \item \textbf{Alignment và Resizing:} 
+    Ảnh sau khi cắt được căn chỉnh dựa trên 5 điểm landmarks (hai mắt, mũi và hai khóe miệng), đưa khuôn mặt về trạng thái thẳng đứng và cân đối. Bước alignment giúp giảm sai lệch do góc quay đầu và tăng tính đồng nhất giữa các mẫu dữ liệu. Sau đó, ảnh được chuẩn hóa về kích thước cố định $512 \times 512$, đáp ứng yêu cầu đầu vào của các mô hình học sâu trong pipeline.
+
+    \item \textbf{Chuẩn hóa đầu vào (Standardized Input):} 
+    Ảnh sau khi xử lý trở thành đầu vào thống nhất cho các phân hệ tiếp theo, bao gồm \textit{SegmentationService} (SegFormer) và \textit{TrainingReconstructor3D} (3DDFA V2). Việc sử dụng chung một không gian ảnh giúp đồng bộ giữa mặt nạ ngữ nghĩa và dữ liệu hình học 3D, hạn chế sai lệch khi kết hợp đa nguồn thông tin.
+    
+    \begin{figure}[H]
+        \centering
+        \includegraphics[width=0.8\textwidth]{images/3ddfa.png}
+        \caption{Minh họa quá trình tái dựng mesh khuôn mặt 3D và đồng bộ hóa trong không gian ảnh chuẩn}
+        \label{fig:3ddfa}
+    \end{figure}
+\end{itemize}
+
+\subsection{SegmentationService -- Phân đoạn ngữ nghĩa}
+
+SegmentationService thực hiện phân đoạn ảnh ở mức pixel nhằm xác định các vùng ngữ nghĩa trên khuôn mặt. Phân hệ này sử dụng mô hình \textit{SegFormer} (jonathandinu/face-parsing), cho phép phân tách ảnh thành 19 lớp ngữ nghĩa chi tiết như da (skin), tóc (hair), mắt, mũi, miệng, tai, mũ/nón, v.v.
+
+Dựa trên kết quả phân đoạn, hệ thống xây dựng hai loại mặt nạ chính phục vụ cho quá trình sinh ảnh:
+
+\begin{itemize}
+    \item \textbf{Hair mask:} 
+    Được tạo bằng cách hợp nhất lớp tóc (class 13) và lớp mũ/nón (class 14), nhằm xử lý thống nhất các trường hợp có hoặc không có phụ kiện che đầu. Điều này đảm bảo toàn bộ vùng liên quan đến tóc đều được đưa vào quá trình inpainting.
+
+    \item \textbf{Face mask:} 
+    Được tổng hợp từ 12 lớp thuộc khuôn mặt (da, mắt, lông mày, mũi, tai, miệng, môi), đóng vai trò bảo vệ các đặc trưng nhận dạng quan trọng, tránh việc sinh tóc chồng lấn lên khuôn mặt.
+\end{itemize}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/segformer.png}
+    \caption{Kết quả phân đoạn ngữ nghĩa vùng mặt và vùng tóc sử dụng SegFormer}
+    \label{fig:segformer_mask}
+\end{figure}
+
+Sau khi tạo mask, hệ thống áp dụng phép giãn nở (dilation) nhằm mở rộng biên các vùng, giúp bao phủ đầy đủ khu vực tóc và giảm thiểu lỗi tại ranh giới.
+
+Tuy nhiên, việc bảo vệ toàn bộ vùng da mặt dẫn đến hạn chế đối với các kiểu tóc có phần mái (bangs) phủ xuống trán. Do vùng trán thuộc lớp da (skin) nằm trong face mask, mô hình sinh ảnh không thể tạo tóc tại khu vực này, dẫn đến hiện tượng đường biên không tự nhiên.
+
+Để khắc phục, hệ thống đề xuất kỹ thuật \textit{Forehead Unmasking}, cho phép loại bỏ có chọn lọc phần mặt nạ tại vùng trán trong khi vẫn bảo toàn các vùng đặc trưng phía dưới. Quy trình thực hiện gồm ba bước:
+
+\begin{enumerate}
+    \item Xác định tọa độ $y_{min}$ của các pixel thuộc vùng mắt và lông mày (class 3--7), sử dụng như một ranh giới ngang phân tách vùng trán và vùng mặt chính.
+
+    \item Áp dụng biên an toàn bằng cách dịch chuyển ranh giới lên trên một khoảng $\delta = 0{,}02 \times H$ (với $H$ là chiều cao ảnh) nhằm tránh ảnh hưởng đến vùng lông mày.
+
+    \item Cập nhật face mask bằng cách loại bỏ (gán giá trị 0) các pixel có tọa độ $y < y_{min} - \delta$, từ đó “mở khóa” vùng trán cho quá trình sinh tóc.
+\end{enumerate}
+
+Nhờ cơ chế này, mô hình khuếch tán có thể sinh các kiểu tóc mái một cách tự nhiên hơn mà không làm ảnh hưởng đến các đặc trưng nhận dạng quan trọng. Trong trường hợp SegFormer không phát hiện được vùng mắt hoặc lông mày (do che khuất hoặc góc nhìn lớn), hệ thống sẽ bỏ qua bước này và giữ nguyên face mask ban đầu nhằm đảm bảo tính ổn định.
+\subsection{Kỹ thuật mặt nạ động}
+
+Trong bài toán thử kiểu tóc ảo, sự khác biệt đáng kể về độ dài và độ phồng giữa tóc tham chiếu và tóc gốc của người dùng đặt ra yêu cầu phải điều chỉnh linh hoạt vùng mặt nạ (mask) tóc. Để giải quyết vấn đề này, hệ thống đề xuất cơ chế \texttt{expand\_hair\_mask} nhằm mở rộng và hiệu chỉnh vùng tóc một cách thích ứng, đảm bảo kết quả tự nhiên và không ảnh hưởng đến khuôn mặt. Quy trình bao gồm các bước chính như sau:
+
+\begin{itemize}
+    \item \textbf{Phát hiện trường hợp trọc hoặc ít tóc:} Khi diện tích mặt nạ tóc ban đầu nhỏ hơn ngưỡng 100 pixel, hệ thống xem đây là trường hợp thiếu thông tin tóc. Khi đó, một \textit{scalp mask} (mặt nạ da đầu) sẽ được tạo bằng mô hình 3DDFA V2 thông qua việc ngoại suy vùng đỉnh đầu từ các điểm đặc trưng vùng trán và chiếu bao lồi. Trong trường hợp không khả dụng, hệ thống sử dụng phương pháp dự phòng với OpenCV: cắt vùng tóc từ ảnh tham chiếu, chuẩn hóa theo độ rộng khuôn mặt, sau đó chèn lên vùng trán để ước lượng vùng tóc.
+    
+    \item \textbf{Mở rộng mặt nạ theo tỷ lệ:} Khi diện tích tóc của ảnh tham chiếu lớn hơn $1.5 \times$ so với tóc của người dùng, mặt nạ sẽ được mở rộng bằng phép toán giãn (dilation). Hình dạng kernel được lựa chọn tùy theo đặc trưng kiểu tóc: kernel chữ nhật ngang cho tóc phồng, chữ nhật dọc cho tóc dài, và kernel vuông cho tóc cân đối. Số lần lặp dilation dao động từ 1 đến 8 lần, tỷ lệ thuận với mức chênh lệch diện tích giữa hai vùng tóc.
+    
+    \item \textbf{Bảo vệ khuôn mặt với ba lớp xử lý:} Để tránh việc vùng tóc lấn vào khuôn mặt, hệ thống áp dụng cơ chế bảo vệ gồm ba bước: (i) giãn mặt nạ khuôn mặt thêm 10 pixel để tạo vùng đệm (buffer), (ii) loại bỏ phần giao giữa mặt nạ tóc mở rộng và vùng đệm này, và (iii) làm mượt biên bằng bộ lọc Gaussian nhằm đảm bảo sự chuyển tiếp tự nhiên giữa tóc và khuôn mặt.
+\end{itemize}
+
+\subsection{HairDiffusionService -- Suy luận Diffusion}
+Phân hệ đảm nhiệm trọng trách sinh ảnh dựa trên luồng tham chiếu kép. Để đảm bảo tính linh hoạt, hệ thống định tuyến (routing) sang một trong hai kiến trúc:
+\begin{enumerate}
+    \item \textbf{Tiến trình cô lập sinh dòng ngoại sinh (TryOnHairstyle):} Chạy như một subprocess ẩn bằng môi trường virtual-env (\texttt{venv}) độc lập, tự chủ hoàn toàn cấu hình thư viện và tránh xung đột biến/tham số không gian nhớ với luồng backend hiện tại.
+    \item \textbf{Tiến trình mạng lõi nội sinh (HairFusion):} Sử dụng kiến trúc mạng UNet 13 kênh đầu vào được tinh chỉnh (fine-tuned) bằng LoRA tích hợp trực tiếp trong luồng chính (Inline). Quá trình đưa các điều kiện Embedding từ \textit{HairTextureEncoder} và \textit{InsightFace} vào thông qua CrossAttentionInjector, áp dụng kĩ thuật Classifier-Free Guidance (CFG).
+\end{enumerate}
+Trong bất kỳ luồng xử lý nào, tất cả ảnh đều được resize và pad hệ tọa độ về 512$\times$512 khi suy luận rồi upscale ngược trả về chính xác kích thước gốc.
+
+Sau khi giải mã luồng tiềm ẩn, bước hậu xử lý cuối cùng trước khi trả về sẽ thực hiện thao tác hòa trộn mềm tại biên mặt nạ (\textit{mask}) bằng Gaussian blur ($21 \times 21$, $\sigma = 10$). Đặc biệt, kết quả sau cùng sẽ sử dụng trích xuất toạ độ cắt trước đó (\texttt{bbox}) để \textbf{dán đè} ngược trở lại bức ảnh chân dung gốc, giúp cấu trúc môi trường xung quanh (như phông nền, người đi đường, vật thể tĩnh) không bị lệch tỉ lệ tỷ pixel nào.
+
+\begin{figure}[H]
+    \centering
+    % TODO: Chèn ảnh sơ đồ định tuyến mô hình
+    \framebox[0.9\textwidth]{\rule{0pt}{5cm} \textbf{[KHUNG GIỮ CHỖ: Sơ đồ định tuyến đa hệ mô hình AI]}}
+    \caption{Quy trình luân chuyển định tuyến đa thuật toán (HairFusion và TryOnHairstyle)}
+    \label{fig:multi-model-routing}
+\end{figure}
+
+\subsection{HairColorService -- Đổi màu tóc}
+
+Nhằm tăng tính linh hoạt và giảm chi phí tính toán, hệ thống triển khai \textit{HairColorService} cho phép thay đổi màu tóc trực tiếp trên ảnh kết quả mà không cần thực thi lại mô hình khuếch tán. Phương pháp được xây dựng dựa trên kỹ thuật \textit{HSV Color Transfer}, giúp bảo toàn cấu trúc và độ chi tiết của tóc trong khi thay đổi sắc độ mong muốn. Quy trình thực hiện bao gồm các bước sau:
+
+\begin{enumerate}
+    \item \textbf{Chuyển đổi không gian màu:} Ảnh đầu vào được chuyển từ không gian màu RGB sang HSV nhằm tách biệt rõ ràng các thành phần sắc độ (Hue), độ bão hòa (Saturation) và độ sáng (Value).
+    
+    \item \textbf{Thay đổi sắc độ (Hue):} Thành phần Hue của vùng tóc được thay thế bằng giá trị màu mục tiêu, đảm bảo sự thay đổi màu sắc chính xác theo lựa chọn.
+    
+    \item \textbf{Điều chỉnh độ bão hòa (Saturation):} Để giữ lại một phần đặc trưng tự nhiên của tóc gốc, hệ thống thực hiện trộn tuyến tính giữa giá trị Saturation ban đầu và giá trị từ màu mới theo tỷ lệ 20\% : 80\%.
+    
+    \item \textbf{Hiệu chỉnh độ sáng (Value):} Thành phần Value được điều chỉnh nhẹ dựa trên độ sáng tương đối của màu mục tiêu, với hệ số giới hạn trong khoảng $0.6$ đến $1.4$ nhằm tránh hiện tượng quá sáng hoặc quá tối.
+    
+    \item \textbf{Làm mượt biên:} Sau khi thay đổi màu, vùng tóc được hòa trộn với ảnh gốc thông qua mặt nạ (mask) kết hợp bộ lọc Gaussian tại biên, giúp loại bỏ hiện tượng viền cứng và tăng tính tự nhiên của kết quả.
+\end{enumerate}
+
+Hệ thống cung cấp sẵn 15 cấu hình màu (\textit{preset}) phổ biến như đen, nâu, vàng, đỏ, hồng, xanh dương, tím, \textit{v.v.}, đồng thời hỗ trợ nhập mã màu \textit{hex} tùy chỉnh để đáp ứng nhu cầu đa dạng của người dùng.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.8\textwidth]{images/doi_mau_toc_hsv.jpg}
+    \caption{Kết quả đổi màu tóc nhanh bằng HSV}
+    \label{fig:HSV_hair}
+\end{figure}
+
+\section{Thiết kế luồng ứng dụng bất đồng bộ}
+Do thời gian suy luận kéo dài vài giây cho đến vài phút, hệ thống áp dụng mô hình xử lý bất đồng bộ:
+\begin{enumerate}
+    \item Người dùng gửi yêu cầu qua \texttt{POST /generate}.
+    \item Backend lưu ảnh upload, tạo Celery task và trả về \texttt{task\_id} ngay lập tức.
+    \item Celery worker nhận task từ Redis, thực hiện pipeline AI, cập nhật trạng thái (\texttt{PROCESSING}) qua mỗi bước (Face Analysis, Creating Mask, Estimating Depth, Generating Hair, v.v.).
+    \item Frontend poll \texttt{GET /status/\{task\_id\}} mỗi 2 giây cho đến khi nhận \texttt{SUCCESS} hoặc \texttt{FAILURE}.
+    \item Kết quả được lưu theo session folder riêng biệt và phục vụ qua static file server.
+\end{enumerate}
+
+\section{Thiết kế API RESTful}
+Backend cung cấp các endpoint chính được mô tả trong Bảng~\ref{tab:api-endpoints}.
+
+\begin{table}[H]
+    \centering
+    \caption{Danh sách các API endpoint chính}
+    \label{tab:api-endpoints}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{1.5cm}|>{\raggedright\arraybackslash}p{3.5cm}|X|}
+        \hline
+        \textbf{Method} & \textbf{Endpoint} & \textbf{Mô tả} \\
+        \hline
+        POST & \texttt{/generate} & Gửi gói dữ liệu tạo ảnh (2 hình đầu vào, prompt, tùy chọn màu \texttt{hair\_color}, ngôn ngữ \texttt{language}, mô hình \texttt{ai\_model} và tọa độ nền \texttt{bbox}). Tự động trả về \texttt{task\_id}. \\
+        \hline
+        POST & \texttt{/detect-faces} & Quét và cắt chân dung các khuôn mặt trong ảnh. Chạy qua Celery. \\
+        \hline
+        POST & \texttt{/colorize} & Đổi màu tóc trên ảnh gốc (không cần Diffusion Model). \\
+        \hline
+        GET & \texttt{/status/\{task\_id\}} & Kiểm tra trạng thái tác vụ (PENDING, PROCESSING, SUCCESS, FAILURE). \\
+        \hline
+        GET & \texttt{/colors} & Trả về danh sách 15 preset màu tóc. \\
+        \hline
+        GET & \texttt{/random-pair} & Lấy cặp ảnh mẫu ngẫu nhiên từ dataset FFHQ. \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+\end{document}

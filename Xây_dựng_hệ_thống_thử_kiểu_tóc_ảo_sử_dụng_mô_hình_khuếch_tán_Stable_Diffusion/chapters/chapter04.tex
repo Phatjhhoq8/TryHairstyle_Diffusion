@@ -1,0 +1,214 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Môi trường và cài đặt hệ thống}
+Hệ thống được phát triển và vận hành trên môi trường phần cứng và phần mềm phù hợp với đặc thù tính toán của các mô hình khuếch tán:
+
+\begin{table}[H]
+    \centering
+    \caption{Cấu hình phần cứng và phần mềm triển khai}
+    \label{tab:system-config}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{3cm}|X|}
+        \hline
+        \textbf{Thành phần} & \textbf{Chi tiết} \\
+        \hline
+        GPU & NVIDIA RTX 3060 -- 12GB VRAM \\
+        \hline
+        RAM & 16GB \\
+        \hline
+        Hệ điều hành & Linux Ubuntu qua WSL2 \\
+        \hline
+        Python & 3.10, PyTorch 2.x, CUDA 12.1 \\
+        \hline
+        AI Frameworks & Diffusers, Transformers, InsightFace, Ultralytics \\
+        \hline
+        Backend & FastAPI, Celery, Redis \\
+        \hline
+        Frontend & React (Vite), TailwindCSS \\
+        \hline
+        Containerization & Docker Compose + NVIDIA Container Toolkit \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+Cấu hình đường dẫn model và thông số ứng dụng được quản lý tập trung trong module \texttt{config.py}, bao gồm:
+\begin{itemize}
+    \item \textbf{ModelPaths:} Đường dẫn đến các model weights (SDXL Inpainting, ControlNet Depth, IP-Adapter, InsightFace, AdaFace, YOLOv8-Face, SegFormer, 3DDFA V2, HairTextureEncoder).
+    \item \textbf{Settings:} Host, port, Redis URL và device (cuda/cpu).
+\end{itemize}
+
+\section{Xây dựng Model AI}
+Ngoài việc sử dụng mô hình SDXL Inpainting có sẵn, hệ thống xây dựng quy trình huấn luyện hai giai đoạn nhằm cải thiện chất lượng sinh ảnh cho bài toán chuyên biệt.
+
+\subsection{Giai đoạn 1: Huấn luyện bộ mã hóa kết cấu tóc (HairTextureEncoder)}
+Bộ mã hóa sử dụng backbone ResNet\nobreakdash-50 để trích xuất vector đặc trưng tóc 2048 chiều. Quá trình huấn luyện sử dụng ảnh crop vùng tóc (xác định bằng SegFormer), resize về $128\times 128$ và chuẩn hóa theo ImageNet. Vector đặc trưng này phục vụ cho nhánh style conditioning trong quá trình suy luận.
+
+\subsection{Giai đoạn 2: Tinh chỉnh UNet Inpainting bằng LoRA}
+Mô hình UNet được mở rộng lên 13 kênh đầu vào để hỗ trợ \textbf{direct reference conditioning} -- cho phép mô hình trực tiếp nhận ảnh tóc mẫu làm điều kiện sinh ảnh thay vì chỉ dựa vào style embedding. Cấu trúc 13 kênh:
+\begin{itemize}
+    \item 4 kênh \textit{noisy latents}: Ảnh nhiễu ở bước khuếch tán hiện tại.
+    \item 1 kênh \textit{mask}: Vùng tóc cần vẽ lại (binary mask downsampled).
+    \item 4 kênh \textit{masked latents}: Ảnh gốc đã khoét vùng tóc (qua VAE Encoder).
+    \item 4 kênh \textit{reference hair latents}: Ảnh tóc tham chiếu (qua VAE Encoder).
+\end{itemize}
+
+\subsubsection{Kiến trúc mạng}
+\begin{itemize}
+    \item \textbf{HairInpaintingUNet:} Wrapper mở rộng lớp \texttt{conv\_in} của SDXL từ 4/9 kênh lên 13 kênh. Trọng số cũ được giữ nguyên, 4 kênh mới khởi tạo bằng zero. Hệ thống tự động phát hiện và tương thích ngược với checkpoint 9-kênh.
+    \item \textbf{CrossAttentionInjector:} Module inject style embedding (2048-d) và identity embedding (512-d) vào các tầng cross-attention của UNet thông qua linear projection riêng biệt.
+\end{itemize}
+
+\subsubsection{Chiến lược huấn luyện}
+\begin{itemize}
+    \item \textbf{Cross-Person Pairing:} 70\% mẫu huấn luyện ghép tóc từ \textit{người khác}, 30\% tự tham chiếu (self-reference). Chiến lược này buộc mô hình học cách tái tạo kiểu tóc từ ảnh mẫu bất kỳ thay vì chỉ ghi nhớ.
+    \item \textbf{VAE Latent Caching:} Ảnh ground truth được pre-encode qua VAE Encoder thành latent $4 \times 64 \times 64$ và lưu cache trên đĩa (${\sim}32$KB/file). Cơ chế này giúp bỏ qua bước VAE encoding trong vòng lặp huấn luyện, tiết kiệm đáng kể VRAM và thời gian.
+    \item \textbf{Mixed-Precision Training:} Lớp \texttt{conv\_in} (lớp duy nhất cần học trọng số mới) được giữ ở FP32 để đảm bảo gradient không bị underflow. Phần còn lại của UNet chạy ở FP16 thông qua \texttt{torch.amp.autocast}. Cơ chế \texttt{GradScaler} phóng đại loss trước khi lan truyền ngược rồi thu nhỏ lại, đảm bảo độ chính xác số học cho toàn pipeline.
+    \item \textbf{Classifier-Free Guidance Dropout:} 10\% bước huấn luyện đặt toàn bộ conditioning (style, identity, reference latents) về zero, cho phép áp dụng CFG khi suy luận.
+    \item \textbf{Quản lý bộ nhớ (OOM Prevention):} Mô hình 13-kênh đòi hỏi tài nguyên VRAM lớn. Để tránh tràn bộ nhớ trong quá trình huấn luyện trên máy chủ đám mây (Google Colab T4 15GB), khối phân tích sử dụng mạng bổ trợ được cấu hình chạy \textit{sau} quá trình \texttt{backward()} nhằm giải phóng đồ thị tính toán đạo hàm trước khi tải thêm tham số vào thiết bị. Kiến trúc này liên tục theo dõi tình trạng phân bổ RAM thông qua cơ chế chốt chặn (Heartbeat Logging) mỗi 100 bước.
+    \item \textbf{Tối ưu hóa I/O cục bộ (Auto-Caching):} Quá trình truy xuất dữ liệu trên ổ đĩa mạng lưới (Google Drive FUSE) thường xuyên gây nghẽn cổ chai (bottleneck) và làm treo luồng DataLoader. Hệ thống áp dụng cơ chế Caching phần cứng hai chiều (Two-Way Sync):
+    \begin{enumerate}
+        \item Từng cụm dữ liệu phân mảnh (Chunk) dung lượng $\sim$6.7GB được sao chép hoàn toàn sang ổ đĩa trạng thái rắn (SSD) siêu tốc đặt tại \texttt{/tmp/} của máy chủ trước khi đọc. Điều này loại bỏ hoàn toàn độ trễ mạng, giảm thời gian giải mã VAE xuống $\sim$15 lần (từ 45 phút xuống dưới 3 phút).
+        \item Hệ thống sau đó quét trên SSD, chỉ trích xuất các tệp latent còn thiếu và đồng bộ tức thì thư mục \texttt{gt\_latents\_cache} về lại lưu trữ đám mây. Kiến trúc "Fail-Safe" này đảm bảo dữ liệu quá trình không bị mất ngay cả khi máy chủ ảo đột ngột sập nguồn. DataLoader cũng được ép buộc dùng luồng đơn (\texttt{num\_workers=0}) để tối đa hóa tính ổn định.
+    \end{enumerate}
+    \item \textbf{Cơ chế lưu trữ dự phòng (Checkpoint Fallback):} Đối mặt với rủi ro bị mất kết nối và thu hồi tài nguyên ngẫu nhiên từ Google Colab, hệ thống được thiết lập tự động ghi xuất (export) trạng thái trọng số mô hình dạng \texttt{.safetensors}, cùng với tham số Optimizer và Lịch trình học (LR Scheduler) thành các bản sao lưu Checkpoint lên Google Drive sau chu kỳ mỗi số bước nhất định. Cơ chế này đảm bảo tiến trình huấn luyện có thể \textit{Resume} (phục hồi) chính xác ngay tại phân đoạn vừa chập chờn mà không thất thoát tài nguyên GPU đã bỏ ra.
+\end{itemize}
+
+    \subsubsection{Hàm mất mát và Tiêu chí đánh giá}
+    Để tối ưu hóa quá trình huấn luyện trên phần cứng có VRAM hạn chế (12-16GB), hệ thống tách biệt giữa các hàm mất mát dùng cho lan truyền ngược và các tiêu chí dùng để giám sát chất lượng:
+
+    \paragraph{Hàm mất mát huấn luyện (Training Losses):} Đây là các hàm trực tiếp tham gia vào quá trình cập nhật trọng số mô hình:
+    \begin{itemize}
+        \item \textbf{Mask-Aware Diffusion Loss (L2):} Hàm mất mát chính tính toán sai số nhiễu trong không gian tiềm ẩn, tập trung trọng số vào vùng tóc (1.0) và giảm nhẹ ở vùng nền (0.1).
+        \item \textbf{Latent Perceptual Loss (L1):} Tính toán sai số giữa ảnh dự đoán ($x_0$ prediction) và ảnh gốc ngay trong không gian tiềm ẩn (latent space), giúp mô hình hội tụ nhanh hơn về cấu trúc hình học mà không tốn thêm VRAM để giải mã VAE.
+    \end{itemize}
+
+    \paragraph{Tiêu chí giám sát và đánh giá (Monitoring \& Evaluation):} Được tính toán định kỳ (mỗi 200 bước hoặc mỗi epoch) để theo dõi chất lượng mà không tham gia vào backpropagation:
+    \begin{itemize}
+        \item \textbf{Identity Preservation (InceptionResnetV1):} Đo độ tương đồng bản dạng khuôn mặt qua Cosine Similarity.
+        \item \textbf{Texture Consistency (VGG16 Gram Matrix):} Giám sát độ chi tiết của kết cấu tóc.
+        \item \textbf{LPIPS (Learned Perceptual Image Patch Similarity):} Chỉ số đánh giá chính về độ chân thực thị giác của ảnh kết quả so với thực tế.
+    \end{itemize}
+
+Quá trình huấn luyện sử dụng LoRA rank 16, độ phân giải $512\times 512$, cấu hình batch size bằng 2 và gradient accumulation 4 bước, phù hợp không gian tài nguyên của Google Colab T4 (15GB VRAM). Phương pháp này chỉ yêu cầu tối ưu khoảng 35 triệu tham số (gần 1.3\% tổng thể mô hình).
+
+\section{Xây dựng Backend API}
+Backend được xây dựng bằng FastAPI với cấu trúc module rõ ràng.
+
+\subsection{Cấu trúc source code}
+\begin{Verbatim}[frame=single]
+backend/app/
+|-- main.py          # FastAPI endpoints + CORS + Static Files
+|-- tasks.py         # Celery tasks (hair_transfer, colorize, detect_faces)
+|-- config.py        # Model paths + App settings
+|-- schemas.py       # Pydantic request/response schemas
+|-- services/
+|   |-- diffusion.py       # HairFusion pipeline
+|   |-- face.py            # YOLO + InsightFace + AdaFace
+|   |-- mask.py            # SegFormer + Dynamic Masking
+|   |-- hair_color_service.py  # HSV Color Transfer
+|   |-- translate_service.py   # Dịch prompt Việt - Anh
+|   |-- face_detector.py   # YOLOv8-Face + NMS
+|   |-- pose_estimator.py  # InsightFace landmarks + 3DDFA pose
+|   \-- training_utils.py  # Các hàm trợ trợ huấn luyện
+\-- utils/
+    \-- torch_patch.py     # PyTorch compatibility patches
+\end{Verbatim}
+
+\subsection{Celery Tasks và Lazy Loading}
+Hệ thống định nghĩa ba Celery task chính:
+\begin{enumerate}
+    \item \textbf{process\_hair\_transfer:} Tác vụ nòng cốt tiếp nhận ảnh đầu vào, tự động phân luồng (routing) theo mô hình chỉ định (\textit{HairFusion} hoặc \textit{TryOnHairstyle} chạy theo tiến trình cách ly hoàn toàn). Tác vụ điều phối tuần tự: phân tích khuôn mặt, tạo mặt nạ động, suy luận, tự động khớp và bảo toàn bối cảnh gốc dựa trên tọa độ \texttt{bbox}, và đổi màu tóc.
+    \item \textbf{process\_hair\_colorize:} Đo lường mặt nạ tại ảnh hiện thời và áp dụng hệ số chuyển giao không gian HSV, không yêu cầu tái khởi chạy quy trình mô hình khuếch tán.
+    \item \textbf{process\_detect\_faces:} Nhận diện định vị đa chiều, trích xuất tất cả các khuôn mặt và nội suy khung lựa chọn mở rộng nhằm bảo vệ dữ liệu tóc, cổ.
+\end{enumerate}
+
+Tất cả model AI đều chỉ được nạp lười (lazy-load) ở worker process thông qua pipeline giới hạn chia sẻ RAM để ổn định tiến trình CUDA.
+
+\subsection{Pydantic Schemas}
+Luồng dữ liệu giao tiếp Client-Server được mô hình hóa rõ ràng:
+\begin{itemize}
+    \item \textbf{HairTransferRequest/Response:} Đóng gói đối tượng khởi chạy (ảnh nguồn, tọa độ bối cảnh nền \texttt{bbox}, thuộc tính mô hình, chuỗi chú thích đa ngôn ngữ \texttt{prompt}, thông tin không gian màu sắc).
+    \item \textbf{TaskStatusResponse \& DetectFacesResponse:} Xác thực vòng lặp phản hồi trạng thái, URL kết quả đồng thời chuẩn hóa thông điệp lỗi hệ thống.
+\end{itemize}
+
+\section{Xây dựng phân hệ đổi màu tóc (Hair Color Service)}
+HairColorService xử lý trực tiếp trên không gian điểm ảnh bằng phương pháp chuyển đổi HSV. Bảng~\ref{tab:preset-colors} liệt kê một số preset màu được cung cấp sẵn.
+
+\begin{table}[H]
+    \centering
+    \caption{Một số preset màu tóc trong hệ thống}
+    \label{tab:preset-colors}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{2.5cm}|>{\centering\arraybackslash}p{2cm}|X|}
+        \hline
+        \textbf{Tên} & \textbf{Mã hex} & \textbf{Ghi chú} \\
+        \hline
+        Đen (black) & \texttt{\#1a1a1a} & Hue $= 0$, Saturation rất thấp \\
+        \hline
+        Vàng (blonde) & \texttt{\#d4a54a} & Blonde phổ biến \\
+        \hline
+        Đỏ (red) & \texttt{\#8b2500} & Saturation cao \\
+        \hline
+        Hồng (pink) & \texttt{\#d4608a} & Giá trị Hue $\approx 165$ \\
+        \hline
+        Xanh dương (blue) & \texttt{\#2a52be} & Màu thời trang \\
+        \hline
+        Bạc (silver) & \texttt{\#c0c0c0} & Saturation gần 0, Value cao \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+\section{Xây dựng giao diện người dùng (Frontend)}
+Giao diện được phát triển bằng framework React.js kèm hệ thống cảnh báo tĩnh với các khối thư viện component cụ thể:
+
+\begin{table}[H]
+    \centering
+    \caption{Các component React của hệ thống}
+    \label{tab:frontend-components}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{3cm}|X|}
+        \hline
+        \textbf{Component} & \textbf{Chức năng} \\
+        \hline
+        ImageUpload / ResultPanel & Tải nhận dữ liệu đầu vào và tương tác dọn hiển thị (nút Clear) dành cho thiết bị. \\
+        \hline
+        DrawButton & Nút trung tâm khởi chạy tiến trình, kết hợp thao tác Đổi màu nhanh. \\
+        \hline
+        PromptInput & Khu vực tuỳ chỉnh miêu tả từ văn bản, khả năng tự động phiên dịch Việt-Anh. \\
+        \hline
+        ColorPicker & Tham số hóa mã hex tĩnh trên 15 dải preset truyền thống cường độ thay đổi. \\
+        \hline
+        FaceSelector & Modal popup tập trung khung người dùng, dùng chắt lọc nhân vật. \\
+        \hline
+        ModelSelector & Khu vực chỉ định mô hình xương sống vận hành thuật toán. \\
+        \hline
+    \end{tabularx}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    % TODO: Chèn ảnh chụp giao diện Frontend React
+    \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Ảnh chụp giao diện chính của ứng dụng]}}
+    \caption{Giao diện chính của ứng dụng TryHairStyle}
+    \label{fig:frontend-ui}
+\end{figure}
+
+Giao diện áp dụng chuẩn RESTful tương tác với backend cung cấp dữ liệu qua 6 điểm cuối (endpoint) chủ đạo:
+\begin{itemize}
+    \item \texttt{/generate}: Lệnh tiếp nhận kết cấu phân lớp tham chiếu, xác định \texttt{bbox} gốc cho kỹ thuật bảo toàn cấu trúc bối cảnh, cũng như tuỳ chọn đa thuật toán sinh hình (\textit{HairFusion} / \textit{TryOnHairstyle}).
+    \item \texttt{/colorize}: Tuyến xử lý phân rã nhánh độc lập cho điều chỉnh màu không nội suy.
+    \item \texttt{/detect-faces}: API trích phân hệ cấu hình nhân vật nhóm/khung nền.
+    \item Các điểm cập nhật \texttt{/status}, \texttt{/colors}, \texttt{/random-pair}: Lót cầu nối cho các tiện ích dữ liệu kiểm tra tương ứng theo thời gian thực (long-polling 2 giây).
+\end{itemize}
+
+Quy trình phản hồi tại lớp Frontend khi phát lệnh vẽ được giản lược thao tác, với khả năng cô lập tính năng nhận diện, hiển thị trung gian rồi cập nhật thông suốt liền mạch trải nghiệm hiển thị cuối cùng.
+
+\section{Triển khai bằng Docker}
+Hệ thống được container hóa qua Docker Compose với 4 service:
+\begin{enumerate}
+    \item \textbf{Redis} (\texttt{redis:7-alpine}): Message broker với healthcheck.
+    \item \textbf{Backend} (\texttt{tryhair\_backend}): FastAPI server, mount volume \texttt{models/} và \texttt{data/}, GPU passthrough.
+    \item \textbf{Celery Worker} (\texttt{tryhair\_celery}): Dùng chung Dockerfile với backend, chạy lệnh Celery worker với \texttt{--pool=solo --concurrency=1} cho GPU.
+    \item \textbf{Frontend} (\texttt{tryhair\_frontend}): Build React thành static files, serve qua Nginx trên port 3000.
+\end{enumerate}
+
+\end{document}
