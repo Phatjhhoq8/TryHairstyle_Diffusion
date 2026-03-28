@@ -3,7 +3,7 @@ const API_BASE = '/api';
 /**
  * POST /generate — Gửi 2 ảnh + prompt => nhận task_id
  */
-export async function generateHair(originalFaceFile, faceCropFile, hairFile, prompt, hairColor, colorIntensity, language = 'en', aiModel = 'HairFusion', bbox = null) {
+export async function generateHair(originalFaceFile, faceCropFile, hairFile, prompt, hairColor, colorIntensity, language = 'en', aiModel = 'TryHairstyle', bbox = null) {
   const form = new FormData();
   form.append('face_image', faceCropFile);
   if (originalFaceFile) {

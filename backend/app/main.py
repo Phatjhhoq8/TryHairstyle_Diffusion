@@ -64,7 +64,7 @@ async def generate_hair(
     hair_color: str = Form(None),
     color_intensity: float = Form(0.7),
     language: str = Form("en"),
-    ai_model: str = Form("HairFusion")
+    ai_model: str = Form("TryHairstyle")
 ):
     """
     Endpoint tương thích với React Frontend.

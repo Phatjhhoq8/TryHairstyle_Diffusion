@@ -19,7 +19,7 @@ export default function App() {
   const [language, setLanguage] = useState('en');
   const [selectedColor, setSelectedColor] = useState('none');
   const [colorIntensity, setColorIntensity] = useState(0.7);
-  const [aiModel, setAiModel] = useState('HairFusion');
+  const [aiModel, setAiModel] = useState('TryHairstyle');
 
   // Pipeline state
   const [loading, setLoading] = useState(false);

@@ -59,7 +59,7 @@ def get_services():
         raise e
 
 @celery_app.task(bind=True)
-def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7, ai_model: str = "HairFusion", original_face_path: str = None, bbox: list = None):
+def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7, ai_model: str = "TryHairstyle", original_face_path: str = None, bbox: list = None):
     # Biến lưu kết quả trả về chung
     result_data = None
 
@@ -67,7 +67,7 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
     if ai_model == "TryOnHairstyle":
         result_data = _run_tryonhairstyle(self, user_img_path, hair_img_path)
     else:
-        # === Mặc định: HairFusion pipeline ===
+        # === Mặc định: TryHairstyle pipeline ===
         try:
             face_service, mask_service, diffusion_service, depth_estimator, color_service = get_services()
         except Exception as e:

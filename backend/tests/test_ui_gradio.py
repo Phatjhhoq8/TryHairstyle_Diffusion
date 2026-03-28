@@ -107,7 +107,7 @@ def get_random_ffhq_image():
     return Image.open(img_path).convert("RGB")
 
 
-def process_pipeline(user_image, hair_image, prompt, language="English", ai_model="HairFusion", latent_injection_weight=0.3):
+def process_pipeline(user_image, hair_image, prompt, language="English", ai_model="TryHairstyle", latent_injection_weight=0.3):
     """Chạy full pipeline: Face → Mask → Depth → Diffusion. Hoặc route sang TryOnHairstyle."""
     if user_image is None or hair_image is None:
         return None, "⚠️ Please select both images."
@@ -635,8 +635,8 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             )
         with gr.Column(scale=2, min_width=200):
             model_radio = gr.Radio(
-                choices=["TryHairStyle", "TryOnHairstyle"],
-                value="HairFusion",
+                choices=["TryHairstyle", "TryOnHairstyle"],
+                value="TryHairstyle",
                 label="Mô hình AI",
                 info="Chọn mô hình sử dụng để tạo kiểu tóc"
             )

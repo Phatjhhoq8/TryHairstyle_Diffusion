@@ -2,8 +2,8 @@ import { useState } from 'react';
 
 const MODELS = [
   {
-    id: 'HairFusion',
-    label: 'TryHairStyle',
+    id: 'TryHairstyle',
+    label: 'TryHairstyle',
     desc: '',
     icon: '',
   },
