@@ -3,14 +3,14 @@ import { useState } from 'react';
 const MODELS = [
   {
     id: 'HairFusion',
-    label: 'HairFusion',
-    desc: 'Mô hình hiện tại — SDXL + ControlNet + IP-Adapter',
+    label: 'TryHairStyle',
+    desc: '',
     icon: '',
   },
   {
     id: 'TryOnHairstyle',
     label: 'TryOnHairstyle',
-    desc: 'Mô hình thay thế — HairFusion ControlNet v1',
+    desc: '',
     icon: '',
   },
 ];

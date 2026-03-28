@@ -635,7 +635,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             )
         with gr.Column(scale=2, min_width=200):
             model_radio = gr.Radio(
-                choices=["HairFusion", "TryOnHairstyle"],
+                choices=["TryHairStyle", "TryOnHairstyle"],
                 value="HairFusion",
                 label="Mô hình AI",
                 info="Chọn mô hình sử dụng để tạo kiểu tóc"
