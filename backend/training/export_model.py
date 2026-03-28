@@ -270,11 +270,22 @@ class CheckpointManager:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         
         # 1. Load base UNet (SDXL Inpainting)
+        #    Detect số input channels từ conv_in weights trong checkpoint
         from backend.training.models.stage2_unet import HairInpaintingUNet
         from peft import LoraConfig, get_peft_model
         
+        # Detect conv_in channels từ checkpoint để tạo UNet đúng architecture
+        state_dict = load_safetensors(lora_path)
+        conv_in_weight_key = "conv_in.weight"
+        if conv_in_weight_key in state_dict:
+            detected_channels = state_dict[conv_in_weight_key].shape[1]
+            logger.info(f"  → Detected conv_in channels từ checkpoint: {detected_channels}")
+        else:
+            detected_channels = 13  # Mặc định nếu không tìm thấy
+            logger.info(f"  → Không tìm thấy conv_in.weight trong checkpoint, mặc định {detected_channels}-ch")
+        
         logger.info("  → Loading base UNet...")
-        unet = HairInpaintingUNet().to(device)
+        unet = HairInpaintingUNet(in_channels_target=detected_channels).to(device)
         
         # 2. Apply LoRA config (phải match với training config)
         lora_config = LoraConfig(
@@ -285,8 +296,7 @@ class CheckpointManager:
         )
         unet.unet = get_peft_model(unet.unet, lora_config)
         
-        # 3. Load LoRA + conv_in weights
-        state_dict = load_safetensors(lora_path)
+        # 3. Load LoRA + conv_in weights (reuse state_dict đã load ở bước detect channels)
         conv_in_state = {k[len("conv_in."):]: v for k, v in state_dict.items() if k.startswith("conv_in.")}
         lora_state = {k: v for k, v in state_dict.items() if not k.startswith("conv_in.")}
         

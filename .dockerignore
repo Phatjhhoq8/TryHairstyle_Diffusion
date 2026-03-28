@@ -1,21 +1,37 @@
 .git
+.git/**
 .gitignore
 .cursorrules
 .env
 venv_wsl
+venv_wsl/**
 __pycache__
+**/__pycache__
 *.pyc
 *.pyo
 *.pyd
 
 TryOnHairstyle-master
+TryOnHairstyle-master/**
 Xây_dựng_hệ_thống_thử_kiểu_tóc_ảo_sử_dụng_mô_hình_khuếch_tán_Stable_Diffusion
+Xây_dựng_hệ_thống_thử_kiểu_tóc_ảo_sử_dụng_mô_hình_khuếch_tán_Stable_Diffusion/**
 
 backend/.env
 backend/models
+backend/models/**
 backend/data
+backend/data/**
 backend/training/checkpoints
+backend/training/checkpoints/**
 backend/training/output
+backend/training/output/**
+backend/training/models/*.safetensors
+backend/training/models/*.bin
+backend/training/models/*.pt
+backend/training/models/*.pth
+backend/training/models/__pycache__
+backend/tests/__pycache__
 
 frontend/node_modules
+frontend/node_modules/**
 frontend/dist

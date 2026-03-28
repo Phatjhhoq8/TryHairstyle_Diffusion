@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM pytorch/pytorch:2.4.1-cuda12.1-cudnn9-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
@@ -9,9 +9,6 @@ ENV PYTHONPATH=/app
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 \
-    python3-pip \
-    python3-venv \
     python3-dev \
     build-essential \
     git \
@@ -24,13 +21,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-RUN ln -sf /usr/bin/python3 /usr/bin/python
-
 COPY backend/requirements.txt /tmp/requirements.txt
 
 RUN python -m pip install --upgrade pip setuptools wheel && \
-    python -m pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio && \
-    python -m pip install -r /tmp/requirements.txt
+    python -m pip install torchvision==0.19.1 torchaudio==2.4.1 && \
+    grep -Ev '^(torch|torchvision|torchaudio)([<>=].*)?$' /tmp/requirements.txt > /tmp/requirements-docker.txt && \
+    python -m pip install --use-deprecated=legacy-resolver -r /tmp/requirements-docker.txt && \
+    python -m pip install \
+        "typing_extensions==4.15.0" \
+        "click==8.3.1" \
+        "diffusers==0.36.0" \
+        "transformers==5.1.0" \
+        "accelerate==1.12.0" \
+        "huggingface_hub==1.4.1" \
+        "xformers==0.0.28.post1" \
+        "ultralytics==8.4.12" \
+        "onnx==1.20.1" \
+        "onnxruntime==1.23.2"
 
 COPY backend/ /app/backend/
 
