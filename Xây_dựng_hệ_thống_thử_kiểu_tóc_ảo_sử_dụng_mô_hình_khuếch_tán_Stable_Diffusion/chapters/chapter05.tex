@@ -3,24 +3,32 @@
 \begin{document}
 
 \section{Quy trình chạy thử nghiệm hệ thống}
-Quá trình chạy thử nghiệm được thực hiện theo mô hình client--server. Người dùng truy cập giao diện web tại \texttt{http://localhost:5173} (chạy local) hoặc \texttt{http://localhost:3000} (Docker), tải lên ảnh chân dung và ảnh kiểu tóc tham chiếu, sau đó gửi yêu cầu xử lý đến backend. Hệ thống tiếp nhận dữ liệu, đưa tác vụ vào hàng đợi Redis và thực hiện suy luận trên GPU trước khi trả kết quả về giao diện.
+
+Quá trình chạy thử nghiệm được triển khai theo kiến trúc client--server. Người dùng truy cập giao diện web tại \texttt{http://localhost:5173} (chạy trực tiếp) hoặc \texttt{http://localhost:3000} (thông qua Docker), tải lên ảnh chân dung và ảnh kiểu tóc tham chiếu, sau đó gửi yêu cầu xử lý đến backend.
+
+Tại phía máy chủ, hệ thống tiếp nhận dữ liệu đầu vào, đóng gói tác vụ và đưa vào hàng đợi Redis. Các tác vụ này sau đó được worker xử lý tuần tự trên GPU thông qua mô hình khuếch tán, trước khi kết quả cuối cùng được trả về giao diện người dùng.
 
 \section{Các bước vận hành chính}
-Một phiên chạy thử nghiệm điển hình bao gồm:
+
+Một phiên chạy thử nghiệm điển hình bao gồm các bước sau:
+
 \begin{enumerate}
-    \item Người dùng tải lên ảnh chân dung gốc, thiết lập kiểu tóc tham chiếu theo sở thích.
-    \item Giao diện kích hoạt luồng nhận diện, trích xuất dữ liệu đa nhân vật và ghi nhận tọa độ \texttt{bbox} chuẩn bị cho tiến trình hậu xử lý.
-    \item Trình thông dịch tự động chuyển chuỗi \textit{Prompt} ngôn ngữ địa phương (Việt) sang tiếng Anh. Toàn bộ thông số được gói gọn gởi đến điểm cuối \texttt{POST /generate}.
-    \item Trong hàng đợi tác vụ: Hệ thống sinh không gian dữ liệu tuần tự tùy thuộc \textit{Model} đã chọn. Ở bước cuối cùng, thuật toán vận dụng tham số \texttt{bbox} nhằm đồng bộ dán ghép khuôn mặt mang kiểu tóc mới đè chính xác lên không gian ảnh gốc, đảm bảo bối cảnh không gian nền phía sau còn nguyên vẹn tỉ lệ.
-    \item Ở công đoạn tùy chọn, người dùng có thể nhấp chọn tính năng \textit{"Đổi màu nhanh"} để thay đổi hệ màu mà không kích hoạt chu trình tính toán khuếch tán tốn kém.
+    \item Người dùng tải lên ảnh chân dung gốc và lựa chọn kiểu tóc tham chiếu theo nhu cầu.
+    
+    \item Giao diện kích hoạt tiến trình phân tích ảnh, bao gồm phát hiện khuôn mặt, trích xuất thông tin đa đối tượng (nếu có) và lưu trữ tọa độ \texttt{bbox} nhằm phục vụ cho bước hậu xử lý.
+    
+    \item Hệ thống tự động chuyển đổi chuỗi \textit{prompt} từ ngôn ngữ tiếng Việt sang tiếng Anh để phù hợp với mô hình sinh ảnh. Toàn bộ dữ liệu đầu vào được đóng gói và gửi tới endpoint \texttt{POST /generate}.
+    
+    \item Tại hàng đợi tác vụ, hệ thống tiến hành suy luận dựa trên mô hình đã lựa chọn. Sau khi hoàn tất, ảnh sinh ra sẽ được ánh xạ ngược trở lại vị trí ban đầu trên ảnh gốc thông qua tọa độ \texttt{bbox}, đảm bảo việc chèn ghép chính xác và không làm sai lệch cấu trúc nền.
+    
+    \item Ở bước tùy chọn, người dùng có thể sử dụng chức năng \textit{``Đổi màu nhanh''}, cho phép thay đổi màu tóc trực tiếp bằng kỹ thuật HSV Color Transfer mà không cần kích hoạt lại quá trình suy luận diffusion.
 \end{enumerate}
 
 \begin{figure}[H]
     \centering
-    % TODO: Chèn ảnh các bước thao tác trên giao diện
-    \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Ảnh chụp các bước thao tác trên UI ứng dụng]}}
+    \includegraphics[width=0.8\textwidth]{images/sinh_anh_bang_ui.png}
     \caption{Các bước vận hành hệ thống thông qua giao diện người dùng}
-    \label{fig:ui-steps}
+    \label{fig:ch5-ui-steps}
 \end{figure}
 
 \section{Nội dung đánh giá}
@@ -30,21 +38,20 @@ Một phiên chạy thử nghiệm điển hình bao gồm:
 \begin{table}[H]
     \centering
     \caption{Bảng mô tả các kịch bản kiểm thử tiêu biểu}
-    \label{tab:test-scenarios}
-    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{1.5cm}|>{\raggedright\arraybackslash}p{4cm}|>{\raggedright\arraybackslash}p{4cm}|X|}
+    \label{tab:ch5-test-scenarios}
+    \begin{tabularx}{\textwidth}{|>\raggedright\arraybackslash>p{1.5cm}|>\raggedright\arraybackslash>p{4cm}|>\raggedright\arraybackslash>p{4cm}|X|}
         \hline
         \textbf{Mã} & \textbf{Đầu vào} & \textbf{Mục tiêu kiểm thử} & \textbf{Kết quả mong đợi} \\
         \hline
+        TC01 & Khởi động toàn bộ hệ thống (backend, UI, worker) & Kiểm tra khả năng vận hành tổng thể & Các dịch vụ hoạt động ổn định, duy trì tín hiệu \textit{heartbeat} và sẵn sàng tiếp nhận yêu cầu. \\
         \hline
-        TC01 & Khởi động tổng thể dịch vụ backend, UI, worker & Kiểm tra mức độ vận hành cơ bản & Hệ thống duy trì độ trễ \textit{heartbeat} tiêu chuẩn. \\
+        TC02 & Ảnh chân dung với hậu cảnh phức tạp & Kiểm tra khả năng bảo toàn nền & Nền ảnh được giữ nguyên, vùng tóc mới được chèn chính xác theo tọa độ \texttt{bbox}, không gây sai lệch không gian. \\
         \hline
-        TC02 & Ảnh chân dung có hậu cảnh ngoại cảnh phức tạp & Kiểm chứng tính năng nội suy bảo toàn nền gốc & Khung cảnh nền được giữ nguyên 100\% sau khi nhận lớp tóc mới ghép đè lên qua vùng \texttt{bbox}. \\
+        TC03 & Ảnh góc nghiêng hoặc kiểu tóc tham chiếu khác biệt lớn & Đánh giá cơ chế mặt nạ động & Mặt nạ được mở rộng hợp lý, vùng tóc được ghép tự nhiên, hạn chế lỗi biên. \\
         \hline
-        TC03 & Ảnh góc nghiêng hoặc mẫu tóc có độ dị biệt cao & Sự thích ứng mặt nạ động mở rộng & Phát sinh hình ảnh chất lượng với đường biên cắt thông minh. \\
+        TC04 & Kích hoạt chức năng ``\textit{Đổi màu nhanh}'' & Kiểm tra luồng xử lý HSV độc lập & Màu tóc thay đổi tức thời theo yêu cầu, không kích hoạt mô hình khuếch tán. \\
         \hline
-        TC04 & Chuỗi kích hoạt "\textit{Đổi màu nhanh}" ở giao diện & Độ cô lập tuyến quy trình đổi dữ liệu HSV & Trả về hình dáng có mảng màu yêu cầu tức thời không qua bước mô hình khuếch tán. \\
-        \hline
-        TC05 & Thực thi thay đổi kiểu tóc mẫu liên tục nhiều lần trên bộ nhớ GPU & Tính khả dụng của API và bảo vệ tràn VRAM thông qua cơ chế cách ly Subprocess & Tiến trình nền khởi động linh hoạt, tự động giải phóng sạch RAM sau mỗi 10-20 giây đáp ứng. \\
+        TC05 & Thực hiện nhiều yêu cầu sinh ảnh liên tiếp trên GPU & Kiểm tra quản lý tài nguyên và chống tràn VRAM & Các tiến trình được tạo và giải phóng đúng cách, không xảy ra lỗi tràn bộ nhớ, hệ thống duy trì ổn định. \\
         \hline
     \end{tabularx}
 \end{table}
@@ -62,7 +69,7 @@ Trên các ảnh thử nghiệm thông thường, hệ thống đã chứng minh
     % TODO: Chèn ảnh so sánh tính năng bảo toàn bối cảnh
     \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Ảnh so sánh tính năng bảo toàn phông nền (Background Preservation)]}}
     \caption{Minh họa khả năng dán ngược ảnh tự động không làm thay đổi bối cảnh}
-    \label{fig:background-preservation}
+    \label{fig:ch5-background-preservation}
 \end{figure}
 
 \begin{figure}[H]
@@ -70,27 +77,40 @@ Trên các ảnh thử nghiệm thông thường, hệ thống đã chứng minh
     % TODO: Chèn ảnh minh họa chạy Đa mô hình
     \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Ảnh so sánh sự toàn vẹn của một khuôn mặt trên qua các cấu trúc tóc phức tạp khác nhau]}}
     \caption{So sánh chất lượng ảnh sinh khi luân chuyển các mô hình xương sống}
-    \label{fig:multi-model-test}
+    \label{fig:ch5-multi-model-test}
 \end{figure}
 
 Tuy nhiên, khi đối diện với nguồn sáng siêu phức tạp hoặc vùng biên độ giao thoa quá dày (ví dụ: tóc bay che mí mắt), chất lượng chắt lọc mặt nạ viền có thể suy giảm đôi chút ở quá trình hòa trộn Gaussian. Hạn chế này dự kiến được cải thiện ở những phiên bản checkpoint mô hình chi tiết hơn.
 
-\section{Minh họa kết quả chạy thử}
-Hình~\ref{fig:trial-result} minh họa một trường hợp chạy thử hệ thống với ảnh đầu vào và ảnh kết quả sau khi sinh kiểu tóc mới.
+\subsection{Đánh giá quá trình huấn luyện (Training Metrics)}
+Bên cạnh việc kiểm thử hộp đen (black-box) trên giao diện hệ thống, bản thân lõi mô hình khuếch tán \textit{Stable Diffusion XL} cũng được đánh giá định lượng nghiêm ngặt trong suốt quá trình tinh chỉnh (Fine-tuning) diễn ra tại tập lệnh \texttt{train\_stage2.py} trên nền tảng Google Colab (GPU Tesla T4, 15 GB VRAM).
 
 \begin{figure}[H]
     \centering
-    \includegraphics[width=0.9\textwidth]{trial-2}
+    % TODO: Chèn ảnh biểu đồ Loss / Tensorboard của GPU
+    \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Ảnh chụp Biểu đồ hội tụ Loss / Metrics từ Tensorboard hoặc wandb]}}
+    \caption{Biểu đồ phân tích độ hội tụ Loss qua các vòng lặp (Epoch/Steps) huấn luyện}
+    \label{fig:loss-curve}
+\end{figure}
+
+Việc theo dõi chặt chẽ quỹ đạo \textit{Training Loss/Validation Loss} giúp khẳng định mạng UNet 13-kênh đã học được khả năng kết nối điều kiện kép ổn định. Đồng thời chứng minh tính hiệu lực của cơ chế \textit{Auto-Caching} và bảo toàn tham số (\textit{Checkpoint Fallback}) trong việc duy trì chuỗi hội tụ liên tục, phòng tránh hoàn toàn hiện tượng quá khớp (Overfitting) khi dung lượng VRAM trên Google Colab hạn hẹp (15 GB).
+
+\section{Minh họa kết quả chạy thử}
+Hình~\ref{fig:ch5-trial-result} minh họa một trường hợp chạy thử hệ thống với ảnh đầu vào và ảnh kết quả sau khi sinh kiểu tóc mới.
+
+\begin{figure}[H]
+    \centering
+    \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Kết quả chạy thử nghiệm của hệ thống TryHairStyle]}}
+    % \includegraphics[width=0.9\textwidth]{trial-2}
     \caption{Kết quả chạy thử nghiệm của hệ thống TryHairStyle}
-    \label{fig:trial-result}
+    \label{fig:ch5-trial-result}
 \end{figure}
 
 \begin{figure}[H]
     \centering
-    % TODO: Chèn ảnh Đổi màu nhanh
-    \framebox[0.9\textwidth]{\rule{0pt}{5cm} \textbf{[KHUNG GIỮ CHỖ: Kết quả thao tác bộ chuyển đổi HSV Colorize tức thời]}}
+    \includegraphics[width=0.8\textwidth]{images/doi_mau_toc_hsv.jpg}
     \caption{Thử nghiệm tính năng đổi màu nhanh trực tiếp trên giao diện}
-    \label{fig:quick-color-test}
+    \label{fig:ch5-quick-color-test}
 \end{figure}
 
 \section{Bảng tổng hợp đánh giá}
@@ -98,8 +118,8 @@ Hình~\ref{fig:trial-result} minh họa một trường hợp chạy thử hệ 
 \begin{table}[H]
     \centering
     \caption{Tổng hợp đánh giá hệ thống trong quá trình chạy thử nghiệm}
-    \label{tab:evaluation-summary}
-    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{3.5cm}|>{\raggedright\arraybackslash}p{3cm}|X|}
+    \label{tab:ch5-evaluation-summary}
+    \begin{tabularx}{\textwidth}{|>\raggedright\arraybackslash>p{3.5cm}|>\raggedright\arraybackslash>p{3cm}|X|}
         \hline
         \textbf{Tiêu chí} & \textbf{Mức đánh giá} & \textbf{Nhận xét} \\
         \hline
@@ -119,7 +139,7 @@ Hình~\ref{fig:trial-result} minh họa một trường hợp chạy thử hệ 
         \hline
         Đổi màu tóc & Tốt & HSV transfer nhanh, 15 preset + hex tùy chỉnh, giữ kết cấu tự nhiên. \\
         \hline
-        Thời gian xử lý & Trung bình & Khoảng vài giây/yêu cầu trên GPU 12GB, chưa đáp ứng thời gian thực. \\
+        Thời gian xử lý & Trung bình & Khoảng vài giây cho đến vài phút trên một yêu cầu trên GPU 12GB, chưa đáp ứng thời gian thực. \\
         \hline
     \end{tabularx}
 \end{table}

@@ -1,6 +1,11 @@
-# Index URLs for PyTorch (CUDA 12.1)
---index-url https://download.pytorch.org/whl/cu121
---extra-index-url https://pypi.org/simple
+# ==============================================
+# TryHairStyle Backend - Python Dependencies
+# ==============================================
+# Dùng cho cả LOCAL và DOCKER:
+#   - Local: pip install -r backend/requirements.txt
+#   - Docker: Dockerfile cài torch riêng từ CUDA index,
+#             rồi pip install -r (sẽ skip torch đã có)
+# ==============================================
 
 # Core Backend Framework
 fastapi>=0.109.0
@@ -14,9 +19,11 @@ celery>=5.3.6
 redis>=5.0.1
 
 # PyTorch Ecosystem (CUDA 12.1)
-torch==2.4.1
-torchvision==0.19.1
-torchaudio==2.4.1
+# Local: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+# Docker: Dockerfile đã cài sẵn, pip sẽ skip
+torch>=2.4.0
+torchvision>=0.19.0
+torchaudio>=2.4.0
 
 # Generative AI & Diffusers
 diffusers>=0.36.0
@@ -30,7 +37,7 @@ huggingface_hub>=1.0.0
 opencv-python-headless>=4.9.0
 pillow>=10.2.0
 numpy>=2.0.0
-scikit-image>=0.26.0
+scikit-image>=0.24.0,<=0.25.2
 insightface>=0.7.3
 ultralytics>=8.0.0
 
@@ -39,17 +46,14 @@ facenet-pytorch>=2.6.0
 
 # ONNX Runtime
 onnx>=1.16.0
-onnxruntime>=1.23.0
+onnxruntime>=1.18.0
 
 # Perceptual Loss
 lpips>=0.1.4
 
 # VRAM Optimization (cho GPU 12GB)
-xformers==0.0.28.post1
+xformers>=0.0.28
 bitsandbytes>=0.43.0
-
-# Segmentation
-mobile_sam>=1.0
 
 # Translation
 deep-translator>=1.11.0

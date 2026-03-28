@@ -76,7 +76,9 @@ python -m pip install --upgrade pip setuptools wheel
 ### Bước 3 – Cài dependencies
 
 ```bash
-pip install -r backend/requirements.txt   # Backend (PyTorch CUDA 12.1)
+# Cài PyTorch với CUDA 12.1 trước
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install -r backend/requirements.txt   # Backend (các dependencies còn lại)
 cd frontend && npm install && cd ..       # Frontend
 ```
 
@@ -142,8 +144,10 @@ git clone https://github.com/Phatjhhoq8/TryHairstyle_Diffusion
 cd TryHairStyle
 cp .env.example .env
 
-# 2. Tải model trên host
+# 2. Tải model trên host (cần Python 3.10+)
 python3 -m venv .venv && source .venv/bin/activate
+pip install --upgrade pip setuptools wheel
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install -r backend/requirements.txt
 mkdir -p backend/models backend/data
 python download_models.py
