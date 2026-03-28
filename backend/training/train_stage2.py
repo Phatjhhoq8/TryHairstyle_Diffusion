@@ -1967,7 +1967,13 @@ class Stage2Trainer:
                 samples_offset = 0  # Số samples đã skip (dùng để tính samples_done chính xác)
                 if chunk_idx == resume_chunk_index and resume_step_in_chunk > 0 and epoch == start_epoch:
                     skip_samples = resume_step_in_chunk * batch_size
-                    if 0 < skip_samples < len(dataset):
+                    if skip_samples >= len(dataset):
+                        logger.info(f"  ⏭️ Resume: Chunk {chunk_dir.name} đã hoàn tất toàn bộ ảnh ({len(dataset)}/{len(dataset)}), tự động chuyển sang chunk tiếp theo...")
+                        if chunk_dir != original_chunk_dir:
+                            import shutil
+                            shutil.rmtree(chunk_dir, ignore_errors=True)
+                        continue
+                    elif 0 < skip_samples < len(dataset):
                         original_len = len(dataset)
                         remaining_indices = list(range(skip_samples, len(dataset)))
                         dataset = torch.utils.data.Subset(dataset, remaining_indices)
@@ -2020,8 +2026,9 @@ class Stage2Trainer:
                     # ============================================
                     # MID-CHUNK SAVE — mỗi save_every_n_samples
                     # ============================================
+                    is_last_step = (step + 1) == len(dataloader)
                     samples_done = samples_offset + (step + 1) * batch_size
-                    if save_every_n_samples > 0 and samples_done > 0 and samples_done % save_every_n_samples == 0:
+                    if not is_last_step and save_every_n_samples > 0 and samples_done > 0 and samples_done % save_every_n_samples == 0:
                         logger.info(f"\n  💾 [MID-CHUNK SAVE] {samples_done} samples (chunk {chunk_dir.name})...")
                         import gc; gc.collect(); torch.cuda.empty_cache()
                         self._save_safetensors_safe(
