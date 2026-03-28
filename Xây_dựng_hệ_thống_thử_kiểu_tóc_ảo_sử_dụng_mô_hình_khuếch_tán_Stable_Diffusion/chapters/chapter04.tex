@@ -118,7 +118,7 @@ backend/app/
 \subsection{Celery Tasks và Lazy Loading}
 Hệ thống định nghĩa ba Celery task chính:
 \begin{enumerate}
-    \item \textbf{process\_hair\_transfer:} Tác vụ nòng cốt tiếp nhận ảnh đầu vào, tự động phân luồng (routing) theo mô hình chỉ định (\textit{HairFusion} hoặc \textit{TryOnHairstyle} chạy theo tiến trình cách ly hoàn toàn). Tác vụ điều phối tuần tự: phân tích khuôn mặt, tạo mặt nạ động, suy luận, tự động khớp và bảo toàn bối cảnh gốc dựa trên tọa độ \texttt{bbox}, và đổi màu tóc.
+    \item \textbf{process\_hair\_transfer:} Tác vụ nòng cốt khởi tạo hệ thống lõi thuật toán sinh hình để chạy độc lập dưới dạng tiến trình cách ly hoàn toàn. Tác vụ điều phối tuần tự: phân tích khuôn mặt, tạo mặt nạ động, truyền tham số chạy khâu suy luận, tự động khớp và bảo toàn bối cảnh gốc dựa trên khoảng tọa độ \texttt{bbox}, và đổi màu tóc.
     \item \textbf{process\_hair\_colorize:} Đo lường mặt nạ tại ảnh hiện thời và áp dụng hệ số chuyển giao không gian HSV, không yêu cầu tái khởi chạy quy trình mô hình khuếch tán.
     \item \textbf{process\_detect\_faces:} Nhận diện định vị đa chiều, trích xuất tất cả các khuôn mặt và nội suy khung lựa chọn mở rộng nhằm bảo vệ dữ liệu tóc, cổ.
 \end{enumerate}
@@ -194,7 +194,7 @@ Giao diện được phát triển bằng framework React.js kèm hệ thống c
 
 Giao diện áp dụng chuẩn RESTful tương tác với backend cung cấp dữ liệu qua 6 điểm cuối (endpoint) chủ đạo:
 \begin{itemize}
-    \item \texttt{/generate}: Lệnh tiếp nhận kết cấu phân lớp tham chiếu, xác định \texttt{bbox} gốc cho kỹ thuật bảo toàn cấu trúc bối cảnh, cũng như tuỳ chọn đa thuật toán sinh hình (\textit{HairFusion} / \textit{TryOnHairstyle}).
+    \item \texttt{/generate}: Lệnh tiếp nhận kết cấu phân lớp tham chiếu, xác định \texttt{bbox} gốc phục vụ bước hậu kỳ cho kỹ thuật bảo toàn cấu trúc bối cảnh nguyên bản.
     \item \texttt{/colorize}: Tuyến xử lý phân rã nhánh độc lập cho điều chỉnh màu không nội suy.
     \item \texttt{/detect-faces}: API trích phân hệ cấu hình nhân vật nhóm/khung nền.
     \item Các điểm cập nhật \texttt{/status}, \texttt{/colors}, \texttt{/random-pair}: Lót cầu nối cho các tiện ích dữ liệu kiểm tra tương ứng theo thời gian thực (long-polling 2 giây).

@@ -8,7 +8,7 @@ Quá trình chạy thử nghiệm được thực hiện theo mô hình client--
 \section{Các bước vận hành chính}
 Một phiên chạy thử nghiệm điển hình bao gồm:
 \begin{enumerate}
-    \item Người dùng tải lên ảnh chân dung gốc, kiểu tóc tham chiếu; đồng thời lựa chọn thiết lập mô hình AI chuyên biệt (chọn giữa \textit{HairFusion} hoặc \textit{TryOnHairstyle}).
+    \item Người dùng tải lên ảnh chân dung gốc, thiết lập kiểu tóc tham chiếu theo sở thích.
     \item Giao diện kích hoạt luồng nhận diện, trích xuất dữ liệu đa nhân vật và ghi nhận tọa độ \texttt{bbox} chuẩn bị cho tiến trình hậu xử lý.
     \item Trình thông dịch tự động chuyển chuỗi \textit{Prompt} ngôn ngữ địa phương (Việt) sang tiếng Anh. Toàn bộ thông số được gói gọn gởi đến điểm cuối \texttt{POST /generate}.
     \item Trong hàng đợi tác vụ: Hệ thống sinh không gian dữ liệu tuần tự tùy thuộc \textit{Model} đã chọn. Ở bước cuối cùng, thuật toán vận dụng tham số \texttt{bbox} nhằm đồng bộ dán ghép khuôn mặt mang kiểu tóc mới đè chính xác lên không gian ảnh gốc, đảm bảo bối cảnh không gian nền phía sau còn nguyên vẹn tỉ lệ.
@@ -44,7 +44,7 @@ Một phiên chạy thử nghiệm điển hình bao gồm:
         \hline
         TC04 & Chuỗi kích hoạt "\textit{Đổi màu nhanh}" ở giao diện & Độ cô lập tuyến quy trình đổi dữ liệu HSV & Trả về hình dáng có mảng màu yêu cầu tức thời không qua bước mô hình khuếch tán. \\
         \hline
-        TC05 & Thay đổi tham số hệ thống chọn mô hình thứ hai (\textit{TryOnHairstyle}) & Mức độ an toàn trong quản lý tài nguyên xử lý đa luồng qua Shell & Tránh xung đột cấp phát mô hình, kích hoạt độc lập với hệ quản trị bộ nhớ riêng biệt. \\
+        TC05 & Thực thi thay đổi kiểu tóc mẫu liên tục nhiều lần trên bộ nhớ GPU & Tính khả dụng của API và bảo vệ tràn VRAM thông qua cơ chế cách ly Subprocess & Tiến trình nền khởi động linh hoạt, tự động giải phóng sạch RAM sau mỗi 10-20 giây đáp ứng. \\
         \hline
     \end{tabularx}
 \end{table}
@@ -68,7 +68,7 @@ Trên các ảnh thử nghiệm thông thường, hệ thống đã chứng minh
 \begin{figure}[H]
     \centering
     % TODO: Chèn ảnh minh họa chạy Đa mô hình
-    \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Ảnh so sánh kết quả sinh hình 2 model (HairFusion và TryOnHairstyle)]}}
+    \framebox[0.9\textwidth]{\rule{0pt}{6cm} \textbf{[KHUNG GIỮ CHỖ: Ảnh so sánh sự toàn vẹn của một khuôn mặt trên qua các cấu trúc tóc phức tạp khác nhau]}}
     \caption{So sánh chất lượng ảnh sinh khi luân chuyển các mô hình xương sống}
     \label{fig:multi-model-test}
 \end{figure}
