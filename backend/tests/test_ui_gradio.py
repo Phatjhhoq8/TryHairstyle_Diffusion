@@ -597,7 +597,7 @@ with gr.Blocks(title="AI Hair Stylist", theme=gr.themes.Soft(), css=custom_css) 
             )
             gr.Markdown("<center>Nhấn để tạo kết quả</center>")
             quick_color_btn = gr.Button(
-                "🎨 ĐỔI MÀU NHANH",
+                "ĐỔI MÀU NHANH",
                 variant="secondary",
                 elem_classes="quick-color-btn"
             )

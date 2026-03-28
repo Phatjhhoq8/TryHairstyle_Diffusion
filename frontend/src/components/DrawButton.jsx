@@ -30,7 +30,7 @@ export default function DrawButton({ onClick, loading, disabled, onQuickColor, c
               Đang đổi màu...
             </>
           ) : (
-            '🎨 ĐỔI MÀU NHANH'
+            'ĐỔI MÀU NHANH'
           )}
         </button>
       )}
