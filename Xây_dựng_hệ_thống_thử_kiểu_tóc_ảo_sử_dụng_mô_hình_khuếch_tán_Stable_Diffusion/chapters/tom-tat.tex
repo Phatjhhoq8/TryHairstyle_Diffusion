@@ -1,0 +1,10 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+Trong bối cảnh nhu cầu làm đẹp và cá nhân hóa ngoại hình ngày càng tăng, việc hỗ trợ người dùng thử nghiệm kiểu tóc trước khi thay đổi thực tế là một bài toán có ý nghĩa ứng dụng cao. Tuy nhiên, các phương pháp chỉnh sửa ảnh truyền thống hoặc một số mô hình học sâu trước đây vẫn còn hạn chế trong việc bảo toàn khuôn mặt và tạo ra kết quả tự nhiên.
+
+Báo cáo này trình bày quá trình xây dựng hệ thống thử kiểu tóc ảo \textit{TryHairStyle} dựa trên mô hình Stable Diffusion XL Inpainting. Hệ thống kết hợp nhiều thành phần như IP-Adapter Plus để khai thác đặc trưng từ ảnh kiểu tóc tham chiếu, InstantID để hỗ trợ bảo toàn danh tính khuôn mặt, SegFormer để phân đoạn vùng tóc và khuôn mặt, cùng với 3DDFA\_V2 để hỗ trợ xử lý các trường hợp khuôn mặt nghiêng. Bên cạnh đó, hệ thống được triển khai theo kiến trúc web với backend FastAPI, hàng đợi tác vụ Celery/Redis và frontend React.
+
+Kết quả đạt được cho thấy hệ thống có khả năng tạo ảnh thử tóc tương đối trực quan, giữ được phần lớn đặc trưng khuôn mặt và hỗ trợ người dùng quan sát trước sự thay đổi về kiểu tóc. Ngoài chức năng thay đổi kiểu tóc, hệ thống còn hỗ trợ đổi màu tóc bằng xử lý ảnh trong không gian HSV. Đề tài góp phần minh họa khả năng ứng dụng các mô hình khuếch tán trong lĩnh vực làm đẹp số và là cơ sở cho các hướng phát triển tiếp theo như tối ưu tốc độ suy luận, mở rộng sang video và triển khai trên hạ tầng đám mây.
+
+\end{document}

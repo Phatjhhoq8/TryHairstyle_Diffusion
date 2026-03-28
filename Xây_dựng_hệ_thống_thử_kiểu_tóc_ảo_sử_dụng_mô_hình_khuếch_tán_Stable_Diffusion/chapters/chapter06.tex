@@ -1,0 +1,45 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Kết quả đạt được}
+Đề tài đã xây dựng được hệ thống \textbf{TryHairStyle} có khả năng tiếp nhận ảnh người dùng và ảnh kiểu tóc tham chiếu để tạo ảnh thử kiểu tóc trên nền tảng web. Các kết quả nổi bật gồm:
+\begin{itemize}
+    \item \textbf{Pipeline AI hoàn thiện phối hợp đa luồng:} Tích hợp liền mạch hệ module lõi phân tích hình thái khuôn mặt (Face, Mask, Pose, Embedder, Reconstructor, Color) thành một quy trình xử lý liên hoàn tự động từ đầu đến cuối.
+    \item \textbf{Cơ chế điều kiện kép:} Nhánh cấu trúc bản dạng (InsightFace/AdaFace + ControlNet Depth) và nhánh chuyển giao giao diện kiểu tóc (IP-Adapter Plus/HairTextureEncoder) chạy song song, giúp hợp nhất tỷ lệ hoàn hảo.
+    \item \textbf{Bảo toàn bối cảnh (Background Preservation):} Áp dụng giải thuật định vị tọa độ \texttt{bbox} chuẩn trước khi suy luận và chèn đè khuôn mặt kết quả về ảnh gốc, giữ không gian môi trường của người dùng không biến đổi.
+    \item \textbf{Quản trị linh hoạt bộ nhớ tự sinh (Microservices):} Cơ chế khởi chạy nền thuật toán AI đồ sộ bằng tiến trình cách ly (\textit{Subprocess}) giúp hạn chế rủi ro treo hệ thống do tràn bộ nhớ chia sẻ chung. 
+    \item \textbf{Tối ưu hóa tài nguyên phần cứng:} Vận dụng các kỹ thuật quản lý VRAM (tái cấu trúc đồ thị đạo hàm) và bộ truy xuất lưu trữ tĩnh (I/O Auto-Caching), giữ tính ổn định vững vàng mô hình học sâu khổng lồ trong suốt quá trình huấn luyện trên máy chủ đám mây (Google Colab T4 15GB).
+    \item \textbf{Mặt nạ động nội suy:} Cơ chế tính khối lượng diện tích mở rộng dựa trên so sánh mẫu và ảnh gốc.
+    \item \textbf{Trải nghiệm tiện ích Giao diện mở rộng:} 8 thư viện React thành phần tối ưu thao tác bằng một cú nhấp chuột đa chức năng (Đổi màu tóc tức thời hệ HSV, Dịch cú pháp Prompt Việt-Anh tự động, thanh trượt dọn rác giao diện bằng nút Clear).
+    \item \textbf{Kiến trúc bất đồng bộ \& Microservices:} FastAPI + Celery + Redis xử lý tác vụ không đồng bộ; kết hợp cơ chế triển khai vùng chứa (Container) Docker Compose trích xuất kết nối liên GPU passthrough toàn diện.
+\end{itemize}
+
+\section{Đánh giá ưu và nhược điểm hệ thống}
+
+\subsection{Ưu điểm nổi bật}
+\begin{itemize}
+    \item \textbf{Chất lượng sinh ảnh và bảo toàn nhân dạng cao:} Giao thoa phương pháp phân rã mặt nạ động mở rộng và cơ chế điều kiện kép, tái lập thành công ánh sáng, độ đổ bóng vật lý.
+    \item \textbf{Đảm bảo 100\% bối cảnh nền:} Việc áp dụng nội suy vùng crop \texttt{bbox} giải quyết mọi sai số bối cảnh phía sau màn hình, vốn là điểm yếu cố hữu của nhiều mô hình thế hệ cũ.
+    \item \textbf{Phục vụ trơn tru ở phần cứng eo hẹp:} Các thiết lập hàng đợi message broker (Redis) kết hợp xử lý ngắt nhịp Celery giúp loại bỏ lỗi treo ứng dụng khi có yêu cầu cường độ cao trong UI.
+    \item \textbf{Tùy biến cực mạnh giao diện Front-end:} Tính năng phiên dịch nội hàm Việt-Anh tự động, Đổi sắc thái màu nhanh và chọn model AI từ popup mang đến tính phổ cập tương tác. Thiết lập container bằng Docker Compose đưa toàn bộ cấu hình phức tạp ẩn mình.
+\end{itemize}
+
+\subsection{Hạn chế tồn đọng}
+\begin{itemize}
+    \item \textbf{Độ trễ xử lý còn cao:} Thời gian suy luận vài giây mỗi yêu cầu trên GPU 12GB, chưa phù hợp thời gian thực.
+    \item \textbf{Yêu cầu phần cứng lớn:} Cần GPU NVIDIA có VRAM tối thiểu 12GB để nạp đồng thời nhiều model.
+    \item \textbf{Phụ thuộc chất lượng ảnh đầu vào:} Ảnh quá mờ, che khuất nhiều hoặc ánh sáng phức tạp có thể ảnh hưởng chất lượng mask và ảnh sinh ra.
+    \item \textbf{Vùng biên tóc chưa hoàn hảo:} Một số trường hợp vẫn lộ viền hoặc chuyển tiếp chưa tự nhiên tại ranh giới tóc--da.
+\end{itemize}
+
+\section{Hướng phát triển}
+\begin{itemize}
+    \item Tối ưu thời gian suy luận bằng giảm số bước khuếch tán, distillation hoặc các kiến trúc suy luận nhanh hơn (LCM, Turbo).
+    \item Mở rộng sang xử lý video hoặc thử tóc theo thời gian thực trên webcam.
+    \item Bổ sung các tiêu chí đánh giá định lượng (FID, LPIPS, identity similarity) và xây dựng bộ benchmark phù hợp.
+    \item Triển khai trên hạ tầng điện toán đám mây để phục vụ nhiều người dùng đồng thời.
+    \item Phát triển ứng dụng di động hoặc PWA để mở rộng khả năng tiếp cận.
+\end{itemize}
+
+\end{document}

@@ -405,10 +405,7 @@ class HairInpaintingDataset(Dataset):
                             else:
                                 # Ảnh thiếu → save zeros latent
                                 zero_latent = torch.zeros(4, self.target_size[0] // 8, self.target_size[1] // 8)
-                                safe_id = img_id.replace("/", "_").replace("\\", "_")
-                                zero_cache_file = self.latent_cache_dir / f"{safe_id}.pt"
-                                zero_cache_file.parent.mkdir(parents=True, exist_ok=True)
-                                torch.save(zero_latent, str(zero_cache_file))
+                                torch.save(zero_latent, str(self.latent_cache_dir / f"{img_id}.pt"))
                         
                         if batch_tensors:
                             batch_tensor = torch.stack(batch_tensors).to(DEVICE).to(vae.dtype)
@@ -416,10 +413,7 @@ class HairInpaintingDataset(Dataset):
                             latents = latents.float().cpu()
                             
                             for img_id, latent in zip(batch_ids, latents):
-                                safe_id = img_id.replace("/", "_").replace("\\", "_")
-                                cache_file = self.latent_cache_dir / f"{safe_id}.pt"
-                                cache_file.parent.mkdir(parents=True, exist_ok=True)
-                                torch.save(latent, str(cache_file))
+                                torch.save(latent, str(self.latent_cache_dir / f"{img_id}.pt"))
                             
                             del batch_tensor, latents
                             torch.cuda.empty_cache()

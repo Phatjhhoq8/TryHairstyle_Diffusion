@@ -1,0 +1,99 @@
+\documentclass[../main.tex]{subfiles}
+
+\begin{document}
+
+\section{Giới thiệu cơ bản về Generative AI và Diffusion Models}
+Trí tuệ nhân tạo tạo sinh (Generative AI) là lĩnh vực nghiên cứu các mô hình có khả năng học phân bố dữ liệu để tạo ra mẫu mới có đặc điểm tương tự dữ liệu huấn luyện. Trong bài toán tạo sinh hình ảnh, Diffusion Models \cite{ho2020denoising} hiện là một trong những hướng tiếp cận nổi bật nhờ khả năng sinh ảnh có chất lượng cao và ổn định. Về nguyên lý, mô hình khuếch tán gồm hai giai đoạn chính:
+\begin{enumerate}
+    \item \textbf{Forward Diffusion (Khuếch tán thuận):}
+    Hình ảnh gốc được bổ sung nhiễu Gaussian theo nhiều bước liên tiếp cho đến khi tín hiệu ban đầu gần như bị phá hủy hoàn toàn và trở thành nhiễu thuần.
+    \item \textbf{Reverse Diffusion (Khử nhiễu nghịch):}
+    Mô hình học cách dự đoán lượng nhiễu tại từng bước thời gian $t$ để từng bước loại bỏ nhiễu và khôi phục lại ảnh. Quá trình này có thể được dẫn hướng bởi văn bản, ảnh tham chiếu hoặc các điều kiện bổ sung khác.
+\end{enumerate}
+
+\section{Kiến trúc học sâu Stable Diffusion}
+Stable Diffusion \cite{rombach2022latent} là một đại diện tiêu biểu của nhóm \textit{Latent Diffusion Models}. Thay vì thực hiện toàn bộ quá trình khuếch tán trực tiếp trên không gian điểm ảnh, mô hình hoạt động trên không gian tiềm ẩn nhằm giảm chi phí tính toán và bộ nhớ.
+
+\subsection{Cơ chế nén tiềm ẩn (Variational Autoencoder -- VAE)}
+Đối với các ảnh có độ phân giải cao, việc xử lý trực tiếp trong không gian RGB làm chi phí tính toán tăng đáng kể. Vì vậy, Stable Diffusion sử dụng VAE để ánh xạ ảnh từ không gian điểm ảnh sang một không gian tiềm ẩn có kích thước nhỏ hơn nhưng vẫn giữ được các đặc trưng quan trọng. Sau khi quá trình sinh ảnh hoàn tất, biểu diễn trong không gian tiềm ẩn sẽ được giải mã ngược lại để tái tạo ảnh đầu ra.
+
+Việc lựa chọn VAE thay vì Autoencoder (AE) là do khả năng mô hình hóa phân phối xác suất của dữ liệu trong không gian tiềm ẩn. Cụ thể, VAE áp đặt ràng buộc phân phối (thường là Gaussian) lên latent space, giúp không gian này trở nên liên tục, mượt và có cấu trúc. Điều này đặc biệt quan trọng đối với các mô hình sinh ảnh, vì cho phép quá trình lấy mẫu và khuếch tán diễn ra ổn định, đồng thời hạn chế các vùng không hợp lệ trong không gian tiềm ẩn.
+
+Ngược lại, AE truyền thống chỉ học ánh xạ nén–giải nén dựa trên từng mẫu dữ liệu cụ thể và tối ưu lỗi tái tạo ở mức điểm ảnh, nên không đảm bảo cấu trúc liên tục của không gian tiềm ẩn. Do đó, khi lấy mẫu hoặc sinh dữ liệu mới, AE thường cho kết quả kém tự nhiên và thiếu ổn định. Vì vậy, VAE là lựa chọn phù hợp hơn cho các bài toán sinh ảnh như trong Stable Diffusion.
+
+\subsection{Mạng U-Net dự đoán nhiễu}
+U-Net là thành phần trung tâm trong quá trình khử nhiễu của mô hình. Mạng nhận đầu vào là biểu diễn ảnh đã bị thêm nhiễu tại bước thứ $t$ cùng với các thông tin điều kiện (ví dụ như embedding văn bản), sau đó học cách dự đoán thành phần nhiễu có trong ảnh. Dựa trên phần nhiễu dự đoán này, mô hình sẽ loại bỏ nhiễu tương ứng để thu được biểu diễn sạch hơn ở bước $t-1$.
+
+Quá trình này được lặp lại qua nhiều bước, giúp mô hình dần dần chuyển đổi từ nhiễu ngẫu nhiên ban đầu thành ảnh hoàn chỉnh có nội dung phù hợp với điều kiện đã cho. Việc sử dụng U-Net với kiến trúc encoder--decoder kết hợp các kết nối tắt giúp bảo toàn thông tin không gian và chi tiết cục bộ, từ đó nâng cao chất lượng ảnh sinh ra.
+
+\section{Kỹ thuật điều khiển bổ trợ}
+Để giải quyết bài toán thử kiểu tóc ảo, việc chỉ sử dụng Stable Diffusion là chưa đủ. Hệ thống cần bổ sung các cơ chế điều kiện hóa để kiểm soát tốt hơn cấu trúc khuôn mặt, đặc trưng kiểu tóc và vùng cần chỉnh sửa. Các kỹ thuật chính được sử dụng gồm:
+\begin{itemize}
+    \item \textbf{ControlNet} \cite{zhang2023controlnet}\textbf{:}
+    ControlNet cho phép mô hình khai thác thêm các tín hiệu điều khiển về cấu trúc hình học bên ngoài. Trong đề tài này, bản đồ độ sâu (depth map) được sử dụng như một điều kiện bổ sung nhằm duy trì tính nhất quán về hình dạng khuôn mặt và vùng đầu trong quá trình sinh ảnh, từ đó hạn chế biến dạng không mong muốn.
+
+    \item \textbf{IP-Adapter Plus} \cite{ye2023ipadapter}\textbf{:}
+    Đây là cơ chế giúp mô hình tiếp nhận và tích hợp thông tin từ ảnh tham chiếu vào quá trình sinh ảnh. Trong hệ thống, IP-Adapter Plus được sử dụng để truyền tải các đặc trưng của kiểu tóc như bố cục, độ xoăn và hình dạng tổng thể, giúp kết quả đầu ra bám sát phong cách mong muốn.
+
+    \item \textbf{InstantID} \cite{wang2024instantid}\textbf{:}
+    InstantID khai thác embedding khuôn mặt để hỗ trợ bảo toàn danh tính người dùng trong ảnh đầu ra. Thành phần này đặc biệt quan trọng trong bài toán thay đổi kiểu tóc, nơi yêu cầu giữ nguyên các đặc trưng nhận dạng chính của khuôn mặt trong khi chỉ thay đổi vùng tóc.
+
+    \item \textbf{Low-Rank Adaptation (LoRA)} \cite{hu2022lora}\textbf{:}
+    LoRA là kỹ thuật tinh chỉnh tham số hiệu quả, cho phép cập nhật một số lượng nhỏ các ma trận hạng thấp thay vì điều chỉnh toàn bộ trọng số của mô hình gốc. Cách tiếp cận này giúp giảm đáng kể chi phí tính toán và bộ nhớ, đồng thời vẫn đảm bảo khả năng thích nghi tốt với các bài toán chuyên biệt.
+\end{itemize}
+
+\section{Các mô hình nhận diện và phân tích khuôn mặt}
+\begin{itemize}
+    \item \textbf{InsightFace / ArcFace} \cite{deng2019arcface}\textbf{:}
+    Đây là bộ công cụ phân tích khuôn mặt mạnh mẽ, cung cấp các chức năng như phát hiện khuôn mặt, trích xuất 106 điểm đặc trưng (landmarks) và sinh vector embedding 512 chiều phục vụ nhận diện danh tính. Trong hệ thống, mô hình antelopev2 được sử dụng cho các trường hợp khuôn mặt nhìn thẳng (frontal face), nhờ độ chính xác cao và ổn định.
+
+    \item \textbf{AdaFace} \cite{kim2022adaface}\textbf{:}
+    AdaFace là mô hình nhận diện khuôn mặt sử dụng kiến trúc IR\nobreakdash-100, được thiết kế để hoạt động tốt trong điều kiện ảnh chất lượng thấp hoặc góc nhìn lớn. Trong hệ thống, AdaFace đóng vai trò dự phòng (fallback) khi InsightFace không nhận diện được khuôn mặt nghiêng (profile), cụ thể khi góc quay $|yaw| \geq 45^\circ$.
+
+    \item \textbf{YOLOv8-Face} \cite{jocher2023yolov8}\textbf{:}
+    Đây là mô hình phát hiện khuôn mặt dựa trên kiến trúc YOLOv8. Hệ thống sử dụng phiên bản \textbf{YOLOv8n-Face} (Nano) siêu nhẹ, được tối ưu hóa nhằm đạt tốc độ suy luận cực nhanh trong khi vẫn đảm bảo độ chính xác cao ngay cả trong các trường hợp khuôn mặt bị che khuất một phần. Các bounding box đầu ra được xử lý bằng kỹ thuật Non-Maximum Suppression (NMS) nhằm loại bỏ các dự đoán trùng lặp và giữ lại kết quả tốt nhất.
+
+
+    \item \textbf{3DDFA V2} \cite{guo2020towards3ddfa}\textbf{:}
+    Mô hình này thực hiện tái dựng khuôn mặt 3D từ ảnh 2D, cung cấp lưới điểm 3D dày đặc (dense vertices) cùng với các thông tin về góc quay như yaw, pitch, roll. Ngoài ra, 3DDFA V2 còn hỗ trợ ước lượng và ngoại suy vùng da đầu, đặc biệt hữu ích trong các trường hợp người dùng có ít tóc hoặc bị che khuất một phần.
+\end{itemize}
+
+\section{Kỹ thuật chuẩn hóa và căn chỉnh khuôn mặt}
+Tiền xử lý dữ liệu là bước quan trọng để đảm bảo tính nhất quán cho các mô hình phân tích phía sau. Kỹ thuật \textit{Face Alignment} được sử dụng để đưa khuôn mặt về một hệ tọa độ chuẩn dựa trên 5 điểm đặc trưng chính (mắt, mũi và khóe miệng).
+
+Quá trình này sử dụng phép biến đổi Affine (\textit{Affine Transformation}) để xoay, tỉ lệ hóa và dịch chuyển khuôn mặt sao cho khoảng cách giữa hai mắt và vị trí tương đối của các thành phần khuôn mặt luôn cố định. Việc chuẩn hóa giúp mô hình SegFormer và 3DDFA V2 hoạt động ổn định hơn, giảm thiểu ảnh hưởng của góc chụp và khoảng cách từ camera đến người dùng.
+
+
+\section{Phân đoạn ngữ nghĩa với SegFormer}
+SegFormer \cite{xie2021segformer} là mô hình phân đoạn ngữ nghĩa dựa trên kiến trúc Transformer, kết hợp giữa bộ mã hóa hiệu quả (hierarchical encoder) và bộ giải mã nhẹ nhằm đảm bảo cả độ chính xác và hiệu suất tính toán.
+
+Trong hệ thống, mô hình SegFormer (jonathandinu/face-parsing) được sử dụng để phân tách ảnh khuôn mặt thành 19 lớp ngữ nghĩa như background, skin, hair, hat, nose, eyes, eyebrows, ears, mouth, lips, v.v. Nhờ khả năng nắm bắt ngữ cảnh toàn cục của Transformer, mô hình cho kết quả phân đoạn ổn định ngay cả trong các điều kiện ánh sáng và góc nhìn khác nhau.
+
+Kết quả phân đoạn được sử dụng cho hai mục đích chính. Thứ nhất, vùng tóc (hair) được trích xuất để tạo \textit{hair mask}, phục vụ cho quá trình inpainting nhằm thay đổi kiểu tóc. Thứ hai, các vùng khuôn mặt quan trọng (như skin, eyes, nose, mouth) được kết hợp để tạo \textit{face mask}, giúp bảo vệ các đặc trưng nhận dạng và tránh bị thay đổi ngoài ý muốn trong quá trình sinh ảnh.
+
+\section{Công nghệ triển khai ứng dụng}
+Hệ thống được xây dựng dựa trên nhiều thành phần công nghệ, bao gồm cả mô hình học sâu và nền tảng triển khai ứng dụng, nhằm đảm bảo hiệu năng và khả năng mở rộng.
+
+\begin{itemize}
+    \item \textbf{Python, PyTorch và Diffusers:}
+    Đây là nền tảng chính phục vụ việc xây dựng, tích hợp và suy luận các mô hình học sâu. Thư viện Diffusers hỗ trợ triển khai các mô hình khuếch tán như Stable Diffusion một cách thuận tiện, đồng thời cung cấp các pipeline tối ưu cho quá trình sinh ảnh.
+
+    \item \textbf{FastAPI} \cite{fastapi2023}\textbf{, Celery} \cite{celery2023} \textbf{và Redis:}
+    Các công nghệ này được sử dụng để xây dựng hệ thống backend. FastAPI đảm nhiệm việc cung cấp API với hiệu năng cao, trong khi Celery kết hợp với Redis đóng vai trò quản lý hàng đợi tác vụ và xử lý bất đồng bộ. Cách tiếp cận này giúp hệ thống xử lý các tác vụ nặng như sinh ảnh mà không làm gián đoạn trải nghiệm người dùng.
+
+    \item \textbf{React} \cite{react2023}\textbf{, Vite và TailwindCSS:}
+    Bộ công cụ này được sử dụng để phát triển giao diện web. React hỗ trợ xây dựng giao diện tương tác, Vite giúp tăng tốc quá trình phát triển và build ứng dụng, trong khi TailwindCSS cung cấp hệ thống styling linh hoạt, giúp thiết kế giao diện nhanh chóng và nhất quán.
+\end{itemize}
+
+\section{Các nghiên cứu liên quan}
+Một số nghiên cứu gần đây đã tập trung giải quyết bài toán thay đổi kiểu tóc dựa trên các mô hình khuếch tán, đạt được nhiều kết quả đáng chú ý:
+
+\begin{itemize}
+    \item \textbf{HairFusion} \cite{chung2024hairfusion}\textbf{:}
+    Phương pháp này sử dụng Stable Diffusion kết hợp nhiều tín hiệu điều kiện (như cấu trúc hình học và đặc trưng tham chiếu) để thực hiện chuyển giao kiểu tóc một cách tự nhiên. Hệ thống TryHairStyle trong đề tài có tham khảo và kế thừa ý tưởng từ hướng tiếp cận này, đặc biệt ở việc tích hợp đa điều kiện để cải thiện chất lượng ảnh sinh.
+
+    \item \textbf{Stable-Hair} \cite{zhang2024stablehair}\textbf{:}
+    Nghiên cứu này đề xuất một phương pháp chuyên biệt cho bài toán thay đổi kiểu tóc, tập trung vào việc bảo toàn cấu trúc khuôn mặt và nâng cao độ chân thực của tóc. Mô hình cho phép xử lý tốt trên cả ảnh thực tế với nhiều điều kiện phức tạp như ánh sáng, góc nhìn và che khuất.
+\end{itemize}
+
+\end{document}

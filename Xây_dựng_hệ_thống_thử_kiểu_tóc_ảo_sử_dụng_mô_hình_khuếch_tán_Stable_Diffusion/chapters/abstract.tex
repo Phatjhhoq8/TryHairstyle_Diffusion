@@ -1,0 +1,10 @@
+\documentclass[../main.tex]{subfiles}
+\begin{document}
+
+With the increasing demand for personalized beauty services, virtual hairstyle try-on has become a meaningful application area for computer vision and generative AI. Conventional image editing approaches and earlier deep learning methods often struggle to preserve facial identity while producing visually natural hairstyle transformations.
+
+This report presents the design and implementation of \textit{TryHairStyle}, a virtual hairstyle try-on system built on Stable Diffusion XL Inpainting. The system combines multiple components, including IP-Adapter Plus for reference hairstyle guidance, InstantID for facial identity preservation, SegFormer for semantic hair and face segmentation, and 3DDFA\_V2 for handling challenging facial poses. In addition, the application is deployed as a web-based system with a FastAPI backend, Celery/Redis task queue, and a React frontend.
+
+The implementation results show that the proposed system can generate visually plausible hairstyle previews while preserving major facial characteristics and overall image context. The system also supports post-processing hair recoloring in HSV space to provide additional user customization. This work demonstrates the practical potential of diffusion-based models for digital beauty applications and provides a foundation for future improvements such as faster inference, video-based processing, and scalable cloud deployment.
+
+\end{document}
