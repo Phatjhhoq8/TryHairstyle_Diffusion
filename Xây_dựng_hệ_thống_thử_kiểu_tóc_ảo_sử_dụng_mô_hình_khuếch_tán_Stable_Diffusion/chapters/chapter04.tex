@@ -11,7 +11,7 @@
     \centering
     \caption{Yêu cầu phần cứng tối thiểu cho hệ thống}
     \label{tab:hw-requirements}
-    \begin{tabularx}{\textwidth}{|>\raggedright\arraybackslash>p{3.5cm}|>\raggedright\arraybackslash>p{4cm}|X|}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{3.5cm}|>{\raggedright\arraybackslash}p{4cm}|X|}
         \hline
         \textbf{Thành phần} & \textbf{Yêu cầu tối thiểu} & \textbf{Ghi chú} \\
         \hline
@@ -31,7 +31,7 @@ Hệ thống sử dụng một tập hợp các công cụ phần mềm phối h
     \centering
     \caption{Danh sách phần mềm cần thiết}
     \label{tab:sw-requirements}
-    \begin{tabularx}{\textwidth}{|>\raggedright\arraybackslash>p{4cm}|>\raggedright\arraybackslash>p{3cm}|X|}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{4cm}|>{\raggedright\arraybackslash}p{3cm}|X|}
         \hline
         \textbf{Phần mềm} & \textbf{Phiên bản} & \textbf{Vai trò} \\
         \hline
@@ -138,7 +138,7 @@ Frontend được xây dựng bằng \textit{ReactJS} với công cụ build \te
     \centering
     \caption{Danh sách các component chính của giao diện}
     \label{tab:frontend-components}
-    \begin{tabularx}{\textwidth}{|>\raggedright\arraybackslash>p{4cm}|X|}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{4cm}|X|}
         \hline
         \textbf{Component} & \textbf{Chức năng} \\
         \hline
@@ -208,7 +208,7 @@ Ngoài ra, dự án cung cấp script \texttt{start.sh} cho phép khởi động
     \centering
     \caption{Địa chỉ truy cập hệ thống theo từng chế độ triển khai}
     \label{tab:access-urls}
-    \begin{tabularx}{\textwidth}{|>\raggedright\arraybackslash>p{3.5cm}|>\raggedright\arraybackslash>p{4.5cm}|X|}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{3.5cm}|>{\raggedright\arraybackslash}p{4.5cm}|X|}
         \hline
         \textbf{Dịch vụ} & \textbf{Local} & \textbf{Docker} \\
         \hline
@@ -235,7 +235,7 @@ Hệ thống sử dụng nhiều mô hình học sâu với tổng dung lượng
     \centering
     \caption{Danh sách các model được sử dụng trong hệ thống}
     \label{tab:model-list}
-    \begin{tabularx}{\textwidth}{|>\raggedright\arraybackslash>p{4cm}|>\raggedright\arraybackslash>p{3cm}|X|}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{4cm}|>{\raggedright\arraybackslash}p{3cm}|X|}
         \hline
         \textbf{Model} & \textbf{Nguồn} & \textbf{Chức năng} \\
         \hline
@@ -272,7 +272,7 @@ Pipeline huấn luyện được thiết kế dưới định dạng sổ tay Ju
 \subsection{Quản lý bộ nhớ (VRAM Management)}
 Với dung lượng 15 GB VRAM trên Tesla T4, việc huấn luyện mô hình SDXL với cấu trúc UNet 13-kênh dễ gây ra hiện tượng tràn bộ nhớ (Out-Of-Memory). Để khắc phục, hệ thống áp dụng các kỹ thuật cấu hình bộ nhớ cấp thấp:
 \begin{enumerate}
-    \item \textbf{Cấu trúc lại đồ thị biến thiên (Gradient Checkpointing & Expansion):} Điều chỉnh cơ chế thu hồi bộ nhớ của \texttt{PyTorch} qua lệnh \texttt{PYTORCH\_CUDA\_ALLOC\_CONF="expandable\_segments:True"}, ngăn ngừa hiện tượng phân mảnh VRAM (fragmentation) khi giải mã đồ thị đạo hàm tại các bước tính tổng thất (Loss).
+    \item \textbf{Cấu trúc lại đồ thị biến thiên (Gradient Checkpointing \& Expansion):} Điều chỉnh cơ chế thu hồi bộ nhớ của \texttt{PyTorch} qua lệnh \texttt{PYTORCH\_CUDA\_ALLOC\_CONF="expandable\_segments:True"}, ngăn ngừa hiện tượng phân mảnh VRAM (fragmentation) khi giải mã đồ thị đạo hàm tại các bước tính tổng thất (Loss).
     \item \textbf{Trút tải (Offloading):} Kích hoạt tùy chọn chuyển dịch các thành phần trọng số tĩnh hoặc không cần tính toán độ dốc (ví dụ: Text Encoders, pre-trained VAE) vào RAM CPU, chỉ chuyển lên GPU cục bộ từng phần ngay tại thời điểm gọi.
     \item \textbf{Huấn luyện tham số thấp (LoRA 8-bit):} Khóa toàn bộ mạng UNet xương sống, chỉ để mở các lớp mở rộng đầu vào (conv\_in) và khối Cross-Attention Injector với tập optimizer AdamW 8-bit, hạ tổng số tham số cần cập nhật xuống mức dưới 1\%.
 \end{enumerate}
