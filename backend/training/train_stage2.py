@@ -1720,7 +1720,7 @@ class Stage2Trainer:
     # MAIN TRAINING LOOP — Chunked Loading, Global Epoch
     # ==============================================================================
     
-    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True, chunk_names=None, save_every_n_samples=2000):
+    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True, chunk_names=None, save_every_n_samples=1600):
         """
         Chunked Loading – Global Epoch Training.
         1 epoch = model nhìn thấy TẤT CẢ chunks đúng 1 lần.
@@ -2226,7 +2226,7 @@ if __name__ == "__main__":
     parser.add_argument("--accumulation", type=int, default=8, help="Gradient accumulation steps")
     parser.add_argument("--fresh", action="store_true", help="Train từ đầu, KHÔNG load checkpoint cũ")
     parser.add_argument("--chunk-names", type=str, default="", help="Chỉ định cụ thể chunks để train, cách nhau bằng dấu phẩy (vd: processed_001,processed_002)")
-    parser.add_argument("--save-steps", type=int, default=2000, help="Save checkpoint mỗi N samples (0=tắt mid-chunk save)")
+    parser.add_argument("--save-steps", type=int, default=1600, help="Save checkpoint mỗi N samples (0=tắt mid-chunk save)")
     args = parser.parse_args()
     
     chunk_names_list = [name.strip() for name in args.chunk_names.split(",")] if args.chunk_names else None
