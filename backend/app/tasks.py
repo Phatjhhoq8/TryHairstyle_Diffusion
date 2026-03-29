@@ -59,7 +59,7 @@ def get_services():
         raise e
 
 @celery_app.task(bind=True)
-def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7, ai_model: str = "TryHairstyle", original_face_path: str = None, bbox: list = None):
+def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: str, hair_color: str = None, color_intensity: float = 0.7, ai_model: str = "TryHairstyle", prompt_priority: int = 50, original_face_path: str = None, bbox: list = None):
     # Biến lưu kết quả trả về chung
     result_data = None
 
@@ -159,7 +159,7 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
             control_image=depth_map,
             ref_hair_image=hair_pil,
             prompt=finalPrompt,
-            latent_injection_weight=0.3
+            prompt_priority=prompt_priority,
         )
         
         # Resize kết quả về kích thước gốc để không bị méo

@@ -1,41 +1,101 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import Header from './components/Header';
 import ImageUpload from './components/ImageUpload';
 import DrawButton from './components/DrawButton';
 import ResultPanel from './components/ResultPanel';
 import PromptInput from './components/PromptInput';
+import PromptBuilder from './components/PromptBuilder';
+import PromptPreview from './components/PromptPreview';
+import PromptPrioritySlider from './components/PromptPrioritySlider';
 import ColorPicker from './components/ColorPicker';
 import FaceSelector from './components/FaceSelector';
 import ModelSelector from './components/ModelSelector';
-import { generateHair, detectFaces, pollTask, getRandomPair, colorizeHair } from './api/hairApi';
+import { generateHair, detectFaces, pollTask, getRandomPair, colorizeHair, translatePrompt } from './api/hairApi';
+import { DEFAULT_PROMPT_BUILDER, buildStructuredPrompt, mergePromptParts, getModelPromptSupport } from './utils/promptUtils';
 
 export default function App() {
-  // Images (File objects hoặc URL string)
   const [faceImage, setFaceImage] = useState(null);
   const [hairImage, setHairImage] = useState(null);
 
-  // Prompt + Color
-  const [prompt, setPrompt] = useState('high quality, realistic hairstyle');
+  const [prompt, setPrompt] = useState('');
   const [language, setLanguage] = useState('en');
+  const [promptBuilder, setPromptBuilder] = useState(DEFAULT_PROMPT_BUILDER);
+  const [promptPriority, setPromptPriority] = useState(50);
+  const [promptPreview, setPromptPreview] = useState('high quality realistic hairstyle');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const promptPriorityMemory = useRef(50);
+
   const [selectedColor, setSelectedColor] = useState('none');
   const [colorIntensity, setColorIntensity] = useState(0.7);
   const [aiModel, setAiModel] = useState('TryHairstyle');
 
-  // Pipeline state
   const [loading, setLoading] = useState(false);
   const [colorLoading, setColorLoading] = useState(false);
   const [resultUrl, setResultUrl] = useState(null);
   const [pipelineStatus, setPipelineStatus] = useState('');
   const [pipelineError, setPipelineError] = useState('');
 
-  // Face Selection
-  const [faceSelectData, setFaceSelectData] = useState(null); // { faces, title, source }
-  const [selectedFaceUrl, setSelectedFaceUrl] = useState(null);
-  const [selectedHairUrl, setSelectedHairUrl] = useState(null);
+  const [faceSelectData, setFaceSelectData] = useState(null);
+  const [, setSelectedFaceUrl] = useState(null);
+  const [, setSelectedHairUrl] = useState(null);
 
-  // Toast
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
+
+  const modelSupport = useMemo(() => getModelPromptSupport(aiModel), [aiModel]);
+  const structuredPrompt = useMemo(() => buildStructuredPrompt(promptBuilder), [promptBuilder]);
+  const sourcePrompt = useMemo(() => {
+    const merged = mergePromptParts(structuredPrompt, prompt);
+    return merged || 'high quality realistic hairstyle';
+  }, [structuredPrompt, prompt]);
+
+  useEffect(() => {
+    if (aiModel === 'TryOnHairstyle') {
+      if (promptPriority !== 0) {
+        promptPriorityMemory.current = promptPriority;
+        setPromptPriority(0);
+      }
+      return;
+    }
+
+    if (promptPriority === 0) {
+      setPromptPriority(promptPriorityMemory.current || 50);
+    }
+  }, [aiModel, promptPriority]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const timer = setTimeout(async () => {
+      setPreviewLoading(true);
+      setPreviewError('');
+
+      try {
+        if (language === 'en') {
+          setPromptPreview(sourcePrompt);
+        } else {
+          const data = await translatePrompt(sourcePrompt, language);
+          if (!controller.signal.aborted) {
+            setPromptPreview(data.translated_prompt || sourcePrompt);
+          }
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setPromptPreview(sourcePrompt);
+          setPreviewError('Không thể cập nhật bản dịch, sẽ dùng prompt gốc nếu cần.');
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setPreviewLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      controller.abort();
+      clearTimeout(timer);
+    };
+  }, [sourcePrompt, language]);
 
   const showToast = useCallback((message, type = 'error') => {
     setToast({ message, type });
@@ -43,9 +103,7 @@ export default function App() {
     toastTimer.current = setTimeout(() => setToast(null), 4000);
   }, []);
 
-  // ========== Face Detection Flow ==========
   const detectAndSelect = async (imageFile, source) => {
-    // POST /detect-faces → poll → faces[]
     const { task_id } = await detectFaces(imageFile);
 
     return new Promise((resolve, reject) => {
@@ -63,19 +121,15 @@ export default function App() {
 
         const faces = result.faces || [];
         if (faces.length > 1) {
-          // Nhiều mặt → hiện popup chọn
           resolve({ needSelect: true, faces });
         } else {
-          // 0 hoặc 1 mặt → dùng luôn file gốc
           resolve({ needSelect: false, faces });
         }
       });
     });
   };
 
-  // ========== Main Pipeline ==========
   const handleDraw = async () => {
-    // Validate
     if (!faceImage) {
       showToast('Vui lòng tải lên ảnh chân dung!');
       return;
@@ -91,11 +145,9 @@ export default function App() {
     setPipelineStatus('Đang bắt đầu...');
 
     try {
-      // File object cho face — dùng gốc hoặc sẽ bị thay bởi face crop
       let faceFile = faceImage instanceof File ? faceImage : null;
       let hairFile = hairImage instanceof File ? hairImage : null;
 
-      // Nếu là URL (random pair) → fetch thành File
       if (!faceFile && typeof faceImage === 'string') {
         const res = await fetch(faceImage);
         const blob = await res.blob();
@@ -107,12 +159,10 @@ export default function App() {
         hairFile = new File([blob], 'hair.png', { type: blob.type });
       }
 
-      // 1. Detect faces in face image
       setPipelineStatus('Đang quét khuôn mặt...');
       const faceResult = await detectAndSelect(faceFile, 'face');
 
       if (faceResult.needSelect) {
-        // Tạm dừng — hiện popup chọn face
         setLoading(false);
         setPipelineStatus('');
         setFaceSelectData({
@@ -125,7 +175,6 @@ export default function App() {
         return;
       }
 
-      // 2. Detect faces in hair image
       setPipelineStatus('Đang quét ảnh tóc...');
       const hairResult = await detectAndSelect(hairFile, 'hair');
 
@@ -138,17 +187,14 @@ export default function App() {
           source: 'hair',
           pendingHairFile: hairFile,
           pendingFaceFile: faceFile,
-          resolvedFaceUrl: null, // dùng file gốc
+          resolvedFaceUrl: null,
         });
         return;
       }
 
-      // 3. Generate
-      // Mặc định nếu không có bbox (không tìm thấy mặt), truyền null
       let bbox = null;
       let faceCropFile = faceFile;
-      
-      // Nếu tìm thấy chính xác 1 mặt:
+
       if (faceResult.faces && faceResult.faces.length === 1) {
         bbox = faceResult.faces[0].bbox;
         const faceRes = await fetch(faceResult.faces[0].cropped_image_url);
@@ -164,17 +210,15 @@ export default function App() {
     }
   };
 
-  // ========== Face Selected from Modal ==========
   const handleFaceSelected = async (face) => {
     const data = faceSelectData;
     setFaceSelectData(null);
 
     if (data.source === 'face') {
-      // Đã chọn face → tiếp tục check hair
       const croppedUrl = face.cropped_image_url;
       const bbox = face.bbox;
       setSelectedFaceUrl(croppedUrl);
-      setFaceImage(croppedUrl);  // Cập nhật ảnh ở ô input
+      setFaceImage(croppedUrl);
 
       setLoading(true);
       setPipelineStatus('Đang quét ảnh tóc...');
@@ -197,7 +241,6 @@ export default function App() {
           return;
         }
 
-        // Fetch face crop → File, rồi generate
         const faceRes = await fetch(croppedUrl);
         const faceBlob = await faceRes.blob();
         const faceFile = new File([faceBlob], 'face_crop.png', { type: faceBlob.type });
@@ -209,15 +252,12 @@ export default function App() {
         setLoading(false);
       }
     } else {
-      // source === 'hair': đã chọn tóc → generate
       const croppedUrl = face.cropped_image_url;
       setSelectedHairUrl(croppedUrl);
-      setHairImage(croppedUrl);  // Cập nhật ảnh ở ô input
+      setHairImage(croppedUrl);
       setLoading(true);
 
       try {
-        // Lấy face file
-        let faceFile;
         let faceCropFile;
         let bbox = data.resolvedFaceBbox || null;
         if (data.resolvedFaceUrl) {
@@ -225,18 +265,9 @@ export default function App() {
           const blob = await res.blob();
           faceCropFile = new File([blob], 'face_crop.png', { type: blob.type });
         } else {
-          // If 1 face was detected originally, use it
-          if (data.faces && data.faces.length === 1 && data.source !== 'hair') {
-            bbox = data.faces[0].bbox;
-            const res = await fetch(data.faces[0].cropped_image_url);
-            const blob = await res.blob();
-            faceCropFile = new File([blob], 'face_crop.png', { type: blob.type });
-          } else {
-            faceCropFile = data.pendingFaceFile;
-          }
+          faceCropFile = data.pendingFaceFile;
         }
 
-        // Lấy hair crop
         const hairRes = await fetch(croppedUrl);
         const hairBlob = await hairRes.blob();
         const hairFile = new File([hairBlob], 'hair_crop.png', { type: hairBlob.type });
@@ -250,12 +281,23 @@ export default function App() {
     }
   };
 
-  // ========== Generate API + Poll ==========
   const runGenerate = async (originalFaceFile, faceCropFile, hairFile, bbox) => {
     setPipelineStatus('Đang tạo kiểu tóc...');
 
     const color = selectedColor !== 'none' ? selectedColor : null;
-    const { task_id } = await generateHair(originalFaceFile, faceCropFile, hairFile, prompt, color, colorIntensity, language, aiModel, bbox);
+    const promptToSend = modelSupport.promptEnabled ? promptPreview : sourcePrompt;
+    const { task_id } = await generateHair(
+      originalFaceFile,
+      faceCropFile,
+      hairFile,
+      promptToSend,
+      color,
+      colorIntensity,
+      language,
+      aiModel,
+      bbox,
+      promptPriority,
+    );
 
     const { promise } = pollTask(task_id, (data) => {
       if (data.status === 'PROCESSING') {
@@ -276,11 +318,9 @@ export default function App() {
     }
   };
 
-  // ========== Quick Colorize (Đổi màu nhanh) ==========
-  // Ưu tiên ảnh kết quả, nếu chưa có thì dùng ảnh đầu vào (chân dung)
   const handleQuickColorize = async () => {
-    const sourceUrl = resultUrl;  // ảnh kết quả
-    const sourceFile = faceImage; // ảnh đầu vào
+    const sourceUrl = resultUrl;
+    const sourceFile = faceImage;
 
     if (!sourceUrl && !sourceFile) {
       showToast('Chưa có ảnh nào để đổi màu! Hãy tải ảnh chân dung lên.');
@@ -299,24 +339,18 @@ export default function App() {
       let imageFile;
 
       if (sourceUrl) {
-        // Có ảnh kết quả → đổi màu trên kết quả
         const res = await fetch(sourceUrl);
         const blob = await res.blob();
         imageFile = new File([blob], 'result.png', { type: blob.type });
       } else if (sourceFile instanceof File) {
-        // Chưa có kết quả → đổi màu trên ảnh đầu vào (File)
         imageFile = sourceFile;
       } else if (typeof sourceFile === 'string') {
-        // Ảnh đầu vào là URL (random pair) → fetch thành File
         const res = await fetch(sourceFile);
         const blob = await res.blob();
         imageFile = new File([blob], 'face.png', { type: blob.type });
       }
 
-      // Gọi API /colorize
       const { task_id } = await colorizeHair(imageFile, selectedColor, colorIntensity);
-
-      // Poll task
       const { promise } = pollTask(task_id, (data) => {
         if (data.status === 'PROCESSING') {
           setPipelineStatus('Đang đổi màu tóc...');
@@ -341,7 +375,6 @@ export default function App() {
     }
   };
 
-  // ========== Random Pair ==========
   const handleRandomPair = async () => {
     try {
       const data = await getRandomPair();
@@ -355,11 +388,10 @@ export default function App() {
   };
 
   return (
-    <div className="max-w-[1200px] mx-auto px-4 py-4">
+    <div className="mx-auto max-w-[1200px] px-4 py-4">
       <Header />
 
-      {/* Main row: 2 uploads + Draw button + Result */}
-      <div className="grid grid-cols-[1fr_1fr_auto_1fr] gap-4 mb-5 items-stretch">
+      <div className="mb-5 grid items-stretch gap-4 xl:grid-cols-[1fr_1fr_auto_1fr]">
         <ImageUpload
           label="Ảnh đầu vào 1: Chân dung"
           image={faceImage}
@@ -370,7 +402,7 @@ export default function App() {
           image={hairImage}
           onImageSelect={setHairImage}
         />
-        <div className="min-w-[120px] flex items-center">
+        <div className="flex min-w-[120px] items-center">
           <DrawButton
             onClick={handleDraw}
             loading={loading}
@@ -387,35 +419,62 @@ export default function App() {
         />
       </div>
 
-      {/* Prompt row */}
-      <div className="mb-4">
-        <PromptInput value={prompt} onChange={setPrompt} language={language} onLanguageChange={setLanguage} />
-        <div className="flex gap-3 mt-2">
-          <button
-            onClick={handleRandomPair}
-            className="px-4 py-2 bg-gray-100 text-gray-600 rounded-lg text-sm 
-                       hover:bg-gray-200 transition"
-          >
-            Ảnh FFHQ ngẫu nhiên
-          </button>
-          {pipelineStatus && (
-            <span className="flex items-center text-sm text-gray-500">{pipelineStatus}</span>
-          )}
+      <div className="mb-4 grid gap-4 xl:grid-cols-[1.3fr_1fr]">
+        <div className="space-y-4">
+          <ModelSelector value={aiModel} onChange={setAiModel} />
+          <PromptBuilder value={promptBuilder} onChange={setPromptBuilder} disabled={!modelSupport.promptEnabled} />
+          <PromptInput value={prompt} onChange={setPrompt} language={language} onLanguageChange={setLanguage} disabled={!modelSupport.promptEnabled} />
+          <PromptPreview
+            sourcePrompt={sourcePrompt}
+            translatedPrompt={promptPreview}
+            isLoading={previewLoading}
+            translationNote={previewError}
+            modelSupportsPrompt={modelSupport.promptEnabled}
+          />
+        </div>
+
+        <div className="space-y-4">
+          <PromptPrioritySlider
+            value={modelSupport.promptEnabled ? promptPriority : 0}
+            onChange={setPromptPriority}
+            disabled={!modelSupport.promptEnabled}
+          />
+          <ColorPicker
+            selectedColor={selectedColor}
+            onColorChange={setSelectedColor}
+            intensity={colorIntensity}
+            onIntensityChange={setColorIntensity}
+          />
+
+          <div className="rounded-2xl border border-gray-200 bg-white p-4">
+            <div className="flex flex-wrap gap-3">
+              <button
+                onClick={handleRandomPair}
+                className="rounded-lg bg-gray-100 px-4 py-2 text-sm text-gray-600 transition hover:bg-gray-200"
+              >
+                Ảnh FFHQ ngẫu nhiên
+              </button>
+              <button
+                onClick={() => {
+                  setPrompt('');
+                  setPromptBuilder({ ...DEFAULT_PROMPT_BUILDER });
+                  setPromptPriority(aiModel === 'TryOnHairstyle' ? 0 : 50);
+                }}
+                className="rounded-lg bg-gray-100 px-4 py-2 text-sm text-gray-600 transition hover:bg-gray-200"
+              >
+                Đặt lại prompt
+              </button>
+            </div>
+
+            {pipelineStatus && (
+              <div className="mt-3 rounded-xl bg-[#f5fbfa] px-3 py-2 text-sm text-gray-600">
+                {pipelineStatus}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Model Selector + Color Picker row */}
-      <div className="grid grid-cols-[1fr_1fr] gap-4 mb-4">
-        <ModelSelector value={aiModel} onChange={setAiModel} />
-        <ColorPicker
-          selectedColor={selectedColor}
-          onColorChange={setSelectedColor}
-          intensity={colorIntensity}
-          onIntensityChange={setColorIntensity}
-        />
-      </div>
-
-      {/* Face Selector Modal */}
       {faceSelectData && (
         <FaceSelector
           faces={faceSelectData.faces}
@@ -425,7 +484,6 @@ export default function App() {
         />
       )}
 
-      {/* Toast */}
       {toast && (
         <div className={`toast ${toast.type}`} onClick={() => setToast(null)}>
           {toast.message}

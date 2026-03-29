@@ -64,7 +64,8 @@ async def generate_hair(
     hair_color: str = Form(None),
     color_intensity: float = Form(0.7),
     language: str = Form("en"),
-    ai_model: str = Form("TryHairstyle")
+    ai_model: str = Form("TryHairstyle"),
+    prompt_priority: int = Form(50)
 ):
     """
     Endpoint tương thích với React Frontend.
@@ -119,6 +120,7 @@ async def generate_hair(
         str(face_path), str(hair_path), final_description,
         hair_color=hair_color, color_intensity=color_intensity,
         ai_model=ai_model,
+        prompt_priority=prompt_priority,
         original_face_path=str(original_face_path) if original_face_path else None,
         bbox=parsed_bbox
     )
@@ -127,6 +129,20 @@ async def generate_hair(
         "task_id": task.id,
         "status": "QUEUED",
         "message": "Task started successfully"
+    }
+
+@app.post("/translate-prompt", tags=["Prompt"])
+async def translate_prompt_preview(
+    description: str = Form(""),
+    language: str = Form("en")
+):
+    final_description = description
+    if language == "vi":
+        final_description = translate_vi_to_en(description)
+
+    return {
+        "source_prompt": description,
+        "translated_prompt": final_description,
     }
 
 @app.post("/detect-faces", response_model=DetectFacesResponse, tags=["Core"])

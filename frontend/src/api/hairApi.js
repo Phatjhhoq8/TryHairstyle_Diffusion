@@ -3,7 +3,7 @@ const API_BASE = '/api';
 /**
  * POST /generate — Gửi 2 ảnh + prompt => nhận task_id
  */
-export async function generateHair(originalFaceFile, faceCropFile, hairFile, prompt, hairColor, colorIntensity, language = 'en', aiModel = 'TryHairstyle', bbox = null) {
+export async function generateHair(originalFaceFile, faceCropFile, hairFile, prompt, hairColor, colorIntensity, language = 'en', aiModel = 'TryHairstyle', bbox = null, promptPriority = 50) {
   const form = new FormData();
   form.append('face_image', faceCropFile);
   if (originalFaceFile) {
@@ -13,6 +13,7 @@ export async function generateHair(originalFaceFile, faceCropFile, hairFile, pro
   form.append('description', prompt || 'high quality realistic hair');
   form.append('language', language);
   form.append('ai_model', aiModel);
+  form.append('prompt_priority', String(promptPriority ?? 50));
 
   if (hairColor && hairColor !== 'none') {
     form.append('hair_color', hairColor);
@@ -26,6 +27,16 @@ export async function generateHair(originalFaceFile, faceCropFile, hairFile, pro
   const res = await fetch(`${API_BASE}/generate`, { method: 'POST', body: form });
   if (!res.ok) throw new Error(`Generate failed: ${res.status}`);
   return res.json(); // { task_id, status, message }
+}
+
+export async function translatePrompt(prompt, language = 'en') {
+  const form = new FormData();
+  form.append('description', prompt || '');
+  form.append('language', language);
+
+  const res = await fetch(`${API_BASE}/translate-prompt`, { method: 'POST', body: form });
+  if (!res.ok) throw new Error(`Translate prompt failed: ${res.status}`);
+  return res.json();
 }
 
 /**

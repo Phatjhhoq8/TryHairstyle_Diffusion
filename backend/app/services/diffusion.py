@@ -252,6 +252,34 @@ class HairDiffusionService:
         self.pipe.to(self.device, self.dtype)
         print(">>> SDXL Pipeline Loaded Successfully.")
 
+    def _resolve_prompt_controls(self, prompt_priority, controlnet_scale, ip_adapter_scale, latent_injection_weight, guidance_scale):
+        priority = max(0.0, min(100.0, float(prompt_priority))) / 100.0
+
+        prompt_boost = priority
+        reference_bias = 1.0 - priority
+
+        tuned_ip_adapter = 0.2 + (reference_bias * 0.6)
+        tuned_latent_injection = 0.05 + (reference_bias * 0.35)
+        tuned_controlnet = 0.35 + (reference_bias * 0.25)
+        tuned_guidance = 6.5 + (prompt_boost * 2.5)
+
+        if ip_adapter_scale is not None:
+            tuned_ip_adapter = float(ip_adapter_scale) * 0.35 + tuned_ip_adapter * 0.65
+        if latent_injection_weight is not None:
+            tuned_latent_injection = float(latent_injection_weight) * 0.35 + tuned_latent_injection * 0.65
+        if controlnet_scale is not None:
+            tuned_controlnet = float(controlnet_scale) * 0.35 + tuned_controlnet * 0.65
+        if guidance_scale is not None:
+            tuned_guidance = float(guidance_scale) * 0.35 + tuned_guidance * 0.65
+
+        return {
+            "priority": int(round(priority * 100)),
+            "ip_adapter_scale": max(0.0, min(1.0, tuned_ip_adapter)),
+            "latent_injection_weight": max(0.0, min(1.0, tuned_latent_injection)),
+            "controlnet_scale": max(0.1, min(1.0, tuned_controlnet)),
+            "guidance_scale": max(1.0, min(12.0, tuned_guidance)),
+        }
+
 
 
     def generate(
@@ -266,7 +294,8 @@ class HairDiffusionService:
         guidance_scale: float = 7.5,
         controlnet_scale: float = 0.5,
         ip_adapter_scale: float = 0.6,
-        latent_injection_weight: float = 0.3
+        latent_injection_weight: float = 0.3,
+        prompt_priority: int = 50
     ):
         """
         Thực hiện Inpainting thay tóc (SDXL 1024x1024).
@@ -281,6 +310,22 @@ class HairDiffusionService:
         
         # Generator seed (hạt giống sinh ngẫu nhiên)
         generator = torch.Generator(self.device).manual_seed(42)
+
+        control_values = self._resolve_prompt_controls(
+            prompt_priority,
+            controlnet_scale,
+            ip_adapter_scale,
+            latent_injection_weight,
+            guidance_scale,
+        )
+        controlnet_scale = control_values["controlnet_scale"]
+        ip_adapter_scale = control_values["ip_adapter_scale"]
+        latent_injection_weight = control_values["latent_injection_weight"]
+        guidance_scale = control_values["guidance_scale"]
+        print(
+            f"Prompt priority={control_values['priority']}% | guidance={guidance_scale:.2f} | "
+            f"controlnet={controlnet_scale:.2f} | ip_adapter={ip_adapter_scale:.2f} | latent_injection={latent_injection_weight:.2f}"
+        )
         
         # Thiết lập tỷ lệ IP Adapter
         try:

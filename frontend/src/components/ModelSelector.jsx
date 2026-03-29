@@ -1,72 +1,59 @@
-import { useState } from 'react';
+import { getModelPromptSupport } from '../utils/promptUtils';
 
 const MODELS = [
   {
     id: 'TryHairstyle',
     label: 'TryHairstyle',
-    desc: '',
-    icon: '',
+    desc: 'Bản nâng cấp có prompt priority và prompt preview.',
   },
   {
     id: 'TryOnHairstyle',
     label: 'TryOnHairstyle',
-    desc: '',
-    icon: '',
+    desc: 'Bản research gốc, ưu tiên ảnh tham chiếu.',
   },
 ];
 
 export default function ModelSelector({ value, onChange }) {
+  const support = getModelPromptSupport(value);
+
   return (
-    <div style={{
-      background: 'linear-gradient(135deg, #f8f9fa, #e9ecef)',
-      borderRadius: '12px',
-      padding: '14px 16px',
-      border: '1px solid #dee2e6',
-    }}>
-      <div style={{
-        fontSize: '0.85rem',
-        fontWeight: 600,
-        color: '#495057',
-        marginBottom: '10px',
-      }}>
-          Mô hình AI
+    <div className="rounded-2xl border border-[#dbe9e6] bg-gradient-to-br from-[#f8fbfb] to-[#eef6f4] p-4">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <div className="text-sm font-semibold text-gray-800">Mô hình AI</div>
+          <p className="mt-1 text-xs text-gray-500">Chọn pipeline phù hợp với mục tiêu của bạn trước khi điều chỉnh prompt.</p>
+        </div>
+        <span className={`rounded-full px-3 py-1 text-[11px] font-semibold uppercase tracking-wide ${support.promptEnabled
+          ? 'bg-[#dff4ef] text-[#1a7a6d]'
+          : 'bg-gray-200 text-gray-600'}`}>
+          {support.label}
+        </span>
       </div>
-      <div style={{ display: 'flex', gap: '10px' }}>
+
+      <div className="grid gap-3 md:grid-cols-2">
         {MODELS.map((model) => (
           <button
             key={model.id}
+            type="button"
             onClick={() => onChange(model.id)}
-            style={{
-              flex: 1,
-              padding: '10px 12px',
-              borderRadius: '10px',
-              border: value === model.id
-                ? '2px solid #2d9b8e'
-                : '2px solid transparent',
-              background: value === model.id
-                ? 'linear-gradient(135deg, #e6f7f5, #d0f0ec)'
-                : '#fff',
-              cursor: 'pointer',
-              textAlign: 'left',
-              transition: 'all 0.2s ease',
-              boxShadow: value === model.id
-                ? '0 2px 8px rgba(45,155,142,0.2)'
-                : '0 1px 3px rgba(0,0,0,0.08)',
-            }}
+            className={`rounded-2xl border p-4 text-left transition ${value === model.id
+              ? 'border-[#2d9b8e] bg-white shadow-[0_8px_24px_rgba(45,155,142,0.12)]'
+              : 'border-transparent bg-white/75 hover:border-[#b8ddd7] hover:bg-white'}`}
           >
-            <div style={{ fontSize: '1.2em', marginBottom: '4px' }}>
-              {model.icon} {model.label}
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="text-base font-semibold text-gray-800">{model.label}</span>
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${model.id === 'TryHairstyle'
+                ? 'bg-[#edf8f6] text-[#1a7a6d]'
+                : 'bg-gray-100 text-gray-600'}`}>
+                {model.id === 'TryHairstyle' ? 'Prompt ready' : 'Reference-first'}
+              </span>
             </div>
-            <div style={{
-              fontSize: '0.75rem',
-              color: '#6c757d',
-              lineHeight: 1.3,
-            }}>
-              {model.desc}
-            </div>
+            <p className="text-sm leading-6 text-gray-600">{model.desc}</p>
           </button>
         ))}
       </div>
+
+      <p className="mt-3 text-xs text-gray-500">{support.description}</p>
     </div>
   );
 }
