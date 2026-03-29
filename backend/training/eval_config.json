@@ -1,0 +1,45 @@
+{
+    "_comment": "Cấu hình trọng số đánh giá mô hình TryHairStyle. Tổng weights = 1.0",
+    "weights": {
+        "identity": 0.35,
+        "hairstyle": 0.30,
+        "background": 0.20,
+        "naturalness": 0.10,
+        "runtime_stability": 0.05
+    },
+    "metric_direction": {
+        "_comment": "higher_is_better = true → điểm càng cao càng tốt; false → càng thấp càng tốt (VD: LPIPS)",
+        "identity_similarity": true,
+        "hair_lpips": false,
+        "hair_psnr": true,
+        "background_ssim": true,
+        "background_psnr": true,
+        "naturalness_psnr": true,
+        "runtime_seconds": false,
+        "success_rate": true
+    },
+    "normalization": {
+        "_comment": "Dải giá trị dùng để chuẩn hóa metric về thang [0, 1]. min/max là biên hợp lý.",
+        "identity_similarity": {"min": 0.0, "max": 1.0},
+        "hair_lpips":          {"min": 0.0, "max": 0.7},
+        "hair_psnr":           {"min": 10.0, "max": 40.0},
+        "background_ssim":     {"min": 0.0, "max": 1.0},
+        "background_psnr":     {"min": 10.0, "max": 50.0},
+        "naturalness_psnr":    {"min": 10.0, "max": 40.0},
+        "runtime_seconds":     {"min": 1.0, "max": 120.0},
+        "success_rate":        {"min": 0.0, "max": 1.0}
+    },
+    "metric_to_group": {
+        "_comment": "Ánh xạ từng metric thô về nhóm trọng số (weights).",
+        "identity_similarity": "identity",
+        "hair_lpips":          "hairstyle",
+        "hair_psnr":           "hairstyle",
+        "background_ssim":     "background",
+        "background_psnr":     "background",
+        "naturalness_psnr":    "naturalness",
+        "runtime_seconds":     "runtime_stability",
+        "success_rate":        "runtime_stability"
+    },
+    "eval_set_dir": "backend/training/eval_set",
+    "results_dir": "backend/training/results"
+}

@@ -1114,12 +1114,14 @@ class Stage2Trainer:
         """
         Đánh giá model trên validation set.
         Tính Validation Diffusion Loss (noise prediction MSE) — KHÔNG backprop.
-        Tùy chọn: tính LPIPS trên vài samples đầu tiên.
+        Tùy chọn: tính LPIPS, Identity, Background trên vài samples đầu tiên.
         
         Returns:
             dict: {
-                'val_loss': float — trung bình diffusion loss trên val set,
-                'val_lpips': float — trung bình LPIPS (nếu có), -1.0 nếu không
+                'val_loss':       float — trung bình diffusion loss trên val set,
+                'val_lpips':      float — trung bình LPIPS (nếu có), -1.0 nếu không,
+                'val_identity':   float — trung bình Identity Similarity, -1.0 nếu không,
+                'val_background': float — trung bình Background PSNR, -1.0 nếu không,
             }
         """
         self.unet.eval()
@@ -1127,19 +1129,22 @@ class Stage2Trainer:
         
         val_losses = []
         lpips_scores = []
+        identity_scores = []
+        bg_psnr_scores = []
         
-        # Khởi tạo LPIPS evaluator (lazy, chỉ lần đầu)
-        lpips_evaluator = None
+        # Khởi tạo evaluator (lazy, chỉ lần đầu)
+        evaluator = None
         try:
             from backend.training.evaluate import HairEvaluator
-            lpips_evaluator = HairEvaluator(device=str(DEVICE))
-            if lpips_evaluator.loss_fn_vgg is None:
-                lpips_evaluator = None
+            evaluator = HairEvaluator(device=str(DEVICE))
+            if evaluator.loss_fn_vgg is None:
+                evaluator = None
         except Exception:
-            pass  # LPIPS không bắt buộc
+            pass  # Evaluator không bắt buộc
         
-        max_lpips_samples = 4  # Chỉ tính LPIPS trên vài samples để tiết kiệm VRAM
-        lpips_count = 0
+        # Giới hạn số mẫu tính metric nặng (LPIPS, Identity) để tiết kiệm VRAM
+        max_metric_samples = 4
+        metric_count = 0
         
         for batch in tqdm(val_dataloader, desc="Validation", leave=False):
             gt_images = batch['image'].to(DEVICE)
@@ -1190,8 +1195,8 @@ class Stage2Trainer:
                 val_diff_loss = self.mask_aware_loss(noise_pred, noise, masks_latent)
                 val_losses.append(val_diff_loss.item())
             
-            # LPIPS trên vài samples đầu (tùy chọn, tốn VRAM)
-            if lpips_evaluator is not None and lpips_count < max_lpips_samples:
+            # Metrics nặng trên vài samples đầu (tùy chọn, tốn VRAM)
+            if evaluator is not None and metric_count < max_metric_samples:
                 try:
                     with torch.amp.autocast('cuda', dtype=torch.float16):
                         # Ước tính denoised output (x0 prediction)
@@ -1203,21 +1208,60 @@ class Stage2Trainer:
                         
                         decoded_img = self._decode_latents(pred_original)
                     
-                    # LPIPS cần input [-1, 1] — cả decoded_img và gt_images đều ở range này
-                    lpips_val = lpips_evaluator.evaluate_lpips(
-                        decoded_img[:1], gt_images[:1], masks[:1]  # Chỉ lấy 1 sample
-                    )
+                    # Chỉ lấy 1 sample trong batch (tiết kiệm VRAM)
+                    dec_sample = decoded_img[:1]
+                    gt_sample = gt_images[:1]
+                    mask_sample = masks[:1]
+                    
+                    # --- LPIPS (Hairstyle) ---
+                    lpips_val = evaluator.evaluate_lpips(dec_sample, gt_sample, mask_sample)
                     if lpips_val >= 0:
                         lpips_scores.append(lpips_val)
-                    lpips_count += 1
+                    
+                    # --- Background PSNR (pure math, rất nhẹ) ---
+                    bg_result = evaluator.evaluate_background_preservation(
+                        gt_sample, dec_sample, mask_sample
+                    )
+                    bg_psnr_scores.append(bg_result['bg_psnr'])
+                    
+                    # --- Identity Similarity (nặng nhất — lazy load FaceNet) ---
+                    # Chỉ tính ở 2 sample đầu tiên để tránh OOM
+                    if metric_count < 2:
+                        try:
+                            id_val = evaluator.evaluate_identity_similarity(
+                                gt_sample, dec_sample
+                            )
+                            if id_val >= 0:
+                                identity_scores.append(id_val)
+                        except RuntimeError as id_err:
+                            if "out of memory" in str(id_err):
+                                torch.cuda.empty_cache()
+                                logger.warning("OOM khi tính Identity, skip.")
+                    
+                    metric_count += 1
+                    
+                    # Cleanup decoded image
+                    del decoded_img, dec_sample, pred_original
+                    torch.cuda.empty_cache()
+                    
                 except RuntimeError as e:
                     if "out of memory" in str(e):
                         torch.cuda.empty_cache()
-                    lpips_evaluator = None  # Tắt LPIPS nếu OOM
+                    evaluator = None  # Tắt evaluator nếu OOM liên tục
+        
+        # Giải phóng face model nếu đã nạp
+        if evaluator is not None:
+            evaluator.unload_heavy_models()
         
         # Tổng hợp
         avg_val_loss = sum(val_losses) / len(val_losses) if val_losses else float('inf')
         avg_lpips = sum(lpips_scores) / len(lpips_scores) if lpips_scores else -1.0
+        avg_identity = sum(identity_scores) / len(identity_scores) if identity_scores else -1.0
+        avg_bg_psnr = sum(bg_psnr_scores) / len(bg_psnr_scores) if bg_psnr_scores else -1.0
+        
+        # Log kết quả
+        logger.info(f"  📊 Validation: loss={avg_val_loss:.5f} | LPIPS={avg_lpips:.4f} | "
+                     f"Identity={avg_identity:.4f} | BG_PSNR={avg_bg_psnr:.1f}dB")
         
         # Trả UNet về train mode
         self.unet.train()
@@ -1225,7 +1269,9 @@ class Stage2Trainer:
         
         return {
             'val_loss': avg_val_loss,
-            'val_lpips': avg_lpips
+            'val_lpips': avg_lpips,
+            'val_identity': avg_identity,
+            'val_background': avg_bg_psnr,
         }
 
     def _save_safetensors_safe(self, state_dict, path: str):
@@ -1282,6 +1328,55 @@ class Stage2Trainer:
         except Exception:
             pass
 
+    def _delete_hf_file(self, filename: str):
+        """Xoa mot file checkpoint cu tren HF Hub neu co."""
+        if not (HF_TOKEN and HF_REPO_ID):
+            return False
+        try:
+            from huggingface_hub import delete_file
+            delete_file(
+                path_in_repo=f"{HF_SUBFOLDER}/{filename}",
+                repo_id=HF_REPO_ID,
+                repo_type=HF_REPO_TYPE,
+                token=HF_TOKEN,
+                commit_message=f"prune: {filename}",
+            )
+            logger.info(f"  HF prune: removed {filename}")
+            return True
+        except Exception as e:
+            logger.warning(f"  HF prune skipped ({filename}): {e}")
+            return False
+
+    def _save_epoch_snapshots(self, epoch_num: int):
+        """Luu snapshot theo tung epoch de benchmark va rollback."""
+        injector_name = f"injector_epoch_{epoch_num:03d}.safetensors"
+        lora_name = f"lora_epoch_{epoch_num:03d}.safetensors"
+        self._save_safetensors_safe(self.injector.state_dict(), str(self.checkpoints_dir / injector_name))
+        self._save_safetensors_safe(self._get_lora_state_dict(), str(self.checkpoints_dir / lora_name))
+        logger.info(f"  Saved epoch snapshot: {injector_name}, {lora_name}")
+
+    def _prune_old_epoch_snapshots(self, epoch_num: int, keep_last_n_epochs: int):
+        """Chi giu lai last N epoch snapshots + best/latest."""
+        if keep_last_n_epochs <= 0:
+            return
+        prune_epoch = epoch_num - keep_last_n_epochs
+        if prune_epoch <= 0:
+            return
+
+        stale_files = [
+            f"injector_epoch_{prune_epoch:03d}.safetensors",
+            f"lora_epoch_{prune_epoch:03d}.safetensors",
+        ]
+
+        for filename in stale_files:
+            temp_path = Path("/tmp/training_saves") / filename
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+            self._delete_hf_file(filename)
+
     def _plot_training_charts(self, history: dict, epoch: int):
         """
         Tạo biểu đồ Loss Chart tự động sau mỗi epoch.
@@ -1290,7 +1385,7 @@ class Stage2Trainer:
         charts_dir = self.checkpoints_dir / "charts"
         charts_dir.mkdir(parents=True, exist_ok=True)
         
-        fig, axes = plt.subplots(3, 2, figsize=(16, 18))
+        fig, axes = plt.subplots(4, 2, figsize=(16, 24))
         fig.suptitle(f"Training Stage 2 — After Epoch {epoch}", fontsize=16, fontweight='bold')
         
         steps = range(1, len(history['total_loss']) + 1)
@@ -1393,27 +1488,70 @@ class Stage2Trainer:
         ax5.legend()
         ax5.grid(True, alpha=0.3)
         
-        # --- 6. Epoch Summary Table ---
+        # --- 6. Validation Identity Similarity (mỗi epoch) ---
         ax6 = axes[2, 1]
-        ax6.axis('off')
+        val_identity = history.get('val_identity', [])
+        if val_identity and any(v > 0 for v in val_identity):
+            epochs = range(1, len(val_identity) + 1)
+            ax6.plot(epochs, val_identity, color='#9C27B0', linewidth=2.5, marker='o', markersize=8, label='Val Identity')
+            # Identity cao hơn = tốt hơn
+            valid_id = [v if v > 0 else 0.0 for v in val_identity]
+            bestIdx = np.argmax(valid_id)
+            ax6.scatter([bestIdx + 1], [val_identity[bestIdx]], color='#FFD700', s=200, zorder=5, marker='*', label=f'Best ID (Epoch {bestIdx+1})')
+            ax6.set_title('Validation Identity Similarity (↑ cao = tốt)', fontsize=13)
+            ax6.set_xticks(list(epochs))
+            ax6.set_ylim(0, 1.05)
+        else:
+            ax6.text(0.5, 0.5, 'Identity chưa có\n(cần facenet-pytorch)', ha='center', va='center', fontsize=12, transform=ax6.transAxes)
+            ax6.set_title('Validation Identity Similarity', fontsize=13)
+        ax6.set_xlabel('Epoch')
+        ax6.set_ylabel('Cosine Similarity')
+        ax6.legend()
+        ax6.grid(True, alpha=0.3)
+        
+        # --- 7. Validation Background PSNR (mỗi epoch) ---
+        ax7 = axes[3, 0]
+        val_bg = history.get('val_background', [])
+        if val_bg and any(v > 0 for v in val_bg):
+            epochs = range(1, len(val_bg) + 1)
+            ax7.plot(epochs, val_bg, color='#4CAF50', linewidth=2.5, marker='s', markersize=8, label='Val BG PSNR')
+            # PSNR cao hơn = tốt hơn
+            valid_bg = [v if v > 0 else 0.0 for v in val_bg]
+            bestIdx = np.argmax(valid_bg)
+            ax7.scatter([bestIdx + 1], [val_bg[bestIdx]], color='#FFD700', s=200, zorder=5, marker='*', label=f'Best BG (Epoch {bestIdx+1})')
+            ax7.set_title('Validation Background PSNR (↑ cao = tốt)', fontsize=13)
+            ax7.set_xticks(list(epochs))
+        else:
+            ax7.text(0.5, 0.5, 'BG PSNR chưa có', ha='center', va='center', fontsize=12, transform=ax7.transAxes)
+            ax7.set_title('Validation Background PSNR', fontsize=13)
+        ax7.set_xlabel('Epoch')
+        ax7.set_ylabel('PSNR (dB)')
+        ax7.legend()
+        ax7.grid(True, alpha=0.3)
+        
+        # --- 8. Epoch Summary Table (mở rộng thêm Identity & BG PSNR) ---
+        ax8 = axes[3, 1]
+        ax8.axis('off')
         if history['epoch_avg_loss']:
             table_data = []
             for i in range(len(history['epoch_avg_loss'])):
                 train_l = f"{history['epoch_avg_loss'][i]:.5f}"
                 val_l = f"{history.get('val_loss', [])[i]:.5f}" if i < len(history.get('val_loss', [])) else "N/A"
                 lpips_l = f"{history.get('val_lpips', [])[i]:.4f}" if i < len(history.get('val_lpips', [])) and history.get('val_lpips', [])[i] > 0 else "N/A"
-                table_data.append([f"Epoch {i+1}", train_l, val_l, lpips_l])
+                id_l = f"{history.get('val_identity', [])[i]:.4f}" if i < len(history.get('val_identity', [])) and history.get('val_identity', [])[i] > 0 else "N/A"
+                bg_l = f"{history.get('val_background', [])[i]:.1f}" if i < len(history.get('val_background', [])) and history.get('val_background', [])[i] > 0 else "N/A"
+                table_data.append([f"Ep {i+1}", train_l, val_l, lpips_l, id_l, bg_l])
             
-            table = ax6.table(
+            table = ax8.table(
                 cellText=table_data,
-                colLabels=['Epoch', 'Train Loss', 'Val Loss', 'LPIPS'],
+                colLabels=['Epoch', 'Train', 'Val', 'LPIPS', 'Identity', 'BG dB'],
                 cellLoc='center',
                 loc='center'
             )
             table.auto_set_font_size(False)
-            table.set_fontsize(11)
+            table.set_fontsize(10)
             table.scale(1.0, 1.5)
-            ax6.set_title('Epoch Summary', fontsize=13, pad=20)
+            ax8.set_title('Epoch Summary', fontsize=13, pad=20)
         
         plt.tight_layout()
         
@@ -1637,6 +1775,8 @@ class Stage2Trainer:
         Seed cố định để val set nhất quán giữa các epoch → metric so sánh được."""
         all_val_losses = []
         all_val_lpips = []
+        all_val_identity = []
+        all_val_background = []
         
         # Chọn tối đa 3 chunks CỐ ĐỊNH (sorted + lấy đầu) để val set ổn định
         # Không random shuffle — đảm bảo cùng val set giữa các epoch
@@ -1667,6 +1807,10 @@ class Stage2Trainer:
                 all_val_losses.append(metrics['val_loss'])
                 if metrics['val_lpips'] >= 0:
                     all_val_lpips.append(metrics['val_lpips'])
+                if metrics['val_identity'] >= 0:
+                    all_val_identity.append(metrics['val_identity'])
+                if metrics['val_background'] >= 0:
+                    all_val_background.append(metrics['val_background'])
                 
                 del dataset, val_subset, val_loader
                 torch.cuda.empty_cache()
@@ -1676,7 +1820,12 @@ class Stage2Trainer:
         
         avg_val = sum(all_val_losses) / len(all_val_losses) if all_val_losses else float('inf')
         avg_lpips = sum(all_val_lpips) / len(all_val_lpips) if all_val_lpips else -1.0
-        return {'val_loss': avg_val, 'val_lpips': avg_lpips}
+        avg_identity = sum(all_val_identity) / len(all_val_identity) if all_val_identity else -1.0
+        avg_background = sum(all_val_background) / len(all_val_background) if all_val_background else -1.0
+        return {
+            'val_loss': avg_val, 'val_lpips': avg_lpips,
+            'val_identity': avg_identity, 'val_background': avg_background,
+        }
     
     # ==============================================================================
     # AUTO-CACHING: Google Drive ↔ Colab Local SSD
@@ -1720,7 +1869,7 @@ class Stage2Trainer:
     # MAIN TRAINING LOOP — Chunked Loading, Global Epoch
     # ==============================================================================
     
-    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True, chunk_names=None, save_every_n_samples=1200):
+    def train_loop(self, num_epochs=1, batch_size=1, max_samples_per_chunk=0, target_size=(512, 512), accumulation_steps=8, resume=True, chunk_names=None, save_every_n_samples=1200, keep_last_n_epochs=5):
         """
         Chunked Loading – Global Epoch Training.
         1 epoch = model nhìn thấy TẤT CẢ chunks đúng 1 lần.
@@ -1775,6 +1924,7 @@ class Stage2Trainer:
             'total_loss': [], 'diffusion_loss': [], 'texture_loss': [],
             'identity_loss': [], 'latent_perceptual_loss': [],
             'epoch_avg_loss': [], 'val_loss': [], 'val_lpips': [],
+            'val_identity': [], 'val_background': [],
         }
         
         resume_chunk_index = -1  # -1 = bắt đầu epoch mới
@@ -2119,21 +2269,27 @@ class Stage2Trainer:
             )
             val_loss = val_metrics['val_loss']
             val_lpips = val_metrics['val_lpips']
+            val_identity = val_metrics.get('val_identity', -1.0)
+            val_background = val_metrics.get('val_background', -1.0)
             
             is_new_best = val_loss < best_val_loss
             val_lpips_str = f"{val_lpips:.4f}" if val_lpips >= 0 else "N/A"
+            val_id_str = f"{val_identity:.4f}" if val_identity >= 0 else "N/A"
+            val_bg_str = f"{val_background:.1f}dB" if val_background >= 0 else "N/A"
             
             if is_new_best:
                 best_val_loss = val_loss
                 best_epoch = epoch + 1
-                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} — Time: {epoch_time/60:.1f}min")
+                logger.info(f"🏆 NEW BEST! Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} — ID: {val_id_str} — BG: {val_bg_str} — Time: {epoch_time/60:.1f}min")
             else:
-                logger.info(f"Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} (Best: Ep{best_epoch}, {best_val_loss:.6f}) — Time: {epoch_time/60:.1f}min")
+                logger.info(f"Epoch {epoch+1} — Train: {avg_epoch_loss:.6f} — Val: {val_loss:.6f} — LPIPS: {val_lpips_str} — ID: {val_id_str} — BG: {val_bg_str} (Best: Ep{best_epoch}, {best_val_loss:.6f}) — Time: {epoch_time/60:.1f}min")
             
             # Ghi epoch loss history
             loss_history['epoch_avg_loss'].append(avg_epoch_loss)
             loss_history['val_loss'].append(val_loss)
             loss_history['val_lpips'].append(val_lpips if val_lpips >= 0 else 0.0)
+            loss_history['val_identity'].append(val_identity if val_identity >= 0 else 0.0)
+            loss_history['val_background'].append(val_background if val_background >= 0 else 0.0)
             
             # === SAVE WEIGHTS SAU MỖI EPOCH ===
             # An toàn vì training loop đã dừng, không có GPU conflict
@@ -2150,6 +2306,10 @@ class Stage2Trainer:
                                        str(self.checkpoints_dir / "injector_latest.safetensors"))
             self._save_safetensors_safe(self._get_lora_state_dict(),
                                        str(self.checkpoints_dir / "lora_latest.safetensors"))
+
+            # Save per-epoch snapshots để benchmark giữa các epoch
+            self._save_epoch_snapshots(epoch + 1)
+            self._prune_old_epoch_snapshots(epoch + 1, keep_last_n_epochs)
             
             # Save best (chỉ khi val_loss tốt hơn)
             if is_new_best:
@@ -2177,7 +2337,7 @@ class Stage2Trainer:
                 except Exception:
                     pass
             
-            logger.info(f"  ✅ Epoch {epoch+1} saved: injector + lora → /tmp/ + HF Hub")
+            logger.info(f"  ✅ Epoch {epoch+1} saved: latest + epoch snapshots (+ best nếu có)")
             
             # Save resume state cho epoch mới (dễ resume đầu epoch tiếp theo)
             self._save_resume_state({
@@ -2234,6 +2394,7 @@ if __name__ == "__main__":
     parser.add_argument("--fresh", action="store_true", help="Train từ đầu, KHÔNG load checkpoint cũ")
     parser.add_argument("--chunk-names", type=str, default="", help="Chỉ định cụ thể chunks để train, cách nhau bằng dấu phẩy (vd: processed_001,processed_002)")
     parser.add_argument("--save-steps", type=int, default=1200, help="Save checkpoint mỗi N samples (0=tắt mid-chunk save)")
+    parser.add_argument("--keep-last-n-epochs", type=int, default=5, help="Giữ lại N epoch snapshots gần nhất trên HF, ngoài best/latest")
     args = parser.parse_args()
     
     chunk_names_list = [name.strip() for name in args.chunk_names.split(",")] if args.chunk_names else None
@@ -2248,4 +2409,5 @@ if __name__ == "__main__":
         resume=not args.fresh,
         chunk_names=chunk_names_list,
         save_every_n_samples=args.save_steps,
+        keep_last_n_epochs=args.keep_last_n_epochs,
     )

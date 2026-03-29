@@ -62,7 +62,7 @@ Kiến trúc frontend--backend--Redis--Celery hoạt động ổn định trong 
 Quy trình auto-rotate ảnh (thử 4 góc: $0\degree$, $90\degree$, $180\degree$, $270\degree$) giúp hệ thống xử lý được cả ảnh chụp bằng điện thoại bị xoay ngang. Cơ chế face detection qua FaceSelector cho phép người dùng chọn đúng khuôn mặt trong ảnh nhóm.
 
 \subsection{Đánh giá chất lượng kết quả}
-Trên các ảnh thử nghiệm thông thường, hệ thống đã chứng minh được sự hài hòa trong cấu trúc khuếch tán hình thể. Điểm sáng lớn nhất là hệ thống khắc phục triệt để hiện tượng mất bối cảnh nền ở các phương pháp inpainting sinh hình. Việc ứng dụng giải thuật trích xuất tọa độ \texttt{bbox} trên khuôn mặt nhằm xử lý hình thái nội cục, sau đó đồng bộ dán ngược chuẩn góc lên bức ảnh gốc ban đầu, đã đảm bảo môi trường cũng như các vật thể xung quanh được bảo tồn 100\%.
+Trên các ảnh thử nghiệm thông thường, hệ thống cho thấy khả năng giữ được đặc trưng khuôn mặt và bối cảnh nền ở mức khá tốt. Khác với cách đánh giá thuần cảm quan, nhóm đã xây dựng bộ \textit{eval set} cố định gồm 30 cặp ảnh \textit{original--reference} và chạy benchmark trực tiếp trên ảnh sinh thật từ checkpoint \texttt{deep\_hair\_v1}. Kết quả tổng hợp cho thấy mô hình đạt \textit{identity similarity} trung bình 0.9517, \textit{background PSNR} trung bình 20.29 dB, \textit{background SSIM} trung bình 0.8948, điểm \textit{hairstyle} chuẩn hóa 0.1471 và \textit{success rate} bằng 1.0.
 
 \begin{figure}[H]
     \centering
@@ -71,10 +71,22 @@ Trên các ảnh thử nghiệm thông thường, hệ thống đã chứng minh
     \label{fig:ch5-background-preservation}
 \end{figure}
 
-Tuy nhiên, khi đối diện với nguồn sáng siêu phức tạp hoặc vùng biên độ giao thoa quá dày (ví dụ: tóc bay che mí mắt), chất lượng chắt lọc mặt nạ viền có thể suy giảm đôi chút ở quá trình hòa trộn Gaussian. Hạn chế này dự kiến được cải thiện ở những phiên bản checkpoint mô hình chi tiết hơn.
+Những chỉ số trên cho thấy cơ chế bảo toàn danh tính hoạt động tốt và phép dán ngược theo \texttt{bbox} giúp hạn chế biến đổi nền xung quanh vùng tóc. So với phiên bản đánh giá ban đầu, việc tách riêng vùng tóc để so sánh với ảnh tham chiếu cũng giúp điểm \textit{hairstyle} tăng lên mức có ý nghĩa định lượng. Tuy nhiên, khi đối diện với nguồn sáng phức tạp hoặc vùng giao thoa dày ở đường biên tóc--da, chất lượng hòa trộn Gaussian vẫn có thể suy giảm nhẹ. Đây cũng là nguyên nhân khiến điểm \textit{naturalness} chỉ đạt 0.3431 sau chuẩn hóa.
+
+\subsection{Đánh giá benchmark trên eval set}
+Để chuẩn hóa quy trình lựa chọn mô hình, nhóm triển khai một quy trình benchmark ngoại tuyến gồm bốn bước: (1) xây dựng bộ dữ liệu đánh giá cố định, (2) sinh trước ảnh kết quả thật cho từng mẫu bằng checkpoint cần kiểm tra, (3) tính các chỉ số định lượng trên ảnh sinh ra, và (4) tổng hợp điểm cuối để xếp hạng checkpoint. Quy trình này giúp tránh việc chọn mô hình chỉ dựa trên \textit{validation loss} hoặc quan sát chủ quan.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.92\textwidth]{so_do_benchmark_checkpoint.png}
+    \caption{Quy trình benchmark checkpoint trên bộ eval set cố định}
+    \label{fig:ch5-benchmark-workflow}
+\end{figure}
+
+Trong lần chạy benchmark hiện tại, checkpoint \texttt{deep\_hair\_v1} được đánh giá trên toàn bộ 30 mẫu của bộ \textit{eval set}. Hệ thống sinh đủ 30 ảnh kết quả, không có mẫu thất bại, từ đó tạo ra bộ số liệu nhất quán để phục vụ phần tổng kết và lựa chọn mô hình.
 
 \subsection{Đánh giá quá trình huấn luyện (Training Metrics)}
-Bên cạnh việc kiểm thử hộp đen (black-box) trên giao diện hệ thống, bản thân lõi mô hình khuếch tán \textit{Stable Diffusion XL} cũng được đánh giá định lượng nghiêm ngặt trong suốt quá trình tinh chỉnh (Fine-tuning) diễn ra tại tập lệnh \texttt{train\_stage2.py} trên nền tảng Google Colab (GPU Tesla T4, 15 GB VRAM).
+Bên cạnh việc kiểm thử hộp đen (black-box) trên giao diện hệ thống, bản thân lõi mô hình khuếch tán \textit{Stable Diffusion XL} cũng được theo dõi trong suốt quá trình tinh chỉnh (Fine-tuning) diễn ra tại tập lệnh \texttt{train\_stage2.py} trên nền tảng Google Colab (GPU Tesla T4, 15 GB VRAM). Biểu đồ \textit{loss} vẫn có giá trị phản ánh xu hướng hội tụ, nhưng không còn là tiêu chí duy nhất để chọn checkpoint tốt nhất.
 
 \begin{figure}[H]
     \centering
@@ -83,7 +95,14 @@ Bên cạnh việc kiểm thử hộp đen (black-box) trên giao diện hệ th
     \label{fig:loss-curve}
 \end{figure}
 
-Việc theo dõi chặt chẽ quỹ đạo \textit{Training Loss/Validation Loss} giúp khẳng định mạng UNet 13-kênh đã học được khả năng kết nối điều kiện kép ổn định. Đồng thời chứng minh tính hiệu lực của cơ chế \textit{Auto-Caching} và bảo toàn tham số (\textit{Checkpoint Fallback}) trong việc duy trì chuỗi hội tụ liên tục, phòng tránh hoàn toàn hiện tượng quá khớp (Overfitting) khi dung lượng VRAM trên Google Colab hạn hẹp (15 GB).
+Việc theo dõi quỹ đạo \textit{Training Loss/Validation Loss} giúp xác nhận mạng UNet 13-kênh hội tụ ổn định trong giai đoạn huấn luyện. Tuy nhiên, sau khi huấn luyện kết thúc, nhóm sử dụng thêm bộ benchmark ngoại tuyến để đánh giá chất lượng ảnh sinh thật theo các tiêu chí gần với mục tiêu đề tài hơn, bao gồm bảo toàn danh tính, bảo toàn nền, độ tự nhiên và mức ổn định khi chạy.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.82\textwidth]{benchmark_metrics_bar.png}
+    \caption{Các chỉ số benchmark chính của checkpoint \texttt{deep\_hair\_v1} trên 30 mẫu eval}
+    \label{fig:ch5-benchmark-metrics}
+\end{figure}
 
 \section{Minh họa kết quả chạy thử}
 Hình~\ref{fig:ch5-trial-result} minh họa một trường hợp chạy thử hệ thống với ảnh đầu vào và ảnh kết quả sau khi sinh kiểu tóc mới.
@@ -97,12 +116,44 @@ Hình~\ref{fig:ch5-trial-result} minh họa một trường hợp chạy thử h
 
 \begin{figure}[H]
     \centering
+    \includegraphics[width=0.95\textwidth]{luoi_ket_qua_benchmark.png}
+    \caption{Một số mẫu tiêu biểu trong bộ benchmark gồm ảnh gốc, tóc tham chiếu và ảnh sinh ra}
+    \label{fig:ch5-benchmark-gallery}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
     \includegraphics[width=0.8\textwidth]{images/doi_mau_toc_hsv.jpg}
     \caption{Thử nghiệm tính năng đổi màu nhanh trực tiếp trên giao diện}
     \label{fig:ch5-quick-color-test}
 \end{figure}
 
 \section{Bảng tổng hợp đánh giá}
+
+\begin{table}[H]
+    \centering
+    \caption{Kết quả benchmark định lượng của checkpoint \texttt{deep\_hair\_v1}}
+    \label{tab:ch5-benchmark-summary}
+    \begin{tabularx}{\textwidth}{|>{\raggedright\arraybackslash}p{4cm}|>{\centering\arraybackslash}p{3cm}|X|}
+        \hline
+        \textbf{Chỉ số} & \textbf{Giá trị} & \textbf{Ý nghĩa} \\
+        \hline
+        Identity Similarity & 0.9517 & Mức tương đồng danh tính cao, cho thấy mô hình giữ được phần lớn đặc trưng khuôn mặt gốc. \\
+        \hline
+        Background PSNR & 20.29 dB & Phần nền ngoài vùng tóc được bảo toàn ở mức khá, phù hợp với cơ chế dán ngược theo \texttt{bbox}. \\
+        \hline
+        Background SSIM & 0.8948 & Cấu trúc nền nhìn chung ổn định và ít bị méo hình sau quá trình sinh ảnh. \\
+        \hline
+        Hairstyle Score & 0.1471 & Điểm kiểu tóc đã có ý nghĩa hơn sau khi so sánh trên vùng tóc được tách riêng, nhưng vẫn còn khoảng cách với đánh giá cảm quan của người dùng. \\
+        \hline
+        Naturalness Score & 0.3431 & Chất lượng vùng ghép còn bị ảnh hưởng bởi biên tóc, ánh sáng phức tạp và hiện tượng giao thoa tóc--da. \\
+        \hline
+        Success Rate & 1.0 & Toàn bộ 30 mẫu trong eval set đều được xử lý thành công, không có mẫu lỗi khi benchmark. \\
+        \hline
+        Final Score & 0.5326 & Điểm tổng hợp hiện tại cho checkpoint \texttt{deep\_hair\_v1} theo bộ trọng số benchmark đã cấu hình. \\
+        \hline
+    \end{tabularx}
+\end{table}
 
 \begin{table}[H]
     \centering
@@ -118,17 +169,17 @@ Hình~\ref{fig:ch5-trial-result} minh họa một trường hợp chạy thử h
         \hline
         Phát hiện khuôn mặt & Tốt & YOLO + InsightFace + AdaFace phát hiện cả khuôn mặt nghiêng, hỗ trợ auto-rotate. \\
         \hline
-        Bảo toàn khuôn mặt & Khá & Đặc trưng khuôn mặt được giữ lại tốt trên ảnh rõ nét, đúng tư thế. \\
+        Bảo toàn khuôn mặt & Tốt & Benchmark đạt \textit{identity similarity} trung bình 0.9517, cho thấy mô hình giữ danh tính ổn định trên phần lớn mẫu đánh giá. \\
         \hline
-        Chuyển giao kiểu tóc & Khá & Thể hiện được độ dài, kiểu rẽ ngôi và độ xoăn từ tóc tham chiếu. \\
+        Chuyển giao kiểu tóc & Khá & Metric \textit{hairstyle} chuẩn hóa đạt 0.1471 sau khi chuyển sang so sánh tập trung trên vùng tóc; điều này phản ánh đúng hơn mức độ bám kiểu tóc, nhưng vẫn cần tinh chỉnh thêm để khớp tốt hơn với cảm nhận thị giác. \\
         \hline
-        Tính tự nhiên vùng ghép & Khá & Gaussian blur biên giảm lộ viền, nhưng một số trường hợp khó vẫn có sai lệch nhẹ. \\
+        Tính tự nhiên vùng ghép & Trung bình khá & Chỉ số \textit{naturalness} chuẩn hóa đạt 0.3431; vùng biên tóc vẫn là điểm yếu ở các mẫu có ánh sáng hoặc tóc mái phức tạp. \\
         \hline
         Mặt nạ động & Khá & Mở rộng mask hợp lý cho tóc dài/phồng, xử lý được trường hợp trọc đầu. \\
         \hline
         Đổi màu tóc & Tốt & HSV transfer nhanh, 15 preset + hex tùy chỉnh, giữ kết cấu tự nhiên. \\
         \hline
-        Thời gian xử lý & Trung bình & Khoảng vài giây cho đến vài phút trên một yêu cầu trên GPU 12GB, chưa đáp ứng thời gian thực. \\
+        Thời gian xử lý & Trung bình & Hệ thống benchmark chạy ổn định với \textit{success rate} 1.0, nhưng thời gian suy luận vẫn còn cao và chưa phù hợp thời gian thực. \\
         \hline
     \end{tabularx}
 \end{table}

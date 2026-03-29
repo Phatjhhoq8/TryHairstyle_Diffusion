@@ -1,0 +1,275 @@
+{
+  "_comment": "Bộ eval cố định gồm 30 ảnh FFHQ gốc và 30 ảnh tóc tham chiếu từ processed_001/hair_only_images. Ghép cặp theo thứ tự 1-1.",
+  "samples": [
+    {
+      "id": "sample_001",
+      "original_image": "original/00001.png",
+      "reference_hair_image": "reference/AP058337-055.png",
+      "mask_image": null,
+      "group": "short_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_002",
+      "original_image": "original/00002.png",
+      "reference_hair_image": "reference/AP058337-057.png",
+      "mask_image": null,
+      "group": "short_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_003",
+      "original_image": "original/00003.png",
+      "reference_hair_image": "reference/AP058337-166.png",
+      "mask_image": null,
+      "group": "long_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_004",
+      "original_image": "original/00004.png",
+      "reference_hair_image": "reference/AP058337-173.png",
+      "mask_image": null,
+      "group": "long_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_005",
+      "original_image": "original/00005.png",
+      "reference_hair_image": "reference/AP060786-037.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_006",
+      "original_image": "original/00006.png",
+      "reference_hair_image": "reference/AP060786-056.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_007",
+      "original_image": "original/00007.png",
+      "reference_hair_image": "reference/AP060786-057.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_008",
+      "original_image": "original/00008.png",
+      "reference_hair_image": "reference/AP060786-165.png",
+      "mask_image": null,
+      "group": "long_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_009",
+      "original_image": "original/00009.png",
+      "reference_hair_image": "reference/AP060786-170.png",
+      "mask_image": null,
+      "group": "long_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_010",
+      "original_image": "original/00010.png",
+      "reference_hair_image": "reference/AP062542-171.png",
+      "mask_image": null,
+      "group": "voluminous_or_special",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_011",
+      "original_image": "original/00011.png",
+      "reference_hair_image": "reference/AP062542-172.png",
+      "mask_image": null,
+      "group": "voluminous_or_special",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_012",
+      "original_image": "original/00012.png",
+      "reference_hair_image": "reference/AP062542-177.png",
+      "mask_image": null,
+      "group": "voluminous_or_special",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_013",
+      "original_image": "original/00013.png",
+      "reference_hair_image": "reference/AP064116-007.png",
+      "mask_image": null,
+      "group": "short_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_014",
+      "original_image": "original/00014.png",
+      "reference_hair_image": "reference/AP064116-032.png",
+      "mask_image": null,
+      "group": "short_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_015",
+      "original_image": "original/00015.png",
+      "reference_hair_image": "reference/AP064116-058.png",
+      "mask_image": null,
+      "group": "easy_front",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_016",
+      "original_image": "original/00016.png",
+      "reference_hair_image": "reference/AP064116-061.png",
+      "mask_image": null,
+      "group": "easy_front",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_017",
+      "original_image": "original/00017.png",
+      "reference_hair_image": "reference/AP064116-063.png",
+      "mask_image": null,
+      "group": "easy_front",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_018",
+      "original_image": "original/00018.png",
+      "reference_hair_image": "reference/AP064116-064.png",
+      "mask_image": null,
+      "group": "easy_front",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_019",
+      "original_image": "original/00019.png",
+      "reference_hair_image": "reference/AP064116-065.png",
+      "mask_image": null,
+      "group": "easy_front",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_020",
+      "original_image": "original/00020.png",
+      "reference_hair_image": "reference/AP064116-114.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_021",
+      "original_image": "original/00021.png",
+      "reference_hair_image": "reference/AP064116-115.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_022",
+      "original_image": "original/00022.png",
+      "reference_hair_image": "reference/AP064116-116.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_023",
+      "original_image": "original/00023.png",
+      "reference_hair_image": "reference/AP064116-117.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_024",
+      "original_image": "original/00024.png",
+      "reference_hair_image": "reference/AP064116-118.png",
+      "mask_image": null,
+      "group": "bangs_or_layered",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_025",
+      "original_image": "original/00025.png",
+      "reference_hair_image": "reference/AP064116-123.png",
+      "mask_image": null,
+      "group": "voluminous_or_special",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_026",
+      "original_image": "original/00026.png",
+      "reference_hair_image": "reference/AP064116-124.png",
+      "mask_image": null,
+      "group": "voluminous_or_special",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_027",
+      "original_image": "original/00027.png",
+      "reference_hair_image": "reference/AP064116-174.png",
+      "mask_image": null,
+      "group": "long_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_028",
+      "original_image": "original/00028.png",
+      "reference_hair_image": "reference/AP064116-175.png",
+      "mask_image": null,
+      "group": "long_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_029",
+      "original_image": "original/00029.png",
+      "reference_hair_image": "reference/AP064116-176.png",
+      "mask_image": null,
+      "group": "long_hair",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    },
+    {
+      "id": "sample_030",
+      "original_image": "original/00030.png",
+      "reference_hair_image": "reference/AP064116-179.png",
+      "mask_image": null,
+      "group": "voluminous_or_special",
+      "bbox": null,
+      "notes": "ffhq + processed_001 hair_only"
+    }
+  ]
+}

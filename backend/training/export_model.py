@@ -250,6 +250,8 @@ class CheckpointManager:
             self.checkpoints_dir / "injector_best.safetensors",
             self.checkpoints_dir / "injector_latest.safetensors",
             self.checkpoints_dir / "injector_backup.safetensors",
+            Path(checkpoint_path).with_name("injector.safetensors"),
+            self.project_dir / "backend" / "training" / "models" / "injector.safetensors",
         ])
         
         for c in candidates:

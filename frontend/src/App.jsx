@@ -22,6 +22,7 @@ export default function App() {
   const [promptBuilder, setPromptBuilder] = useState(DEFAULT_PROMPT_BUILDER);
   const [promptPriority, setPromptPriority] = useState(50);
   const [promptPreview, setPromptPreview] = useState('high quality realistic hairstyle');
+  const [promptPreviewLanguage, setPromptPreviewLanguage] = useState('en');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const promptPriorityMemory = useRef(50);
@@ -73,15 +74,18 @@ export default function App() {
       try {
         if (language === 'en') {
           setPromptPreview(sourcePrompt);
+          setPromptPreviewLanguage('en');
         } else {
           const data = await translatePrompt(sourcePrompt, language);
           if (!controller.signal.aborted) {
             setPromptPreview(data.translated_prompt || sourcePrompt);
+            setPromptPreviewLanguage(data.translated_prompt ? 'en' : language);
           }
         }
       } catch {
         if (!controller.signal.aborted) {
           setPromptPreview(sourcePrompt);
+          setPromptPreviewLanguage(language);
           setPreviewError('Không thể cập nhật bản dịch, sẽ dùng prompt gốc nếu cần.');
         }
       } finally {
@@ -286,6 +290,7 @@ export default function App() {
 
     const color = selectedColor !== 'none' ? selectedColor : null;
     const promptToSend = modelSupport.promptEnabled ? promptPreview : sourcePrompt;
+    const generateLanguage = modelSupport.promptEnabled ? promptPreviewLanguage : language;
     const { task_id } = await generateHair(
       originalFaceFile,
       faceCropFile,
@@ -293,7 +298,7 @@ export default function App() {
       promptToSend,
       color,
       colorIntensity,
-      language,
+      generateLanguage,
       aiModel,
       bbox,
       promptPriority,

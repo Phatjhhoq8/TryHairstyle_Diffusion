@@ -145,12 +145,9 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         # Nếu có hair_color → thêm mô tả màu vào prompt
         finalPrompt = prompt
         if hair_color:
-            from backend.app.services.hair_color_service import PRESET_COLORS
-            colorLabel = hair_color
-            if hair_color.lower() in PRESET_COLORS:
-                colorLabel = PRESET_COLORS[hair_color.lower()]["label"]
-            finalPrompt = f"{colorLabel} colored hair, {prompt}"
-            print(f"  🎨 Hair color requested: {hair_color} → prompt: '{finalPrompt}'")
+            promptColor = HairColorService.get_prompt_color_name(hair_color)
+            finalPrompt = f"{promptColor} colored hair, {prompt}"
+            print(f"  🎨 Hair color requested: {hair_color} → prompt color: '{promptColor}'")
         
         original_size = user_pil.size  # (w, h) — lưu kích thước gốc
         result_image = diffusion_service.generate(

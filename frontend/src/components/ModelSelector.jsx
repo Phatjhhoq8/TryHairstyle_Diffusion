@@ -4,12 +4,12 @@ const MODELS = [
   {
     id: 'TryHairstyle',
     label: 'TryHairstyle',
-    desc: 'Bản nâng cấp có prompt priority và prompt preview.',
+    desc: '',
   },
   {
     id: 'TryOnHairstyle',
     label: 'TryOnHairstyle',
-    desc: 'Bản research gốc, ưu tiên ảnh tham chiếu.',
+    desc: '',
   },
 ];
 

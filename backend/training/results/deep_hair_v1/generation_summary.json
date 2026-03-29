@@ -1,0 +1,8 @@
+{
+  "checkpoint": "C:\\Users\\Admin\\Desktop\\TryHairStyle\\backend\\training\\models\\deep_hair_v1.safetensors",
+  "output_dir": "C:\\Users\\Admin\\Desktop\\TryHairStyle\\backend\\training\\results\\deep_hair_v1\\generated",
+  "generated": 29,
+  "skipped": 1,
+  "failed": 0,
+  "failures": []
+}

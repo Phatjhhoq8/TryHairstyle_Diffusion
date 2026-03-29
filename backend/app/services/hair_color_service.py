@@ -12,21 +12,54 @@ from PIL import Image
 
 # Bảng màu preset phổ biến — key: tên màu, value: (H, S trong HSV range 0-179, 0-255)
 PRESET_COLORS = {
-    "black": {"hex": "#1a1a1a", "hsv": (0, 10, 30), "label": "Đen"},
-    "dark_brown": {"hex": "#3b2213", "hsv": (15, 180, 60), "label": "Nâu đậm"},
-    "brown": {"hex": "#6b3a2a", "hsv": (12, 160, 110), "label": "Nâu"},
-    "light_brown": {"hex": "#a0673a", "hsv": (20, 150, 160), "label": "Nâu sáng"},
-    "blonde": {"hex": "#d4a54a", "hsv": (28, 160, 210), "label": "Vàng (Blonde)"},
-    "platinum": {"hex": "#e8dcc8", "hsv": (30, 40, 230), "label": "Bạch kim"},
-    "red": {"hex": "#8b2500", "hsv": (6, 220, 140), "label": "Đỏ"},
-    "auburn": {"hex": "#922724", "hsv": (2, 190, 146), "label": "Nâu đỏ (Auburn)"},
-    "ginger": {"hex": "#c45e28", "hsv": (16, 200, 196), "label": "Cam gừng"},
-    "pink": {"hex": "#d4608a", "hsv": (165, 140, 212), "label": "Hồng"},
-    "blue": {"hex": "#2a52be", "hsv": (110, 190, 190), "label": "Xanh dương"},
-    "purple": {"hex": "#6a0dad", "hsv": (135, 220, 170), "label": "Tím"},
-    "green": {"hex": "#2e8b57", "hsv": (75, 180, 140), "label": "Xanh lá"},
-    "silver": {"hex": "#c0c0c0", "hsv": (0, 5, 192), "label": "Bạc"},
-    "white": {"hex": "#f0ede5", "hsv": (30, 10, 240), "label": "Trắng"},
+    "black": {"hex": "#1a1a1a", "hsv": (0, 10, 30), "label": "Đen", "prompt": "black"},
+    "dark_brown": {"hex": "#3b2213", "hsv": (15, 180, 60), "label": "Nâu đậm", "prompt": "dark brown"},
+    "brown": {"hex": "#6b3a2a", "hsv": (12, 160, 110), "label": "Nâu", "prompt": "brown"},
+    "light_brown": {"hex": "#a0673a", "hsv": (20, 150, 160), "label": "Nâu sáng", "prompt": "light brown"},
+    "blonde": {"hex": "#d4a54a", "hsv": (28, 160, 210), "label": "Vàng (Blonde)", "prompt": "blonde"},
+    "platinum": {"hex": "#e8dcc8", "hsv": (30, 40, 230), "label": "Bạch kim", "prompt": "platinum blonde"},
+    "red": {"hex": "#8b2500", "hsv": (6, 220, 140), "label": "Đỏ", "prompt": "red"},
+    "auburn": {"hex": "#922724", "hsv": (2, 190, 146), "label": "Nâu đỏ (Auburn)", "prompt": "auburn"},
+    "ginger": {"hex": "#c45e28", "hsv": (16, 200, 196), "label": "Cam gừng", "prompt": "ginger"},
+    "pink": {"hex": "#d4608a", "hsv": (165, 140, 212), "label": "Hồng", "prompt": "pink"},
+    "blue": {"hex": "#2a52be", "hsv": (110, 190, 190), "label": "Xanh dương", "prompt": "blue"},
+    "purple": {"hex": "#6a0dad", "hsv": (135, 220, 170), "label": "Tím", "prompt": "purple"},
+    "green": {"hex": "#2e8b57", "hsv": (75, 180, 140), "label": "Xanh lá", "prompt": "green"},
+    "silver": {"hex": "#c0c0c0", "hsv": (0, 5, 192), "label": "Bạc", "prompt": "silver"},
+    "white": {"hex": "#f0ede5", "hsv": (30, 10, 240), "label": "Trắng", "prompt": "white"},
+}
+
+COLOR_NAME_ALIASES = {
+    "den": "black",
+    "đen": "black",
+    "nau dam": "dark_brown",
+    "nâu đậm": "dark_brown",
+    "nau": "brown",
+    "nâu": "brown",
+    "nau sang": "light_brown",
+    "nâu sáng": "light_brown",
+    "vang": "blonde",
+    "vàng": "blonde",
+    "bach kim": "platinum",
+    "bạch kim": "platinum",
+    "do": "red",
+    "đỏ": "red",
+    "nau do": "auburn",
+    "nâu đỏ": "auburn",
+    "cam gung": "ginger",
+    "cam gừng": "ginger",
+    "hong": "pink",
+    "hồng": "pink",
+    "xanh duong": "blue",
+    "xanh dương": "blue",
+    "tim": "purple",
+    "tím": "purple",
+    "xanh la": "green",
+    "xanh lá": "green",
+    "bac": "silver",
+    "bạc": "silver",
+    "trang": "white",
+    "trắng": "white",
 }
 
 
@@ -117,17 +150,42 @@ class HairColorService:
             tuple (H: 0-179, S: 0-255, V: 0-255)
         """
         # Kiểm tra preset
-        colorLower = color.lower().strip()
-        if colorLower in PRESET_COLORS:
-            return PRESET_COLORS[colorLower]["hsv"]
+        colorKey = self.normalize_color_name(color)
+        if colorKey in PRESET_COLORS:
+            return PRESET_COLORS[colorKey]["hsv"]
 
         # Parse hex code
-        if colorLower.startswith("#") and len(colorLower) in (4, 7):
-            return self._hexToHsv(colorLower)
+        if colorKey.startswith("#") and len(colorKey) in (4, 7):
+            return self._hexToHsv(colorKey)
 
         # Fallback: trả về nâu đậm
         print(f"⚠️ Màu '{color}' không nhận dạng được, dùng mặc định nâu đậm")
         return PRESET_COLORS["dark_brown"]["hsv"]
+
+    @staticmethod
+    def normalize_color_name(color: str) -> str:
+        if not color:
+            return ""
+
+        colorLower = color.lower().strip()
+        if colorLower in PRESET_COLORS:
+            return colorLower
+
+        return COLOR_NAME_ALIASES.get(colorLower, colorLower)
+
+    @staticmethod
+    def get_prompt_color_name(color: str) -> str:
+        if not color:
+            return ""
+
+        normalized = HairColorService.normalize_color_name(color)
+        if normalized in PRESET_COLORS:
+            return PRESET_COLORS[normalized].get("prompt", normalized.replace("_", " "))
+
+        if normalized.startswith("#"):
+            return normalized
+
+        return normalized.replace("_", " ")
 
     def _hexToHsv(self, hexColor: str) -> tuple:
         """

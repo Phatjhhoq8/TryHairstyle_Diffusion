@@ -13,16 +13,18 @@
     \item \textbf{Mặt nạ động nội suy:} Cơ chế tính khối lượng diện tích mở rộng dựa trên so sánh mẫu và ảnh gốc.
     \item \textbf{Trải nghiệm tiện ích Giao diện mở rộng:} 8 thư viện React thành phần tối ưu thao tác bằng một cú nhấp chuột đa chức năng (Đổi màu tóc tức thời hệ HSV, Dịch cú pháp Prompt Việt-Anh tự động, thanh trượt dọn rác giao diện bằng nút Clear).
     \item \textbf{Kiến trúc bất đồng bộ \& Microservices:} FastAPI + Celery + Redis xử lý tác vụ không đồng bộ; kết hợp cơ chế triển khai vùng chứa (Container) Docker Compose trích xuất kết nối liên GPU passthrough toàn diện.
+    \item \textbf{Bổ sung benchmark ngoại tuyến cho checkpoint:} Hệ thống đã có bộ \textit{eval set} cố định 30 mẫu, quy trình sinh ảnh thật cho từng checkpoint và cơ chế tổng hợp các chỉ số \textit{identity}, \textit{hairstyle}, \textit{background}, \textit{naturalness}, \textit{runtime/stability} để hỗ trợ chọn mô hình đáng tin cậy hơn.
 \end{itemize}
 
 \section{Đánh giá ưu và nhược điểm hệ thống}
 
 \subsection{Ưu điểm nổi bật}
 \begin{itemize}
-    \item \textbf{Chất lượng sinh ảnh và bảo toàn nhân dạng cao:} Giao thoa phương pháp phân rã mặt nạ động mở rộng và cơ chế điều kiện kép, tái lập thành công ánh sáng, độ đổ bóng vật lý.
-    \item \textbf{Đảm bảo khoảng 80\% bối cảnh nền:} Việc áp dụng nội suy trên vùng cắt \texttt{bbox} giúp hạn chế sai lệch bối cảnh phía sau. Tuy nhiên, do cần mở rộng tương đối mặt nạ tóc để phù hợp với kiểu tóc mẫu, một phần bối cảnh vẫn có thể bị ảnh hưởng.
+    \item \textbf{Chất lượng sinh ảnh và bảo toàn nhân dạng cao:} Benchmark hiện tại cho \textit{identity similarity} trung bình 0.9517, cho thấy mô hình giữ được phần lớn đặc trưng khuôn mặt trên bộ eval set 30 mẫu.
+    \item \textbf{Bảo toàn bối cảnh nền ở mức khá:} Chỉ số \textit{background PSNR} trung bình đạt 20.29 dB và \textit{background SSIM} đạt 0.8948. Điều này phù hợp với cơ chế dán ngược theo \texttt{bbox}, giúp phần nền ngoài vùng tóc ít bị biến đổi đáng kể.
     \item \textbf{Phục vụ trơn tru ở phần cứng eo hẹp:} Các thiết lập hàng đợi message broker (Redis) kết hợp xử lý ngắt nhịp Celery giúp loại bỏ lỗi treo ứng dụng khi có yêu cầu cường độ cao trong UI.
     \item \textbf{Tùy biến cực mạnh giao diện Front-end:} Tính năng phiên dịch nội hàm Việt-Anh tự động, Đổi sắc thái màu nhanh và chọn model AI từ popup mang đến tính phổ cập tương tác. Thiết lập container bằng Docker Compose đưa toàn bộ cấu hình phức tạp ẩn mình.
+    \item \textbf{Đã có quy trình đánh giá lặp lại được:} Việc bổ sung \textit{eval set}, ảnh sinh thật và bảng benchmark giúp phần đánh giá bớt phụ thuộc vào cảm quan, đồng thời hỗ trợ tốt hơn cho việc chọn checkpoint sử dụng trong hệ thống. Ở lần benchmark hiện tại, checkpoint \texttt{deep\_hair\_v1} đạt \textit{final score} 0.5768.
 \end{itemize}
 
 \subsection{Hạn chế tồn đọng}
@@ -32,6 +34,7 @@
     \item \textbf{Phụ thuộc chất lượng ảnh đầu vào:} Ảnh quá mờ, che khuất nhiều hoặc ánh sáng phức tạp có thể ảnh hưởng chất lượng mask và ảnh sinh ra.
     \item \textbf{Vùng biên tóc chưa hoàn hảo:} Một số trường hợp vẫn lộ viền hoặc chuyển tiếp chưa tự nhiên tại ranh giới tóc--da.
     \item \textbf{Chất lượng ảnh sinh ra chưa ổn định:} Mặc dù trong một số trường hợp hệ thống tạo ra kết quả có chất lượng tốt, vẫn tồn tại nhiều trường hợp ảnh đầu ra không đạt yêu cầu sử dụng.
+    \item \textbf{Chỉ số bám kiểu tóc vẫn còn khó:} Sau khi chuyển sang so sánh tập trung trên vùng tóc đã tách riêng, nhóm \textit{hairstyle} đã cải thiện lên mức 0.1471, tuy nhiên vẫn thấp hơn kỳ vọng và chưa phản ánh trọn vẹn cảm nhận thị giác của người dùng trong các trường hợp tóc dài, tóc mái hoặc tóc có độ phồng lớn.
 \end{itemize}
 
 \section{Hướng phát triển}
@@ -44,7 +47,7 @@
     
     \item \textbf{Mở rộng sang video và thời gian thực:} Phát triển khả năng xử lý video hoặc thử kiểu tóc trực tiếp trên webcam, hướng đến các ứng dụng tương tác thời gian thực.
     
-    \item \textbf{Chuẩn hóa đánh giá:} Bổ sung các chỉ số định lượng như FID, và độ tương đồng danh tính (identity similarity), đồng thời xây dựng bộ benchmark phù hợp cho bài toán.
+    \item \textbf{Chuẩn hóa đánh giá ở mức sâu hơn:} Tiếp tục hoàn thiện bộ benchmark đã xây dựng bằng cách nâng cấp metric cho \textit{hairstyle similarity}, thử thêm các tiêu chí như \textit{hair-mask overlap} hoặc đặc trưng học sâu trên vùng tóc, đồng thời mở rộng thêm nhiều checkpoint để việc chọn mô hình có độ tin cậy cao hơn.
     
     \item \textbf{Triển khai trên hạ tầng đám mây:} Xây dựng hệ thống trên nền tảng điện toán đám mây nhằm đáp ứng nhu cầu truy cập đồng thời của nhiều người dùng.
     

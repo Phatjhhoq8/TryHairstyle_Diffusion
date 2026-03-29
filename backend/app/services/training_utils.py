@@ -87,10 +87,10 @@ def getDevice():
     if torch.cuda.is_available():
         device = torch.device("cuda")
         gpuName = torch.cuda.get_device_name(0)
-        print(f"[Utils] Sử dụng GPU: {gpuName}")
+        print(f"[Utils] Using GPU: {gpuName}")
     else:
         device = torch.device("cpu")
-        print("[Utils] GPU không khả dụng, sử dụng CPU")
+        print("[Utils] GPU unavailable, using CPU")
     return device
 
 

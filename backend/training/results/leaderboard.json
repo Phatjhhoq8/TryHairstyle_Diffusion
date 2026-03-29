@@ -1,0 +1,39 @@
+[
+  {
+    "per_metric_avg": {
+      "identity_similarity": 0.9516869803269704,
+      "hair_lpips": 0.5434931755065918,
+      "hair_psnr": 12.121508816878,
+      "background_ssim": 0.8948080102602641,
+      "background_psnr": 20.293050289154053,
+      "bg_ssim": 0.8948080102602641,
+      "bg_psnr": 20.293050289154053,
+      "naturalness_psnr": 20.293050090471905,
+      "runtime_seconds": 0.0,
+      "success": 1.0,
+      "success_rate": 1.0
+    },
+    "per_metric_normalized": {
+      "identity_similarity": 0.9516869708101008,
+      "hair_lpips": 0.22358118893942325,
+      "hair_psnr": 0.07071696053902769,
+      "background_ssim": 0.8948080013121842,
+      "background_psnr": 0.25732625716451973,
+      "naturalness_psnr": 0.34310166956802957,
+      "runtime_seconds": 1.0,
+      "success_rate": 0.9999999900000002
+    },
+    "per_group_score": {
+      "identity": 0.9516869708101008,
+      "hairstyle": 0.14714907473922548,
+      "background": 0.5760671292383519,
+      "naturalness": 0.34310166956802957,
+      "runtime_stability": 0.999999995
+    },
+    "final_score": 0.5768,
+    "num_samples": 30,
+    "success_rate": 1.0,
+    "checkpoint": "deep_hair_v1",
+    "checkpoint_file": "backend/training/models/deep_hair_v1.safetensors"
+  }
+]
