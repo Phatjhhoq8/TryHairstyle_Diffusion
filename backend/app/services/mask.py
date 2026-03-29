@@ -423,8 +423,14 @@ class SegmentationService:
         ref_np = np.array(ref_hair_mask_pil)
         
         # Tính diện tích (số pixel trắng)
-        user_area = (user_np > 127).sum()
-        ref_area = (ref_np > 127).sum()
+        user_area = int((user_np > 127).sum())
+        face_area = int((face_np > 127).sum())
+        ref_area = int((ref_np > 127).sum())
+
+        hair_face_ratio = user_area / max(face_area, 1)
+        is_bald = user_area < 100 or hair_face_ratio < 0.015
+        is_near_bald = user_area < 1200 or hair_face_ratio < 0.08
+        projected_scalp = False
         
         # Tính aspect ratio mask tóc reference
         ref_ys, ref_xs = np.where(ref_np > 127)
@@ -432,18 +438,23 @@ class SegmentationService:
             return hair_mask_pil
         
         # === TRƯỜNG HỢP ĐẶC BIỆT: User trọc/tóc quá ngắn ===
-        if user_area < 100:
-            self.logger.info(f"Bald user detected (area={user_area}). Projecting scalp mask.")
+        if is_bald or is_near_bald:
+            state_label = "bald" if is_bald else "near-bald"
+            self.logger.info(
+                f"{state_label.title()} user detected "
+                f"(hair_area={user_area}, face_area={face_area}, ratio={hair_face_ratio:.4f}). Projecting scalp mask."
+            )
             scalp_pil = self._project_ref_mask_for_bald(face_np, ref_np, face_info)
             scalp_np = np.array(scalp_pil)
             
             # Tính lại user_area từ scalp mask mới tạo
             user_np = scalp_np
-            user_area = (user_np > 127).sum()
+            user_area = int((user_np > 127).sum())
+            projected_scalp = user_area >= 50
             
             # Nếu scalp mask cũng rỗng (3D + OpenCV đều fail) → trả mask gốc
-            if user_area < 50:
-                self.logger.warning("Bald: scalp mask rỗng, trả mask gốc.")
+            if not projected_scalp:
+                self.logger.warning("Bald fallback: scalp mask rỗng, trả mask gốc.")
                 return hair_mask_pil
             
             # KHÔNG return ở đây — cho scalp_mask chảy tiếp vào dilate bên dưới
@@ -451,8 +462,11 @@ class SegmentationService:
         
         # Chỉ mở rộng nếu tóc mẫu lớn hơn đáng kể (× 1.5)
         if ref_area <= user_area * 1.5:
-            if user_area < 100:
-                # Bald user: scalp mask vừa đủ, không cần dilate thêm
+            if projected_scalp:
+                self.logger.info(
+                    f"Using projected scalp mask without extra dilation: "
+                    f"user_area={user_area}, ref_area={ref_area}, ratio={hair_face_ratio:.4f}"
+                )
                 return Image.fromarray(user_np)
             return hair_mask_pil  # User có tóc, không cần mở rộng
         
@@ -494,8 +508,9 @@ class SegmentationService:
         expanded = np.maximum(expanded, user_np)
         
         self.logger.info(
-            f"Mask expanded: user_area={user_area}, ref_area={ref_area}, "
-            f"ratio={ratio:.2f}, iterations={iterations}"
+            f"Mask expanded: user_area={user_area}, face_area={face_area}, ref_area={ref_area}, "
+            f"hair_face_ratio={hair_face_ratio:.4f}, ref_ratio={ratio:.2f}, iterations={iterations}, "
+            f"projected_scalp={projected_scalp}"
         )
         
         return Image.fromarray(expanded)

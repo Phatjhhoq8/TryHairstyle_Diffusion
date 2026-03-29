@@ -206,10 +206,10 @@ def process_hair_transfer(self, user_img_path: str, hair_img_path: str, prompt: 
         try:
             orig_img = Image.open(original_face_path).convert("RGB")
             res_img = Image.open(result_data["result_path"]).convert("RGB")
-            
+
             x1, y1, x2, y2 = bbox
             w, h = x2 - x1, y2 - y1
-            
+
             res_resized = res_img.resize((w, h), Image.LANCZOS)
             orig_img.paste(res_resized, (x1, y1))
             
