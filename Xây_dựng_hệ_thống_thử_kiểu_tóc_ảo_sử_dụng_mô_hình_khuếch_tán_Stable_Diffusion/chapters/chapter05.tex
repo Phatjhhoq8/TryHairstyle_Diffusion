@@ -62,7 +62,7 @@ Kiến trúc frontend--backend--Redis--Celery hoạt động ổn định trong 
 Quy trình auto-rotate ảnh (thử 4 góc: $0\degree$, $90\degree$, $180\degree$, $270\degree$) giúp hệ thống xử lý được cả ảnh chụp bằng điện thoại bị xoay ngang. Cơ chế face detection qua FaceSelector cho phép người dùng chọn đúng khuôn mặt trong ảnh nhóm.
 
 \subsection{Đánh giá chất lượng kết quả}
-Trên các ảnh thử nghiệm thông thường, hệ thống cho thấy khả năng giữ được đặc trưng khuôn mặt và bối cảnh nền ở mức khá tốt. Khác với cách đánh giá thuần cảm quan, nhóm đã xây dựng bộ \textit{eval set} cố định gồm 30 cặp ảnh \textit{original--reference} và chạy benchmark trực tiếp trên ảnh sinh thật từ checkpoint \texttt{deep\_hair\_v1}. Kết quả tổng hợp cho thấy mô hình đạt \textit{identity similarity} trung bình 0.9517, \textit{background PSNR} trung bình 20.29 dB, \textit{background SSIM} trung bình 0.8948, điểm \textit{hairstyle} chuẩn hóa 0.1471 và \textit{success rate} bằng 1.0.
+Trên các ảnh thử nghiệm thông thường, hệ thống cho thấy khả năng duy trì đặc trưng khuôn mặt và bối cảnh nền ở mức tương đối ổn định. Thay vì chỉ đánh giá theo cảm quan, tôi xây dựng bộ \textit{eval set} cố định gồm 30 cặp ảnh \textit{original--reference} và chạy benchmark trực tiếp trên ảnh sinh ra từ checkpoint \texttt{deep\_hair\_v1}. Kết quả tổng hợp cho thấy mô hình đạt \textit{identity similarity} trung bình 0.9517, \textit{background PSNR} trung bình 20.29 dB, \textit{background SSIM} trung bình 0.8948, điểm \textit{hairstyle} chuẩn hóa 0.1471 và \textit{success rate} bằng 1.0.
 
 \begin{figure}[H]
     \centering
@@ -71,10 +71,10 @@ Trên các ảnh thử nghiệm thông thường, hệ thống cho thấy khả 
     \label{fig:ch5-background-preservation}
 \end{figure}
 
-Những chỉ số trên cho thấy cơ chế bảo toàn danh tính hoạt động tốt và phép dán ngược theo \texttt{bbox} giúp hạn chế biến đổi nền xung quanh vùng tóc. So với phiên bản đánh giá ban đầu, việc tách riêng vùng tóc để so sánh với ảnh tham chiếu cũng giúp điểm \textit{hairstyle} tăng lên mức có ý nghĩa định lượng. Tuy nhiên, khi đối diện với nguồn sáng phức tạp hoặc vùng giao thoa dày ở đường biên tóc--da, chất lượng hòa trộn Gaussian vẫn có thể suy giảm nhẹ. Đây cũng là nguyên nhân khiến điểm \textit{naturalness} chỉ đạt 0.3431 sau chuẩn hóa.
+Những chỉ số trên cho thấy cơ chế bảo toàn danh tính hoạt động ổn định và phép dán ngược theo \texttt{bbox} giúp hạn chế biến đổi nền xung quanh vùng tóc. So với phiên bản đánh giá ban đầu, việc tách riêng vùng tóc để so sánh với ảnh tham chiếu cũng làm tăng điểm \textit{hairstyle} theo hướng phản ánh rõ hơn mức độ bám kiểu tóc. Tuy nhiên, trong các trường hợp có nguồn sáng phức tạp hoặc vùng giao thoa dày tại đường biên tóc--da, chất lượng hòa trộn Gaussian vẫn có thể suy giảm. Đây cũng là một nguyên nhân khiến điểm \textit{naturalness} đạt 0.3431 sau chuẩn hóa.
 
 \subsection{Đánh giá benchmark trên eval set}
-Để chuẩn hóa quy trình lựa chọn mô hình, nhóm triển khai một quy trình benchmark ngoại tuyến gồm bốn bước: (1) xây dựng bộ dữ liệu đánh giá cố định, (2) sinh trước ảnh kết quả thật cho từng mẫu bằng checkpoint cần kiểm tra, (3) tính các chỉ số định lượng trên ảnh sinh ra, và (4) tổng hợp điểm cuối để xếp hạng checkpoint. Quy trình này giúp tránh việc chọn mô hình chỉ dựa trên \textit{validation loss} hoặc quan sát chủ quan.
+Để chuẩn hóa quy trình lựa chọn mô hình, tôi triển khai một quy trình benchmark ngoại tuyến gồm bốn bước: (1) xây dựng bộ dữ liệu đánh giá cố định, (2) sinh trước ảnh kết quả thật cho từng mẫu bằng checkpoint cần kiểm tra, (3) tính các chỉ số định lượng trên ảnh sinh ra, và (4) tổng hợp điểm cuối để xếp hạng checkpoint. Quy trình này giúp tránh việc chọn mô hình chỉ dựa trên \textit{validation loss} hoặc quan sát chủ quan.
 
 \begin{figure}[H]
     \centering
@@ -95,7 +95,7 @@ Bên cạnh việc kiểm thử hộp đen (black-box) trên giao diện hệ th
     \label{fig:loss-curve}
 \end{figure}
 
-Việc theo dõi quỹ đạo \textit{Training Loss/Validation Loss} giúp xác nhận mạng UNet 13-kênh hội tụ ổn định trong giai đoạn huấn luyện. Tuy nhiên, sau khi huấn luyện kết thúc, nhóm sử dụng thêm bộ benchmark ngoại tuyến để đánh giá chất lượng ảnh sinh thật theo các tiêu chí gần với mục tiêu đề tài hơn, bao gồm bảo toàn danh tính, bảo toàn nền, độ tự nhiên và mức ổn định khi chạy.
+Việc theo dõi quỹ đạo \textit{Training Loss/Validation Loss} giúp xác nhận mạng UNet 13-kênh hội tụ ổn định trong giai đoạn huấn luyện. Tuy nhiên, sau khi huấn luyện kết thúc, tôi sử dụng thêm bộ benchmark ngoại tuyến để đánh giá chất lượng ảnh sinh thật theo các tiêu chí gần với mục tiêu đề tài hơn, bao gồm bảo toàn danh tính, bảo toàn nền, độ tự nhiên và mức ổn định khi chạy.
 
 \begin{figure}[H]
     \centering
@@ -140,11 +140,11 @@ Hình~\ref{fig:ch5-trial-result} minh họa một trường hợp chạy thử h
         \hline
         Identity Similarity & 0.9517 & Mức tương đồng danh tính cao, cho thấy mô hình giữ được phần lớn đặc trưng khuôn mặt gốc. \\
         \hline
-        Background PSNR & 20.29 dB & Phần nền ngoài vùng tóc được bảo toàn ở mức khá, phù hợp với cơ chế dán ngược theo \texttt{bbox}. \\
+        Background PSNR & 20.29 dB & Phần nền ngoài vùng tóc được bảo toàn ở mức tương đối ổn định, phù hợp với cơ chế dán ngược theo \texttt{bbox}. \\
         \hline
         Background SSIM & 0.8948 & Cấu trúc nền nhìn chung ổn định và ít bị méo hình sau quá trình sinh ảnh. \\
         \hline
-        Hairstyle Score & 0.1471 & Điểm kiểu tóc đã có ý nghĩa hơn sau khi so sánh trên vùng tóc được tách riêng, nhưng vẫn còn khoảng cách với đánh giá cảm quan của người dùng. \\
+        Hairstyle Score & 0.1471 & Điểm kiểu tóc được cải thiện sau khi so sánh trên vùng tóc tách riêng, nhưng vẫn còn khoảng cách so với đánh giá cảm quan của người dùng. \\
         \hline
         Naturalness Score & 0.3431 & Chất lượng vùng ghép còn bị ảnh hưởng bởi biên tóc, ánh sáng phức tạp và hiện tượng giao thoa tóc--da. \\
         \hline

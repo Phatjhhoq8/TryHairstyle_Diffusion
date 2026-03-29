@@ -3,17 +3,17 @@
 \begin{document}
 
 \section{Kết quả đạt được}
-Đề tài đã xây dựng được hệ thống \textbf{TryHairStyle} có khả năng tiếp nhận ảnh người dùng và ảnh kiểu tóc tham chiếu để tạo ảnh thử kiểu tóc trên nền tảng web. Các kết quả nổi bật gồm:
+Đề tài đã xây dựng hệ thống \textbf{TryHairStyle} có khả năng tiếp nhận ảnh người dùng và ảnh kiểu tóc tham chiếu để tạo ảnh thử kiểu tóc trên nền tảng web. Các kết quả chính gồm:
 \begin{itemize}
-    \item \textbf{Pipeline AI hoàn thiện phối hợp đa luồng:} Tích hợp liền mạch hệ module lõi phân tích hình thái khuôn mặt (Face, Mask, Pose, Embedder, Reconstructor, Color) thành một quy trình xử lý liên hoàn tự động từ đầu đến cuối.
-    \item \textbf{Cơ chế điều kiện kép:} Nhánh cấu trúc bản dạng (InsightFace/AdaFace + ControlNet Depth) và nhánh chuyển giao giao diện kiểu tóc (IP-Adapter Plus/HairTextureEncoder) chạy song song, giúp hợp nhất tỷ lệ hoàn hảo.
-    \item \textbf{Bảo toàn bối cảnh (Background Preservation):} Áp dụng giải thuật định vị tọa độ \texttt{bbox} chuẩn trước khi suy luận và chèn đè khuôn mặt kết quả về ảnh gốc, giữ không gian môi trường của người dùng không biến đổi.
-    \item \textbf{Quản trị linh hoạt bộ nhớ tự sinh (Microservices):} Cơ chế khởi chạy nền thuật toán AI đồ sộ bằng tiến trình cách ly (\textit{Subprocess}) giúp hạn chế rủi ro treo hệ thống do tràn bộ nhớ chia sẻ chung. 
-    \item \textbf{Tối ưu hóa tài nguyên phần cứng:} Vận dụng các kỹ thuật quản lý VRAM (tái cấu trúc đồ thị đạo hàm) và bộ truy xuất lưu trữ tĩnh (I/O Auto-Caching), giữ tính ổn định vững vàng mô hình học sâu khổng lồ trong suốt quá trình huấn luyện trên máy chủ đám mây (Google Colab T4 15GB).
-    \item \textbf{Mặt nạ động nội suy:} Cơ chế tính khối lượng diện tích mở rộng dựa trên so sánh mẫu và ảnh gốc.
-    \item \textbf{Trải nghiệm tiện ích Giao diện mở rộng:} 8 thư viện React thành phần tối ưu thao tác bằng một cú nhấp chuột đa chức năng (Đổi màu tóc tức thời hệ HSV, Dịch cú pháp Prompt Việt-Anh tự động, thanh trượt dọn rác giao diện bằng nút Clear).
-    \item \textbf{Kiến trúc bất đồng bộ \& Microservices:} FastAPI + Celery + Redis xử lý tác vụ không đồng bộ; kết hợp cơ chế triển khai vùng chứa (Container) Docker Compose trích xuất kết nối liên GPU passthrough toàn diện.
-    \item \textbf{Bổ sung benchmark ngoại tuyến cho checkpoint:} Hệ thống đã có bộ \textit{eval set} cố định 30 mẫu, quy trình sinh ảnh thật cho từng checkpoint và cơ chế tổng hợp các chỉ số \textit{identity}, \textit{hairstyle}, \textit{background}, \textit{naturalness}, \textit{runtime/stability} để hỗ trợ chọn mô hình đáng tin cậy hơn.
+    \item \textbf{Pipeline xử lý tích hợp:} Hệ thống tích hợp các mô-đun phân tích khuôn mặt, tạo mặt nạ, ước lượng pose, trích xuất đặc trưng, tái dựng hình học và đổi màu tóc vào một quy trình xử lý thống nhất.
+    \item \textbf{Cơ chế điều kiện kép:} Nhánh bảo toàn danh tính (InsightFace/AdaFace + ControlNet Depth) và nhánh truyền tải đặc trưng kiểu tóc (IP-Adapter Plus/HairTextureEncoder) được kết hợp trong cùng quá trình suy luận để duy trì cấu trúc khuôn mặt và kiểu tóc tham chiếu.
+    \item \textbf{Bảo toàn bối cảnh nền:} Hệ thống sử dụng tọa độ \texttt{bbox} để dán ngược vùng ảnh kết quả vào ảnh gốc, qua đó hạn chế thay đổi đối với vùng nền ngoài khu vực chỉnh sửa.
+    \item \textbf{Cơ chế cách ly tiến trình suy luận:} Khối thuật toán AI được khởi chạy trong tiến trình cách ly (\textit{Subprocess}), góp phần giảm rủi ro treo hệ thống do tràn bộ nhớ dùng chung.
+    \item \textbf{Tối ưu tài nguyên tính toán:} Hệ thống áp dụng các kỹ thuật quản lý VRAM và \textit{Auto-Caching} để duy trì quá trình huấn luyện ổn định trên môi trường Google Colab T4 15GB.
+    \item \textbf{Mặt nạ động thích ứng:} Cơ chế mở rộng mặt nạ tóc được thiết kế dựa trên tương quan giữa tóc tham chiếu và tóc gốc nhằm hỗ trợ các trường hợp tóc dài, tóc phồng hoặc ít tóc.
+    \item \textbf{Chức năng giao diện hỗ trợ thao tác:} Giao diện cung cấp các chức năng như đổi màu tóc nhanh theo HSV, dịch prompt Việt--Anh tự động và làm sạch dữ liệu nhập bằng nút \textit{Clear}.
+    \item \textbf{Kiến trúc xử lý bất đồng bộ:} Hệ thống sử dụng FastAPI, Celery và Redis để tiếp nhận, xếp hàng và xử lý tác vụ sinh ảnh theo cơ chế bất đồng bộ; đồng thời hỗ trợ triển khai bằng Docker Compose.
+    \item \textbf{Quy trình benchmark ngoại tuyến cho checkpoint:} Hệ thống xây dựng bộ \textit{eval set} cố định 30 mẫu, quy trình sinh ảnh thật cho từng checkpoint và cơ chế tổng hợp các chỉ số \textit{identity}, \textit{hairstyle}, \textit{background}, \textit{naturalness}, \textit{runtime/stability} để hỗ trợ lựa chọn mô hình.
 \end{itemize}
 
 \section{Đánh giá ưu và nhược điểm hệ thống}
@@ -21,9 +21,9 @@
 \subsection{Ưu điểm nổi bật}
 \begin{itemize}
     \item \textbf{Chất lượng sinh ảnh và bảo toàn nhân dạng cao:} Benchmark hiện tại cho \textit{identity similarity} trung bình 0.9517, cho thấy mô hình giữ được phần lớn đặc trưng khuôn mặt trên bộ eval set 30 mẫu.
-    \item \textbf{Bảo toàn bối cảnh nền ở mức khá:} Chỉ số \textit{background PSNR} trung bình đạt 20.29 dB và \textit{background SSIM} đạt 0.8948. Điều này phù hợp với cơ chế dán ngược theo \texttt{bbox}, giúp phần nền ngoài vùng tóc ít bị biến đổi đáng kể.
-    \item \textbf{Phục vụ trơn tru ở phần cứng eo hẹp:} Các thiết lập hàng đợi message broker (Redis) kết hợp xử lý ngắt nhịp Celery giúp loại bỏ lỗi treo ứng dụng khi có yêu cầu cường độ cao trong UI.
-    \item \textbf{Tùy biến cực mạnh giao diện Front-end:} Tính năng phiên dịch nội hàm Việt-Anh tự động, Đổi sắc thái màu nhanh và chọn model AI từ popup mang đến tính phổ cập tương tác. Thiết lập container bằng Docker Compose đưa toàn bộ cấu hình phức tạp ẩn mình.
+    \item \textbf{Bảo toàn bối cảnh nền:} Chỉ số \textit{background PSNR} trung bình đạt 20.29 dB và \textit{background SSIM} đạt 0.8948. Các kết quả này phù hợp với cơ chế dán ngược theo \texttt{bbox}, giúp hạn chế biến đổi ở phần nền ngoài vùng tóc.
+    \item \textbf{Vận hành ổn định trên cấu hình phần cứng hạn chế:} Cơ chế hàng đợi Redis kết hợp Celery giúp hệ thống tiếp nhận và xử lý yêu cầu theo hướng bất đồng bộ, qua đó giảm nguy cơ treo giao diện khi khối lượng tác vụ tăng.
+    \item \textbf{Giao diện hỗ trợ nhiều chức năng thao tác:} Frontend hỗ trợ dịch prompt Việt--Anh tự động, đổi màu tóc nhanh và lựa chọn mô hình AI, góp phần thuận tiện hóa quá trình sử dụng.
     \item \textbf{Đã có quy trình đánh giá lặp lại được:} Việc bổ sung \textit{eval set}, ảnh sinh thật và bảng benchmark giúp phần đánh giá bớt phụ thuộc vào cảm quan, đồng thời hỗ trợ tốt hơn cho việc chọn checkpoint sử dụng trong hệ thống. Ở lần benchmark hiện tại, checkpoint \texttt{deep\_hair\_v1} đạt \textit{final score} 0.5768.
 \end{itemize}
 

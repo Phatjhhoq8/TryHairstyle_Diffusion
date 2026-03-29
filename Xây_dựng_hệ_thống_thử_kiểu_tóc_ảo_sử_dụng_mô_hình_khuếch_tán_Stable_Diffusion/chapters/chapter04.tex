@@ -132,7 +132,7 @@ Luồng xử lý tác vụ diễn ra như sau:
 \section{Triển khai Frontend}
 
 \subsection{Kiến trúc giao diện}
-Frontend được xây dựng bằng \textit{ReactJS} với công cụ build \textit{Vite}, đảm bảo tốc độ phát triển nhanh và khả năng hot-reload tức thời. Giao diện được chia thành các component độc lập, có trách nhiệm rõ ràng:
+Frontend được xây dựng bằng \textit{ReactJS} với công cụ build \textit{Vite}. Giao diện được chia thành các component độc lập, mỗi component đảm nhiệm một chức năng cụ thể:
 
 \begin{table}[H]
     \centering
@@ -202,7 +202,7 @@ Quy trình triển khai hệ thống bằng Docker được thực hiện theo c
     \end{itemize}
 \end{enumerate}
 
-Ngoài ra, dự án cung cấp script \texttt{start.sh} cho phép khởi động đồng thời Redis, FastAPI và Celery Worker chỉ bằng một lệnh duy nhất: \texttt{wsl -e bash start.sh}. Script này tự động xử lý việc thiết lập biến môi trường, kích hoạt virtual environment và quản lý tiến trình với khả năng dọn dẹp (cleanup) khi nhận tín hiệu dừng.
+Ngoài ra, dự án cung cấp script \texttt{start.sh} cho phép khởi động đồng thời Redis, FastAPI và Celery Worker bằng lệnh \texttt{wsl -e bash start.sh}. Script này tự động thiết lập biến môi trường, kích hoạt virtual environment và quản lý tiến trình, đồng thời hỗ trợ dọn dẹp (cleanup) khi nhận tín hiệu dừng.
 
 \begin{table}[H]
     \centering

@@ -67,7 +67,7 @@ Quá trình này sử dụng phép biến đổi Affine (\textit{Affine Transfor
 \section{Phân đoạn ngữ nghĩa với SegFormer}
 SegFormer \cite{xie2021segformer} là mô hình phân đoạn ngữ nghĩa dựa trên kiến trúc Transformer, kết hợp giữa bộ mã hóa hiệu quả (hierarchical encoder) và bộ giải mã nhẹ nhằm đảm bảo cả độ chính xác và hiệu suất tính toán.
 
-Trong hệ thống, mô hình SegFormer (jonathandinu/face-parsing) được sử dụng để phân tách ảnh khuôn mặt thành 19 lớp ngữ nghĩa như background, skin, hair, hat, nose, eyes, eyebrows, ears, mouth, lips, v.v. Nhờ khả năng nắm bắt ngữ cảnh toàn cục của Transformer, mô hình cho kết quả phân đoạn ổn định ngay cả trong các điều kiện ánh sáng và góc nhìn khác nhau.
+Trong hệ thống, mô hình SegFormer (jonathandinu/face-parsing) được sử dụng để phân tách ảnh khuôn mặt thành 19 lớp ngữ nghĩa như background, skin, hair, hat, nose, eyes, eyebrows, ears, mouth, lips và các lớp ngữ nghĩa khác. Nhờ khả năng nắm bắt ngữ cảnh toàn cục của Transformer, mô hình cho kết quả phân đoạn ổn định ngay cả trong các điều kiện ánh sáng và góc nhìn khác nhau.
 
 Kết quả phân đoạn được sử dụng cho hai mục đích chính. Thứ nhất, vùng tóc (hair) được trích xuất để tạo \textit{hair mask}, phục vụ cho quá trình inpainting nhằm thay đổi kiểu tóc. Thứ hai, các vùng khuôn mặt quan trọng (như skin, eyes, nose, mouth) được kết hợp để tạo \textit{face mask}, giúp bảo vệ các đặc trưng nhận dạng và tránh bị thay đổi ngoài ý muốn trong quá trình sinh ảnh.
 
