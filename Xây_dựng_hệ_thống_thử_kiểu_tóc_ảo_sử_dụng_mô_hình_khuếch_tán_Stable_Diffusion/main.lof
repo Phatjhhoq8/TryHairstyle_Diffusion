@@ -1,0 +1,20 @@
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {3.1}{\ignorespaces Sơ đồ kiến trúc tổng thể hệ thống TryHairStyle}}{10}{figure.3.1}%
+\contentsline {figure}{\numberline {3.2}{\ignorespaces Cơ chế điều kiện kép kết hợp InsightFace và IP-Adapter}}{11}{figure.3.2}%
+\contentsline {figure}{\numberline {3.3}{\ignorespaces Minh họa phát hiện khuôn mặt và bounding box bằng YOLOv8-Face}}{12}{figure.3.3}%
+\contentsline {figure}{\numberline {3.4}{\ignorespaces Minh họa quá trình tái dựng mesh khuôn mặt 3D và đồng bộ hóa trong không gian ảnh chuẩn}}{13}{figure.3.4}%
+\contentsline {figure}{\numberline {3.5}{\ignorespaces Kết quả phân đoạn ngữ nghĩa vùng mặt và vùng tóc sử dụng SegFormer}}{14}{figure.3.5}%
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {4.1}{\ignorespaces Cấu trúc thư mục chính của dự án TryHairStyle}}{19}{figure.4.1}%
+\addvspace {10\p@ }
+\contentsline {figure}{\numberline {5.1}{\ignorespaces Các bước vận hành hệ thống thông qua giao diện người dùng}}{27}{figure.5.1}%
+\contentsline {figure}{\numberline {5.2}{\ignorespaces Minh họa khả năng dán ngược ảnh tự động không làm thay đổi bối cảnh}}{28}{figure.5.2}%
+\contentsline {figure}{\numberline {5.3}{\ignorespaces Quy trình benchmark checkpoint trên bộ eval set cố định}}{29}{figure.5.3}%
+\contentsline {figure}{\numberline {5.4}{\ignorespaces Biểu đồ phân tích độ hội tụ Loss qua các vòng lặp huấn luyện}}{30}{figure.5.4}%
+\contentsline {figure}{\numberline {5.5}{\ignorespaces Các chỉ số benchmark chính của checkpoint \texttt {deep\_hair\_v1} trên 30 mẫu eval}}{31}{figure.5.5}%
+\contentsline {figure}{\numberline {5.6}{\ignorespaces Kết quả chạy thử nghiệm của hệ thống TryHairStyle}}{31}{figure.5.6}%
+\contentsline {figure}{\numberline {5.7}{\ignorespaces Một số mẫu tiêu biểu trong bộ benchmark gồm ảnh gốc, tóc tham chiếu và ảnh sinh ra}}{32}{figure.5.7}%
+\contentsline {figure}{\numberline {5.8}{\ignorespaces Thử nghiệm tính năng đổi màu nhanh trực tiếp trên giao diện}}{33}{figure.5.8}%
+\addvspace {10\p@ }

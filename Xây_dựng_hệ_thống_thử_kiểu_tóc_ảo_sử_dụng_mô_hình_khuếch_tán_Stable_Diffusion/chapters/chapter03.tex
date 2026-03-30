@@ -56,13 +56,13 @@ Phần backend được chia thành các service module độc lập, mỗi modu
 FaceInfoService đóng vai trò là thành phần cốt lõi trong pipeline xử lý ảnh, chịu trách nhiệm phát hiện, chuẩn hóa và trích xuất đặc trưng khuôn mặt nhằm phục vụ các bước xử lý phía sau như giữ nguyên danh tính, ghép kiểu tóc và tái tạo hình học. Để đảm bảo vừa đạt độ chính xác cao vừa tối ưu thời gian xử lý, hệ thống được thiết kế theo kiến trúc pipeline ba tầng kết hợp nhiều mô hình chuyên biệt.
 
 \begin{enumerate}
-    \item \textbf{YOLOv8-Face (Phiên bản YOLOv8n):} 
+    \item \textbf{YOLOv8-Face (Phiên bản YOLOv8n)} \cite{jocher2023yolov8}\textbf{:} 
     Tại tầng đầu tiên của pipeline, hệ thống triển khai mô hình YOLOv8-Face với kiến trúc \textbf{YOLOv8n (Nano)} nhằm tối ưu hóa tốc độ suy luận trong khi vẫn duy trì độ chính xác cần thiết. Mô hình này đóng vai trò là \textit{TrainingFaceDetector}, có khả năng phát hiện khuôn mặt trong các điều kiện khó như góc nghiêng lớn, bị che khuất một phần hoặc ảnh đông người. Kết quả dự đoán được tinh lọc qua thuật toán \textit{Non-Maximum Suppression} (NMS) để loại bỏ các bounding box trùng lấn, qua đó cải thiện tính ổn định cho các bước phân tích tiếp theo.
 
     \begin{figure}[H]
         \centering
         \includegraphics[width=0.8\textwidth]{images/anh_nhan_dien_yolo.png}
-        \caption{Ví dụ phát hiện khuôn mặt và bounding box bằng YOLOv8-Face}
+        \caption{Minh họa phát hiện khuôn mặt và bounding box bằng YOLOv8-Face}
         \label{fig:yolo_face}
     \end{figure}
 

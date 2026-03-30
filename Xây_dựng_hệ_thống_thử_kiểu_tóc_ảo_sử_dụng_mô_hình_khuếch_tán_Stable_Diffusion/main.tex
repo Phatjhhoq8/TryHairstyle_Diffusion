@@ -7,6 +7,26 @@
 \usepackage{indentfirst}                % Thụt lề đoạn đầu tiên của chương/mục
 \usepackage[top=2cm,inner=3cm,outer=2cm,bottom=2cm,headheight=15pt]{geometry} % Cấu hình lề
 \usepackage{etoolbox}                   % Cung cấp lệnh \patchcmd để sửa cấu trúc mặc định của LaTeX
+\usepackage{setspace}                   % Gói để cấu hình giãn dòng
+\onehalfspacing                         % Giãn dòng 1.5 (chuẩn báo cáo đồ án)
+
+% Cấu hình Mục lục với tocloft
+\usepackage[titles]{tocloft}
+\renewcommand{\cftdotsep}{1.5}          % Dấu chấm dày hơn (mặc định là 4.5)
+\renewcommand{\cftchapleader}{\cftdotfill{\cftdotsep}}
+\renewcommand{\cftchappresnum}{Chương } % Thêm chữ "Chương"
+\addtolength{\cftchapnumwidth}{4em}     % Tăng khoảng cách để chữ "Chương 1" không bị đè lên tiêu đề
+\renewcommand{\cftsecleader}{\cftdotfill{\cftdotsep}}
+\renewcommand{\cftsubsecleader}{\cftdotfill{\cftdotsep}}
+\renewcommand{\cftfigleader}{\cftdotfill{\cftdotsep}}
+\renewcommand{\cfttableader}{\cftdotfill{\cftdotsep}}
+
+% Căn bằng khoảng cách dọc giữa tất cả các hàng trong Mục lục (Sửa lỗi thưa/sát)
+\setlength{\cftbeforechapskip}{4pt}
+\setlength{\cftbeforesecskip}{4pt}
+\setlength{\cftbeforesubsecskip}{4pt}
+\setlength{\cftbeforefigskip}{4pt}
+\setlength{\cftbeforetabskip}{4pt}
 
 % ==========================================
 % 2. XỬ LÝ HÌNH ẢNH, BẢNG BIỂU & TOÁN HỌC
@@ -28,8 +48,8 @@
 % ==========================================
 % 3. CẤU HÌNH TÀI LIỆU THAM KHẢO & ĐƯỜNG DẪN
 % ==========================================
-\usepackage{natbib}                     % Quản lý tài liệu tham khảo
-\setcitestyle{super}                    % Trích dẫn hiển thị dạng số mũ trên cao (vd: [1])
+\usepackage[square,numbers]{natbib}     % Quản lý tài liệu tham khảo
+% \setcitestyle{super}                  % Đã bỏ superscript để dùng [1] mặc định
 \usepackage[hidelinks]{hyperref}        % Ẩn hoàn toàn khung và màu, vẫn click được
 
 % ==========================================
@@ -58,7 +78,7 @@
     \vskip 20\p@ % Khoảng cách từ \chapter xuống đoạn văn bản
   }}
 \def\@makeschapterhead#1{%
-  {\parindent \z@ \raggedright
+  {\parindent \z@ \centering
     \normalfont
     \interlinepenalty\@M
     \Huge \bfseries  #1\par\nobreak

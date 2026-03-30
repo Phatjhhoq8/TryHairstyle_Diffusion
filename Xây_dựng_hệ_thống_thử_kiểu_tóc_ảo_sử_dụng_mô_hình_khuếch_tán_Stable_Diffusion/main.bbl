@@ -1,0 +1,96 @@
+\begin{thebibliography}{10}
+
+\bibitem{celery2023}
+{Celery Project}.
+\newblock Celery: Distributed task queue.
+\newblock \url{https://docs.celeryq.dev}, 2023.
+
+\bibitem{chung2024hairfusion}
+Chung-Yi Chung, Yong-Xiang Wang, Yen-Hsuan Hsu, and Yung-Yu Chen.
+\newblock {HairFusion}: Hairstyle transfer via diffusion models.
+\newblock {\em arXiv preprint arXiv:2404.19505}, 2024.
+
+\bibitem{deng2019arcface}
+Jiankang Deng, Jia Guo, Niannan Xue, and Stefanos Zafeiriou.
+\newblock {ArcFace}: Additive angular margin loss for deep face recognition.
+\newblock {\em Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, pages 4690--4699, 2019.
+
+\bibitem{guo2020towards3ddfa}
+Jianzhu Guo, Xiangyu Zhu, Yang Yang, Fan Yang, Zhen Lei, and Stan~Z. Li.
+\newblock Towards fast, accurate and stable {3D} dense face alignment.
+\newblock {\em Proceedings of the European Conference on Computer Vision
+  (ECCV)}, pages 152--168, 2020.
+
+\bibitem{ho2020denoising}
+Jonathan Ho, Ajay Jain, and Pieter Abbeel.
+\newblock Denoising diffusion probabilistic models.
+\newblock {\em Advances in Neural Information Processing Systems},
+  33:6840--6851, 2020.
+
+\bibitem{hu2022lora}
+Edward~J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean
+  Wang, Lu~Wang, and Weizhu Chen.
+\newblock {LoRA}: Low-rank adaptation of large language models.
+\newblock {\em International Conference on Learning Representations (ICLR)},
+  2022.
+
+\bibitem{jocher2023yolov8}
+Glenn Jocher, Ayush Chaurasia, and Jing Qiu.
+\newblock {Ultralytics YOLOv8}.
+\newblock \url{https://github.com/ultralytics/ultralytics}, 2023.
+
+\bibitem{kim2022adaface}
+Minchul Kim, Anil~K. Jain, and Xiaoming Liu.
+\newblock {AdaFace}: Quality adaptive margin for face recognition.
+\newblock {\em Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, pages 18750--18759, 2022.
+
+\bibitem{react2023}
+{Meta Open Source}.
+\newblock React -- a javascript library for user interfaces.
+\newblock \url{https://react.dev}, 2023.
+
+\bibitem{fastapi2023}
+Sebasti\'{a}n Ram\'{i}rez.
+\newblock {FastAPI} -- modern, fast web framework for building apis.
+\newblock \url{https://fastapi.tiangolo.com}, 2023.
+
+\bibitem{rombach2022latent}
+Robin Rombach, Andreas Blattmann, Dominik Lorenz, Patrick Esser, and Bj\"{o}rn
+  Ommer.
+\newblock High-resolution image synthesis with latent diffusion models.
+\newblock {\em Proceedings of the IEEE/CVF Conference on Computer Vision and
+  Pattern Recognition (CVPR)}, pages 10684--10695, 2022.
+
+\bibitem{wang2024instantid}
+Qixun Wang, Xu~Bai, Haofan Wang, Zekui Qin, and Anthony Chen.
+\newblock {InstantID}: Zero-shot identity-preserving generation in seconds.
+\newblock {\em arXiv preprint arXiv:2401.07519}, 2024.
+
+\bibitem{xie2021segformer}
+Enze Xie, Wenhai Wang, Zhiding Yu, Anima Anandkumar, Jose~M. Alvarez, and Ping
+  Luo.
+\newblock {SegFormer}: Simple and efficient design for semantic segmentation
+  with transformers.
+\newblock {\em Advances in Neural Information Processing Systems},
+  34:12077--12090, 2021.
+
+\bibitem{ye2023ipadapter}
+Hu~Ye, Jun Zhang, Sibo Liu, Xiao Han, and Wei Yang.
+\newblock {IP-Adapter}: Text compatible image prompt adapter for text-to-image
+  diffusion models.
+\newblock {\em arXiv preprint arXiv:2308.06721}, 2023.
+
+\bibitem{zhang2023controlnet}
+Lvmin Zhang, Anyi Rao, and Maneesh Agrawala.
+\newblock Adding conditional control to text-to-image diffusion models.
+\newblock {\em Proceedings of the IEEE/CVF International Conference on Computer
+  Vision (ICCV)}, pages 3836--3847, 2023.
+
+\bibitem{zhang2024stablehair}
+Xiaojiu Zhang, Qiannan Zeng, Yuhang Bian, and Xiaoming Chen.
+\newblock {Stable-Hair}: Real-world hair transfer via diffusion model.
+\newblock {\em arXiv preprint arXiv:2407.14078}, 2024.
+
+\end{thebibliography}
