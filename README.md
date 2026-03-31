@@ -4,8 +4,9 @@
 
 ### 🖼️ Mô phỏng hệ thống (Simulation Demo)
 
-![Giao diện hệ thống sinh ảnh (UI Simulation)](./Xây_dựng_hệ_thống_thử_kiểu_tóc_ảo_sử_dụng_mô_hình_khuếch_tán_Stable_Diffusion/images/sinh_anh_bang_ui.png)
-![Kết quả Benchmark sinh ảnh (Result Grid)](./Xây_dựng_hệ_thống_thử_kiểu_tóc_ảo_sử_dụng_mô_hình_khuếch_tán_Stable_Diffusion/images/luoi_ket_qua_benchmark.png)
+![Simulation Hệ thống TryHairStyle](./simulation.png)
+![Giao diện hệ thống sinh ảnh](./Xây_dựng_hệ_thống_thử_kiểu_tóc_ảo_sử_dụng_mô_hình_khuếch_tán_Stable_Diffusion/images/sinh_anh_bang_ui.png)
+
 
 > [!NOTE]
 > Repo này **không** commit virtual environment, model weights, dữ liệu sinh ra và `.env`.
