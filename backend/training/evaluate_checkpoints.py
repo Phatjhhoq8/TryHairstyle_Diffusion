@@ -74,6 +74,18 @@ def load_eval_manifest(eval_set_dir: Path):
     return samples
 
 
+def load_conflict_manifest(conflict_path: Path):
+    if not conflict_path.exists():
+        return []
+
+    with open(conflict_path, "r", encoding="utf-8") as f:
+        manifest = json.load(f)
+
+    samples = manifest.get("samples", [])
+    logger.info(f"📋 Đọc conflict manifest: {len(samples)} mẫu")
+    return samples
+
+
 def load_image_tensor(image_path: Path, target_size=(512, 512)):
     """Load ảnh thành tensor [-1, 1], shape (1, 3, H, W)."""
     img = Image.open(image_path).convert("RGB")
@@ -93,6 +105,78 @@ def load_mask_tensor(mask_path: Path, target_size=(512, 512)):
         transforms.ToTensor(),  # → [0, 1]
     ])
     return transform(img).unsqueeze(0)  # (1, 1, H, W)
+
+
+def _load_prompt_response_pairs(ckpt_results_dir: Path, conflict_samples: list, eval_set_dir: Path, device: str):
+    generated_dir = ckpt_results_dir / "generated_prompt_response"
+    if not generated_dir.exists() or not conflict_samples:
+        return []
+
+    pairs = []
+    for sample in conflict_samples:
+        sample_id = sample.get("id")
+        if not sample_id:
+            continue
+
+        candidates = [
+            (generated_dir / f"{sample_id}__match.png", generated_dir / f"{sample_id}__conflict.png"),
+            (generated_dir / "match" / f"{sample_id}.png", generated_dir / "conflict" / f"{sample_id}.png"),
+        ]
+        match_path = None
+        conflict_path = None
+        for cand_match, cand_conflict in candidates:
+            if cand_match.exists() and cand_conflict.exists():
+                match_path = cand_match
+                conflict_path = cand_conflict
+                break
+
+        if not match_path or not conflict_path:
+            continue
+
+        hair_mask = None
+        mask_rel = sample.get("mask_image")
+        if mask_rel:
+            mask_path = eval_set_dir / mask_rel
+            if mask_path.exists():
+                hair_mask = load_mask_tensor(mask_path).to(device)
+
+        pairs.append({
+            "id": sample_id,
+            "group": sample.get("group", "unknown"),
+            "conflict_attr": sample.get("conflict_attr", "unknown"),
+            "output_match": load_image_tensor(match_path).to(device),
+            "output_conflict": load_image_tensor(conflict_path).to(device),
+            "hair_mask": hair_mask,
+        })
+
+    return pairs
+
+
+def _summarize_prompt_response(evaluator: HairEvaluator, prompt_pairs: list):
+    if not prompt_pairs:
+        return None
+
+    per_sample = []
+    for pair in prompt_pairs:
+        metrics = evaluator.evaluate_prompt_response(
+            pair["output_match"], pair["output_conflict"], pair.get("hair_mask")
+        )
+        metrics["id"] = pair["id"]
+        metrics["group"] = pair["group"]
+        metrics["conflict_attr"] = pair["conflict_attr"]
+        per_sample.append(metrics)
+
+    lpips_vals = [m["prompt_lpips_diff"] for m in per_sample if m.get("prompt_lpips_diff", -1) >= 0]
+    l2_vals = [m["prompt_l2_diff"] for m in per_sample if m.get("prompt_l2_diff", -1) >= 0]
+    responsive = [1.0 if m.get("prompt_responsive") else 0.0 for m in per_sample]
+
+    return {
+        "num_samples": len(per_sample),
+        "prompt_lpips_diff": float(np.mean(lpips_vals)) if lpips_vals else -1.0,
+        "prompt_l2_diff": float(np.mean(l2_vals)) if l2_vals else -1.0,
+        "prompt_responsive_rate": float(np.mean(responsive)) if responsive else 0.0,
+        "per_sample": per_sample,
+    }
 
 
 # ============================================================
@@ -200,11 +284,15 @@ def benchmark_checkpoints(checkpoints_dir: Path, eval_set_dir: Path,
         size_mb = f.stat().st_size / (1024 * 1024)
         logger.info(f"  → {f.name} ({size_mb:.1f} MB)")
 
-    # Load manifest
+    # Load manifests
     samples = load_eval_manifest(eval_set_dir)
     if not samples:
         logger.error("❌ Eval set rỗng. Cần chuẩn bị manifest.json trước.")
         return
+
+    config = load_eval_config()
+    conflict_path = PROJECT_DIR / config.get("conflict_set_path", "backend/training/eval_set/eval_conflict_set.json")
+    conflict_samples = load_conflict_manifest(conflict_path)
 
     # Khởi tạo evaluator
     evaluator = HairEvaluator(device=device)
@@ -272,11 +360,22 @@ def benchmark_checkpoints(checkpoints_dir: Path, eval_set_dir: Path,
         per_sample_path = ckpt_results_dir / "per_sample.json"
         _save_json(per_sample_results, per_sample_path)
 
+        prompt_pairs = _load_prompt_response_pairs(ckpt_results_dir, conflict_samples, eval_set_dir, device)
+        prompt_summary = _summarize_prompt_response(evaluator, prompt_pairs)
+
         # Tổng hợp metrics cho checkpoint này
         successful_results = [r for r in per_sample_results if r.get('success', False)]
-        summary = evaluator.aggregate_metrics(successful_results)
+        extra_metric_avgs = None
+        if prompt_summary:
+            extra_metric_avgs = {
+                "prompt_lpips_diff": prompt_summary["prompt_lpips_diff"],
+                "prompt_responsive_rate": prompt_summary["prompt_responsive_rate"],
+            }
+        summary = evaluator.aggregate_metrics(successful_results, extra_metric_avgs=extra_metric_avgs)
         summary['checkpoint'] = ckpt_name
         summary['checkpoint_file'] = str(ckpt_path)
+        if prompt_summary:
+            summary['prompt_response'] = prompt_summary
 
         # Lưu summary.json
         summary_path = ckpt_results_dir / "summary.json"

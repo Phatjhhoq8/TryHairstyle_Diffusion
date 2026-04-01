@@ -29,13 +29,13 @@ CURL_GROUPS = [
 
 VOLUME_GROUPS = [
     ["flat", "sleek", "thin"],
-    ["normal", "medium"],  # ít khi xuất hiện trong prompt
+    ["normal"],
     ["voluminous", "puffy", "fluffy", "thick", "full"],
 ]
 
 BANGS_GROUPS = [
-    ["with bangs", "bangs", "front bangs", "blunt bangs", "fringe"],
     ["side-swept bangs", "side bangs", "side swept"],
+    ["with bangs", "front bangs", "blunt bangs", "bangs", "fringe"],
     ["without bangs", "no bangs"],
 ]
 
@@ -64,8 +64,9 @@ def _detect_group(text: str, groups: list) -> Optional[int]:
     """
     text_lower = text.lower()
     for i, group in enumerate(groups):
-        for keyword in group:
-            if keyword in text_lower:
+        for keyword in sorted(group, key=len, reverse=True):
+            pattern = re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.IGNORECASE)
+            if pattern.search(text_lower):
                 return i
     return None
 
@@ -87,9 +88,9 @@ def _swap_group(text: str, groups: list, current_idx: int) -> str:
     target_keyword = groups[target_idx][0]  # Lấy từ đầu tiên (canonical)
 
     # Tìm và thay thế từ khóa cũ
-    for keyword in groups[current_idx]:
+    for keyword in sorted(groups[current_idx], key=len, reverse=True):
         # Dùng regex để thay thế chính xác (case-insensitive)
-        pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+        pattern = re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.IGNORECASE)
         if pattern.search(text):
             return pattern.sub(target_keyword, text, count=1)
 
@@ -242,8 +243,8 @@ class PromptStrategy:
 
                 delta_text = text_prompt
                 # Thay keyword
-                for keyword in groups[current_idx]:
-                    pattern = re.compile(re.escape(keyword), re.IGNORECASE)
+                for keyword in sorted(groups[current_idx], key=len, reverse=True):
+                    pattern = re.compile(rf"(?<!\w){re.escape(keyword)}(?!\w)", re.IGNORECASE)
                     if pattern.search(delta_text):
                         target_kw = groups[target_idx][0]
                         delta_text = pattern.sub(target_kw, delta_text, count=1)

@@ -542,7 +542,7 @@ class HairEvaluator:
     # ==============================================================
     # AGGREGATION: Tính Final Score từ raw metrics
     # ==============================================================
-    def aggregate_metrics(self, results_list: list):
+    def aggregate_metrics(self, results_list: list, extra_metric_avgs: dict = None):
         """
         Tổng hợp điểm từ danh sách kết quả run_full_evaluation()
         của nhiều mẫu, tính trung bình và Final Score.
@@ -593,6 +593,11 @@ class HairEvaluator:
         # Success rate
         success_rate = success_count / len(results_list) if results_list else 0.0
         per_metric_avg['success_rate'] = success_rate
+
+        if extra_metric_avgs:
+            for key, val in extra_metric_avgs.items():
+                if isinstance(val, (int, float)) and val >= 0:
+                    per_metric_avg[key] = float(val)
 
         # Chuẩn hóa về [0, 1]
         per_metric_normalized = {}

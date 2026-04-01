@@ -1,4 +1,5 @@
 import os
+import hashlib
 
 # Giảm memory fragmentation trên T4/Colab — PyTorch sẽ dùng expandable segments
 # thay vì allocate block cố định, tránh tình trạng "reserved but unallocated"
@@ -34,6 +35,9 @@ from backend.training.prompt_strategy import PromptStrategy
 
 logger = setupLogger("TrainStage2_Inpainting")
 DEVICE = getDevice()
+
+TRAIN_PROMPT_STRATEGY = PromptStrategy(match_ratio=0.60, delta_ratio=0.30, empty_ratio=0.10)
+VAL_PROMPT_STRATEGY = PromptStrategy(match_ratio=1.0, delta_ratio=0.0, empty_ratio=0.0)
 
 # Auto-detect Google Colab environment
 IS_COLAB = os.path.exists("/content") and "COLAB_GPU" in os.environ
@@ -185,11 +189,13 @@ class HairInpaintingDataset(Dataset):
         self.target_size = target_size
         self.metadata = []
         self.prompt_embeds_cache = {}
+        self.prompt_variant_embeds_cache = {}
+        self.prompt_variant_cache_dir = data_dir / "prompt_variant_embeddings"
         
+        ensureDir(str(self.prompt_variant_cache_dir))
+
         # Prompt Strategy - sinh match/delta/empty prompts on-the-fly
         self.prompt_strategy = prompt_strategy or PromptStrategy()
-        # Cache delta prompt embeddings (pre-encode khi init)
-        self.delta_prompt_cache = {}
         
         meta_path = data_dir / "metadata.jsonl"
         if meta_path.exists():
@@ -267,25 +273,35 @@ class HairInpaintingDataset(Dataset):
                 logger.info(f"✅ Tất cả {cached_count} prompt embeddings đã cache — skip encoding")
             
             # ============================================================
-            # STEP 3: Pre-encode DELTA prompt variants (luu vao memory)
-            # Khong ghi de prompt_embeddings/ tren disk.
+            # STEP 3: Pre-encode prompt variants (ghi cache theo prompt)
+            # Dùng chung cho tất cả dataset train/val tạo sau đó.
             # ============================================================
-            all_delta_prompts = set()
+            variant_prompts = {}
             for item in self.metadata:
                 text_prompt = item.get("text_prompt", "hairstyle")
                 if not text_prompt.strip():
                     text_prompt = "hairstyle"
                 variants = self.prompt_strategy.get_all_variants(text_prompt)
                 for prompt_text, var_type in variants.items():
-                    if var_type != "match":
-                        all_delta_prompts.add(prompt_text)
-            
-            if all_delta_prompts:
-                delta_list = list(all_delta_prompts)
-                logger.info(f"Pre-encoding {len(delta_list)} unique delta prompts...")
-                delta_encoded = text_encoder.encode_prompts_batch(delta_list, batch_size=16)
-                self.delta_prompt_cache = delta_encoded
-                logger.info(f"Delta prompt encoding done! ({len(delta_list)} prompts -> memory cache)")
+                    variant_prompts[prompt_text] = var_type
+
+            uncached_variant_prompts = []
+            for prompt_text in variant_prompts:
+                if not self._variant_cache_file(prompt_text).exists():
+                    uncached_variant_prompts.append(prompt_text)
+
+            if uncached_variant_prompts:
+                logger.info(
+                    f"Pre-encoding {len(uncached_variant_prompts)} unique prompt variants..."
+                )
+                variant_encoded = text_encoder.encode_prompts_batch(uncached_variant_prompts, batch_size=16)
+                for prompt_text, cached_data in tqdm(
+                    variant_encoded.items(), desc="Saving Prompt Variant Cache"
+                ):
+                    torch.save(cached_data, str(self._variant_cache_file(prompt_text)))
+                logger.info(
+                    f"Prompt variant encoding done! ({len(uncached_variant_prompts)} variants cached)"
+                )
         else:
             # Lazy loading: prompt embeddings load on-demand trong _load_sample()
             # Không bulk-load vào RAM → tiết kiệm ~3GB/chunk cho Colab
@@ -518,6 +534,24 @@ class HairInpaintingDataset(Dataset):
     def __len__(self):
         return len(self.metadata)
 
+    def _variant_cache_key(self, prompt_text: str) -> str:
+        return hashlib.sha1(prompt_text.encode("utf-8")).hexdigest()
+
+    def _variant_cache_file(self, prompt_text: str) -> Path:
+        return self.prompt_variant_cache_dir / f"{self._variant_cache_key(prompt_text)}.pt"
+
+    def _load_prompt_variant_embeds(self, prompt_text: str):
+        if prompt_text in self.prompt_variant_embeds_cache:
+            return self.prompt_variant_embeds_cache[prompt_text]
+
+        cache_file = self._variant_cache_file(prompt_text)
+        if cache_file.exists():
+            cached = torch.load(str(cache_file), map_location="cpu", weights_only=True)
+            self.prompt_variant_embeds_cache[prompt_text] = cached
+            return cached
+
+        return None
+
     def __getitem__(self, idx):
         max_retries = 10  # Thử tối đa 10 sample khác nhau
         for attempt in range(max_retries + 1):
@@ -592,16 +626,23 @@ class HairInpaintingDataset(Dataset):
         
         prompt_type, full_prompt = self.prompt_strategy.get_training_prompt(text_prompt_raw)
         
+        text_embeds = None
+        pooled_text_embeds = None
+
         if prompt_type == "empty":
             # Empty prompt -> zeros embedding (CFG dropout for text)
             text_embeds = torch.zeros(77, 2048)
             pooled_text_embeds = torch.zeros(1280)
-        elif prompt_type == "delta" and full_prompt in self.delta_prompt_cache:
-            # Delta prompt -> from memory cache (pre-encoded at init)
-            cached = self.delta_prompt_cache[full_prompt]
-            text_embeds = cached["prompt_embeds"]
-            pooled_text_embeds = cached["pooled_prompt_embeds"]
         else:
+            cached = self._load_prompt_variant_embeds(full_prompt)
+            if cached is not None:
+                text_embeds = cached["prompt_embeds"]
+                pooled_text_embeds = cached["pooled_prompt_embeds"]
+            elif prompt_type == "delta":
+                logger.warning(f"⚠️ Missing delta prompt cache for '{full_prompt[:80]}' — fallback match cache")
+                cached = None
+
+        if prompt_type != "empty" and text_embeds is None:
             # Match prompt (or delta fallback) -> from disk cache
             if img_id in self.prompt_embeds_cache:
                 cached = self.prompt_embeds_cache[img_id]
@@ -991,17 +1032,17 @@ class Stage2Trainer:
         # ==============================================================
         ref_hair_latents = batch['ref_hair_latent'].to(DEVICE)
         
-        # Drop text prompt (15%)
-        if torch.rand(1).item() < 0.15:
+        # Drop text prompt (10%)
+        if torch.rand(1).item() < 0.10:
             text_embeds = torch.zeros_like(text_embeds)
             pooled_text_embeds = torch.zeros_like(pooled_text_embeds)
-        
-        # Drop ref hair (20%) - buoc model phai nghe prompt
-        if torch.rand(1).item() < 0.20:
+
+        # Drop ref hair (10%) - buoc model phai nghe prompt nhung van giu base hair on dinh
+        if torch.rand(1).item() < 0.10:
             ref_hair_latents = torch.zeros_like(ref_hair_latents)
-        
-        # Drop style embedding (15%)
-        if torch.rand(1).item() < 0.15:
+
+        # Drop style embedding (5%)
+        if torch.rand(1).item() < 0.05:
             style_embeds = torch.zeros_like(style_embeds)
         
         # Drop identity (5%) - hiem khi drop vi identity quan trong
@@ -1815,7 +1856,8 @@ class Stage2Trainer:
                 _ste = texture_encoder if chunk_dir in chunks_need_style else None
                 _ = HairInpaintingDataset(
                     chunk_dir, text_encoder=_te, texture_encoder=_ste,
-                    vae=self.vae, target_size=target_size, max_samples=max_samples_per_chunk
+                    vae=self.vae, target_size=target_size, max_samples=max_samples_per_chunk,
+                    prompt_strategy=TRAIN_PROMPT_STRATEGY,
                 )
                 del _
             chunk_pbar.close()
@@ -1847,7 +1889,8 @@ class Stage2Trainer:
         for chunk_dir in val_chunks:
             try:
                 dataset = HairInpaintingDataset(
-                    chunk_dir, target_size=target_size, max_samples=60
+                    chunk_dir, target_size=target_size, max_samples=60,
+                    prompt_strategy=VAL_PROMPT_STRATEGY,
                 )
                 if len(dataset) < 2:
                     continue
@@ -2161,7 +2204,8 @@ class Stage2Trainer:
                 
                 # Load dataset (VAE encode chạy siêu nhanh trên ổ SSD)
                 dataset = HairInpaintingDataset(
-                    chunk_dir, vae=self.vae, target_size=target_size, max_samples=max_samples_per_chunk
+                    chunk_dir, vae=self.vae, target_size=target_size, max_samples=max_samples_per_chunk,
+                    prompt_strategy=TRAIN_PROMPT_STRATEGY,
                 )
                 
                 # AUTO-SYNC: Đẩy gt_latents_cache về Drive NGAY trước khi train
