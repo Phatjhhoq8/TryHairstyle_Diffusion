@@ -1,0 +1,114 @@
+{
+  "_comment": "Conflict eval set: prompt noi mot kieu, ref hair la kieu khac. Dung de do prompt response cua model.",
+  "description": "Moi sample co 2 prompts: match_prompt (mo ta dung ref hair) va conflict_prompt (mo ta khac ref). So sanh output 2 lan inference de do model co nghe prompt khong.",
+  "samples": [
+    {
+      "id": "conflict_001",
+      "original_image": "original/00001.png",
+      "reference_hair_image": "reference/AP058337-055.png",
+      "match_prompt": "high quality, realistic short hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic long curly hair, detailed hair texture",
+      "conflict_attr": "length+curl",
+      "group": "short_hair"
+    },
+    {
+      "id": "conflict_002",
+      "original_image": "original/00002.png",
+      "reference_hair_image": "reference/AP058337-057.png",
+      "match_prompt": "high quality, realistic short hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic long wavy blonde hair, detailed hair texture",
+      "conflict_attr": "length+curl+color",
+      "group": "short_hair"
+    },
+    {
+      "id": "conflict_003",
+      "original_image": "original/00003.png",
+      "reference_hair_image": "reference/AP058337-166.png",
+      "match_prompt": "high quality, realistic long hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic short straight hair, detailed hair texture",
+      "conflict_attr": "length+curl",
+      "group": "long_hair"
+    },
+    {
+      "id": "conflict_004",
+      "original_image": "original/00005.png",
+      "reference_hair_image": "reference/AP060786-037.png",
+      "match_prompt": "high quality, realistic hair with bangs, detailed hair texture",
+      "conflict_prompt": "high quality, realistic hair without bangs, detailed hair texture",
+      "conflict_attr": "bangs",
+      "group": "bangs_or_layered"
+    },
+    {
+      "id": "conflict_005",
+      "original_image": "original/00007.png",
+      "reference_hair_image": "reference/AP060786-057.png",
+      "match_prompt": "high quality, realistic hair with bangs, detailed hair texture",
+      "conflict_prompt": "high quality, realistic voluminous curly hair without bangs, detailed hair texture",
+      "conflict_attr": "bangs+volume+curl",
+      "group": "bangs_or_layered"
+    },
+    {
+      "id": "conflict_006",
+      "original_image": "original/00010.png",
+      "reference_hair_image": "reference/AP062542-171.png",
+      "match_prompt": "high quality, realistic voluminous hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic flat sleek straight hair, detailed hair texture",
+      "conflict_attr": "volume+curl",
+      "group": "voluminous_or_special"
+    },
+    {
+      "id": "conflict_007",
+      "original_image": "original/00013.png",
+      "reference_hair_image": "reference/AP064116-007.png",
+      "match_prompt": "high quality, realistic short black hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic short blonde hair, detailed hair texture",
+      "conflict_attr": "color",
+      "group": "short_hair"
+    },
+    {
+      "id": "conflict_008",
+      "original_image": "original/00015.png",
+      "reference_hair_image": "reference/AP064116-058.png",
+      "match_prompt": "high quality, realistic straight hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic curly voluminous hair, detailed hair texture",
+      "conflict_attr": "curl+volume",
+      "group": "easy_front"
+    },
+    {
+      "id": "conflict_009",
+      "original_image": "original/00020.png",
+      "reference_hair_image": "reference/AP064116-114.png",
+      "match_prompt": "high quality, realistic hair with bangs, detailed hair texture",
+      "conflict_prompt": "high quality, realistic straight hair without bangs slicked back, detailed hair texture",
+      "conflict_attr": "bangs+curl",
+      "group": "bangs_or_layered"
+    },
+    {
+      "id": "conflict_010",
+      "original_image": "original/00025.png",
+      "reference_hair_image": "reference/AP064116-123.png",
+      "match_prompt": "high quality, realistic voluminous hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic short pixie cut hair, detailed hair texture",
+      "conflict_attr": "volume+length",
+      "group": "voluminous_or_special"
+    },
+    {
+      "id": "conflict_011",
+      "original_image": "original/00027.png",
+      "reference_hair_image": "reference/AP064116-174.png",
+      "match_prompt": "high quality, realistic long dark hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic long red curly hair, detailed hair texture",
+      "conflict_attr": "color+curl",
+      "group": "long_hair"
+    },
+    {
+      "id": "conflict_012",
+      "original_image": "original/00030.png",
+      "reference_hair_image": "reference/AP064116-179.png",
+      "match_prompt": "high quality, realistic voluminous hair, detailed hair texture",
+      "conflict_prompt": "high quality, realistic flat straight short hair, detailed hair texture",
+      "conflict_attr": "volume+curl+length",
+      "group": "voluminous_or_special"
+    }
+  ]
+}

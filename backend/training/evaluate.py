@@ -685,16 +685,73 @@ class HairEvaluator:
         }
 
     # ==============================================================
-    # CLEANUP: Giải phóng VRAM từ face model khi không cần nữa
+    # METRIC 6: Prompt Response — Do kha nang model nghe prompt
+    # ==============================================================
+    @torch.no_grad()
+    def evaluate_prompt_response(self, output_match: torch.Tensor,
+                                  output_conflict: torch.Tensor,
+                                  hair_mask: torch.Tensor = None):
+        """
+        So sanh 2 outputs: match_prompt vs conflict_prompt.
+        Neu 2 outputs khac nhau nhieu => model nghe prompt (tot).
+        Neu giong nhau => model bo qua prompt (xau).
+
+        Args:
+            output_match: (1,3,H,W) [-1,1] — output khi dung match prompt
+            output_conflict: (1,3,H,W) [-1,1] — output khi dung conflict prompt
+            hair_mask: (1,1,H,W) [0,1] — optional mask vung toc
+
+        Returns:
+            dict: {
+                'prompt_lpips_diff': float (cao = model nghe prompt),
+                'prompt_l2_diff': float,
+                'prompt_responsive': bool,
+            }
+        """
+        results = {}
+
+        # Resize neu can
+        if output_match.shape != output_conflict.shape:
+            target_size = output_match.shape[-2:]
+            output_conflict = F.interpolate(
+                output_conflict, size=target_size, mode='bilinear', align_corners=False
+            )
+
+        # LPIPS difference
+        if self.loss_fn_vgg is not None:
+            lpips_val = self.loss_fn_vgg(
+                output_match.to(self.device), output_conflict.to(self.device)
+            ).item()
+            results['prompt_lpips_diff'] = lpips_val
+        else:
+            results['prompt_lpips_diff'] = -1.0
+
+        # L2 distance
+        match_norm = (output_match + 1.0) / 2.0
+        conflict_norm = (output_conflict + 1.0) / 2.0
+        l2_val = torch.sqrt(torch.mean((match_norm - conflict_norm) ** 2)).item()
+        results['prompt_l2_diff'] = l2_val
+
+        # Responsive judgment
+        if results['prompt_lpips_diff'] >= 0:
+            results['prompt_responsive'] = results['prompt_lpips_diff'] > 0.10
+        else:
+            results['prompt_responsive'] = l2_val > 0.05
+
+        return results
+
+    # ==============================================================
+    # CLEANUP: Giai phong VRAM tu face model khi khong can nua
     # ==============================================================
     def unload_heavy_models(self):
-        """Giải phóng VRAM: xóa face model và LPIPS khỏi GPU."""
+        """Giai phong VRAM: xoa face model va LPIPS khoi GPU."""
         if self._face_model is not None:
             del self._face_model
             self._face_model = None
         if self.loss_fn_vgg is not None:
             self.loss_fn_vgg.cpu()
         torch.cuda.empty_cache()
+
 
 
 # ==================================================================

@@ -30,6 +30,7 @@ sys.path.append(str(PROJECT_DIR))
 from backend.app.services.training_utils import setupLogger, getDevice, ensureDir
 from backend.training.models.stage2_unet import HairInpaintingUNet, CrossAttentionInjector
 from backend.training.models.losses import MaskAwareLoss, IdentityCosineLoss, TextureConsistencyLoss, FaceFeatureExtractor
+from backend.training.prompt_strategy import PromptStrategy
 
 logger = setupLogger("TrainStage2_Inpainting")
 DEVICE = getDevice()
@@ -169,7 +170,8 @@ class SDXLTextEncoder:
 
 class HairInpaintingDataset(Dataset):
     def __init__(self, data_dir: Path, text_encoder: SDXLTextEncoder = None, 
-                 texture_encoder=None, vae=None, target_size=(512, 512), max_samples: int = 0):
+                 texture_encoder=None, vae=None, target_size=(512, 512), max_samples: int = 0,
+                 prompt_strategy: PromptStrategy = None):
         """
         Args:
             data_dir: Thư mục processed data
@@ -183,6 +185,11 @@ class HairInpaintingDataset(Dataset):
         self.target_size = target_size
         self.metadata = []
         self.prompt_embeds_cache = {}
+        
+        # Prompt Strategy - sinh match/delta/empty prompts on-the-fly
+        self.prompt_strategy = prompt_strategy or PromptStrategy()
+        # Cache delta prompt embeddings (pre-encode khi init)
+        self.delta_prompt_cache = {}
         
         meta_path = data_dir / "metadata.jsonl"
         if meta_path.exists():
@@ -258,6 +265,27 @@ class HairInpaintingDataset(Dataset):
                 logger.info(f"✅ Pre-encoding hoàn tất! ({len(unique_prompts)} unique → {total_uncached} files)")
             else:
                 logger.info(f"✅ Tất cả {cached_count} prompt embeddings đã cache — skip encoding")
+            
+            # ============================================================
+            # STEP 3: Pre-encode DELTA prompt variants (luu vao memory)
+            # Khong ghi de prompt_embeddings/ tren disk.
+            # ============================================================
+            all_delta_prompts = set()
+            for item in self.metadata:
+                text_prompt = item.get("text_prompt", "hairstyle")
+                if not text_prompt.strip():
+                    text_prompt = "hairstyle"
+                variants = self.prompt_strategy.get_all_variants(text_prompt)
+                for prompt_text, var_type in variants.items():
+                    if var_type != "match":
+                        all_delta_prompts.add(prompt_text)
+            
+            if all_delta_prompts:
+                delta_list = list(all_delta_prompts)
+                logger.info(f"Pre-encoding {len(delta_list)} unique delta prompts...")
+                delta_encoded = text_encoder.encode_prompts_batch(delta_list, batch_size=16)
+                self.delta_prompt_cache = delta_encoded
+                logger.info(f"Delta prompt encoding done! ({len(delta_list)} prompts -> memory cache)")
         else:
             # Lazy loading: prompt embeddings load on-demand trong _load_sample()
             # Không bulk-load vào RAM → tiết kiệm ~3GB/chunk cho Colab
@@ -555,27 +583,46 @@ class HairInpaintingDataset(Dataset):
         # Identity (từ AdaFace 512d)
         id_embed = np.load(str(self.data_dir / item["identity"]))
         
-        # Text Prompt Embeddings — lazy load từ disk cache
-        if img_id in self.prompt_embeds_cache:
-            cached = self.prompt_embeds_cache[img_id]
+        # ==============================================================
+        # Text Prompt Embeddings - match/delta/empty via PromptStrategy
+        # ==============================================================
+        text_prompt_raw = item.get("text_prompt", "hairstyle")
+        if not text_prompt_raw.strip():
+            text_prompt_raw = "hairstyle"
+        
+        prompt_type, full_prompt = self.prompt_strategy.get_training_prompt(text_prompt_raw)
+        
+        if prompt_type == "empty":
+            # Empty prompt -> zeros embedding (CFG dropout for text)
+            text_embeds = torch.zeros(77, 2048)
+            pooled_text_embeds = torch.zeros(1280)
+        elif prompt_type == "delta" and full_prompt in self.delta_prompt_cache:
+            # Delta prompt -> from memory cache (pre-encoded at init)
+            cached = self.delta_prompt_cache[full_prompt]
             text_embeds = cached["prompt_embeds"]
             pooled_text_embeds = cached["pooled_prompt_embeds"]
         else:
-            cache_dir = self.data_dir / "prompt_embeddings"
-            img_id_dashed = img_id.replace("_", "-")
-            cache_file = cache_dir / f"{img_id}.pt"
-            cache_file_dashed = cache_dir / f"{img_id_dashed}.pt"
-            if cache_file.exists():
-                cached = torch.load(str(cache_file), map_location="cpu", weights_only=True)
-                text_embeds = cached["prompt_embeds"]
-                pooled_text_embeds = cached["pooled_prompt_embeds"]
-            elif cache_file_dashed.exists():
-                cached = torch.load(str(cache_file_dashed), map_location="cpu", weights_only=True)
+            # Match prompt (or delta fallback) -> from disk cache
+            if img_id in self.prompt_embeds_cache:
+                cached = self.prompt_embeds_cache[img_id]
                 text_embeds = cached["prompt_embeds"]
                 pooled_text_embeds = cached["pooled_prompt_embeds"]
             else:
-                text_embeds = torch.zeros(77, 2048)
-                pooled_text_embeds = torch.zeros(1280)
+                cache_dir = self.data_dir / "prompt_embeddings"
+                img_id_dashed = img_id.replace("_", "-")
+                cache_file = cache_dir / f"{img_id}.pt"
+                cache_file_dashed = cache_dir / f"{img_id_dashed}.pt"
+                if cache_file.exists():
+                    cached = torch.load(str(cache_file), map_location="cpu", weights_only=True)
+                    text_embeds = cached["prompt_embeds"]
+                    pooled_text_embeds = cached["pooled_prompt_embeds"]
+                elif cache_file_dashed.exists():
+                    cached = torch.load(str(cache_file_dashed), map_location="cpu", weights_only=True)
+                    text_embeds = cached["prompt_embeds"]
+                    pooled_text_embeds = cached["pooled_prompt_embeds"]
+                else:
+                    text_embeds = torch.zeros(77, 2048)
+                    pooled_text_embeds = torch.zeros(1280)
         
         # Style Embedding — lazy load từ disk cache
         if img_id in self.style_embeds_cache:
@@ -936,15 +983,30 @@ class Stage2Trainer:
         pooled_text_embeds = batch['pooled_text_embeds'].to(DEVICE)
         time_ids = batch['time_ids'].to(DEVICE)
         
-        # [CẢI TIẾN 2] CFG Dropout 10% — cho phép Classifier-Free Guidance lúc inference
-        # Random set style+identity+ref_hair về zeros → model học phân biệt "có conditioning" vs "không"
-        # Lúc inference dùng guidance_scale > 1 để ép tóc bám sát ảnh mẫu
-        # train_step() chỉ gọi trong training → không cần guard self.training
+        # ==============================================================
+        # INDEPENDENT CONDITIONING DROPOUT - moi source dropout rieng
+        # Thay the CFG Dropout gop 10% cu.
+        # Muc tieu: buoc model khong phu thuoc qua manh vao bat ky
+        # source nao, dac biet ep model hoc nghe prompt khi ref bi drop.
+        # ==============================================================
         ref_hair_latents = batch['ref_hair_latent'].to(DEVICE)
-        if torch.rand(1).item() < 0.1:
-            style_embeds = torch.zeros_like(style_embeds)
-            id_embeds = torch.zeros_like(id_embeds)
+        
+        # Drop text prompt (15%)
+        if torch.rand(1).item() < 0.15:
+            text_embeds = torch.zeros_like(text_embeds)
+            pooled_text_embeds = torch.zeros_like(pooled_text_embeds)
+        
+        # Drop ref hair (20%) - buoc model phai nghe prompt
+        if torch.rand(1).item() < 0.20:
             ref_hair_latents = torch.zeros_like(ref_hair_latents)
+        
+        # Drop style embedding (15%)
+        if torch.rand(1).item() < 0.15:
+            style_embeds = torch.zeros_like(style_embeds)
+        
+        # Drop identity (5%) - hiem khi drop vi identity quan trong
+        if torch.rand(1).item() < 0.05:
+            id_embeds = torch.zeros_like(id_embeds)
         
         # Gộp Style + Identity conditioning qua IP-Adapter
         injected_conds = self.injector.inject_conditioning(style_embeds, id_embeds)
