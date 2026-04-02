@@ -1,5 +1,7 @@
 # TryHairStyle
 
+[![GitHub Repo](https://img.shields.io/badge/GitHub-Repository-blue?logo=github)](https://github.com/Phatjhhoq8/TryHairstyle_Diffusion)
+
 Ứng dụng thử kiểu tóc ảo bằng AI sử dụng **Stable Diffusion XL Inpainting**, **ControlNet**, **IP-Adapter**, **InstantID** và **SegFormer**.
 
 ### 🖼️ Mô phỏng hệ thống (Simulation Demo)
@@ -23,7 +25,10 @@
 5. [API chính](#5-api-chính)
 6. [Kiểm thử & Debug](#6-kiểm-thử--debug)
 7. [Troubleshooting](#7-troubleshooting)
-8. [Dataset tham khảo](#8-dataset-tham-khảo)
+8. [Trọng số Model & Dataset tham khảo](#8-trọng-số-model--dataset-tham-khảo)
+9. [Chi tiết File trung gian (Output)](#9-chi-tiết-file-trung-gian-output)
+10. [Danh sách Model Lõi (Core Models)](#10-danh-sách-model-lõi-core-models)
+11. [Model phụ](#11-model-phụ)
 
 ---
 
@@ -208,8 +213,170 @@ python backend/tests/test_cli_ffhq.py
 
 ---
 
-## 8. Dataset tham khảo
+## 8. Trọng số Model & Dataset tham khảo
+
+**Đường dẫn tải trọng số hệ thống (Model Weights):**
+- [Hugging Face - TryHairStyle Weights](https://huggingface.co/datasets/halogenbr/tryhairstyle) - Nơi lưu trữ các trọng số pre-trained cần thiết để chạy hệ thống AI.
 
 Dataset quy chuẩn khuyến nghị để đào tạo/fine-tuning model nhánh IP-Adapter tùy ý (Nếu User muốn mở rộng phát triển riêng đề tài):
 - **FFHQ High-Quality Faces:** [Google Drive FFHQ Download](https://drive.google.com/drive/folders/1tZUcXDBeOibC6jcMCtgRRz67pzrAHeHL) - Tập ảnh cấu trúc khuôn mặt rõ nét của Nvidia cho Generator.
 - **K-Hairstyle Reference Original:** [K-Hairstyle Asian Project Repo Download](https://psh01087.github.io/K-Hairstyle/) - Tập thư viện mảng tóc/cấu trúc khối đa dạng kiểu cách tóc Hàn Quốc.
+
+---
+
+## 9. Chi tiết File trung gian (Output)
+
+Mỗi session xử lý AI sẽ tạo ra thư mục làm việc tĩnh tại đường dẫn `backend/data/output/session_XXXXXXXX/` chứa các cấu trúc:
+
+| Thư mục / File | Mô tả |
+|---------|-------|
+| `images/` | Ảnh đầu vào đã tự động crop về chuẩn 1024x1024 |
+| `mask_hair/` | Mask nhị phân trích xuất vùng tóc (để inpainting khu vực tóc mới) |
+| `mask_face/` | Mask nhị phân trích xuất định dạng vùng mặt gốc |
+| `nth/` | Hình ảnh render trực quan lưới điểm Facial Landmarks |
+| `agnostic/` | Ảnh đã qua quá trình xóa tóc cũ (Agnostic Image) chỉ giữ lại khuôn mặt thuần |
+| `agnostic-mask/` | Mask tổng quát định vị khoanh vùng bao quanh khuôn mặt và tóc thay thế |
+| `keypoints/` | File văn bản lưu dữu liệu tọa độ landmarks vector dạng text |
+| `result.png` | **Ảnh kết quả cuối cùng đã ghép và sinh thành công** |
+
+---
+
+## 10. Danh sách Model Lõi (Core Models)
+
+Nếu cơ chế tự động cài đặt qua file script gặp sự cố, bạn có thể kiểm tra trực tiếp và bổ sung để đảm bảo thư mục `backend/models/` có mặt các weight files trọng yếu sau (những mô hình này không thuộc bộ SDXL tải từ HuggingFace):
+
+| Tệp Model Weights | Dung lượng | Chức năng thành tố |
+|------|-----------|------|
+| `face_segment16.pth` | ~51 MB | Mô hình SegFormer cô lập ranh giới Semantic Segmentation cho khung tóc và đầu người thật. |
+| `shape_predictor_68_face_landmarks.dat` | ~95 MB | Mô hình Predictor sử dụng nền thư viện dlib cho trích xuất landmark mặt nhanh. |
+| `realisticVisionV60B1_v51VAE.safetensors` | ~1.9 GB | VAE Decoder có chức năng tinh chỉnh các chi tiết da mặt, làm sắc nét ảnh đầu ra sau khi SDXL hoàn thành inpainting. |
+
+---
+
+<details>
+<summary><h2>Model phụ</h2></summary>
+
+## Yêu cầu hệ thống
+
+- **Python** 3.10/ 3.11
+- **CUDA** 11.7+ và GPU NVIDIA (khuyến nghị ≥ 8GB VRAM)
+- **Linux / WSL2** (Ubuntu 20.04+)
+- **CMake** và **build-essential** (để build dlib)
+
+
+## Cài đặt
+
+### Cách 1: Dùng venv (khuyến nghị)
+
+```bash
+# 1. Tạo Virtual Environment
+python3.8 -m venv hairfusion
+source hairfusion/bin/activate
+
+# 2. Cài PyTorch + CUDA 11.7
+pip install torch==2.0.0+cu117 torchvision==0.15.1+cu117 --index-url https://download.pytorch.org/whl/cu117
+
+# 3. Cài CMake (cần thiết để build dlib)
+sudo apt-get update && sudo apt-get install -y cmake build-essential
+
+# 4. Cài tất cả dependencies
+pip install -r requirements.txt
+```
+
+### Cách 2: Dùng Conda
+
+```bash
+conda create -y -n hairfusion python=3.8
+conda activate hairfusion
+pip install torch==2.0.0+cu117 torchvision==0.15.1+cu117 --index-url https://download.pytorch.org/whl/cu117
+pip install -r requirements.txt
+```
+
+### Cách 3: Dùng Docker (đơn giản nhất)
+
+**Yêu cầu:** [Docker](https://docs.docker.com/get-docker/) + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+
+```bash
+# Build và chạy
+docker-compose up --build
+
+# Chạy nền
+docker-compose up -d --build
+```
+
+Mở trình duyệt tại `http://localhost:7860`. Kết quả lưu trong `backend/data/output/`.
+
+
+## Tải Model Weights
+
+### 1) Preprocessing Models (bắt buộc)
+Tải và lưu vào `backend/models/`:
+
+| File | Kích thước | Link |
+|------|-----------|------|
+| `face_segment16.pth` | 50.8 MB | [Google Drive](https://drive.google.com/file/d/10GL030sNpVrxM9Ez0nXhHvs9-lsnZFGV/view?usp=sharing) |
+| `shape_predictor_68_face_landmarks.dat` | 95.1 MB | [Google Drive](https://drive.google.com/file/d/1g4jTab8cNVmF2AjDz2N3uXu0cMvsvlC3/view?usp=sharing) |
+
+### 2) VAE Model (bắt buộc)
+- Tải `realisticVisionV60B1_v51VAE.safetensors` (~2GB) từ [CivitAI](https://civitai.com/models/4201?modelVersionId=130072)
+- Lưu vào `backend/models/`
+
+### 3) HairFusion Checkpoint (bắt buộc)
+- Tải [hairfusion.zip (8.4GB)]
+- Giải nén và lưu vào `backend/logs/`
+
+### Cấu trúc thư mục sau khi tải:
+```
+backend/
+├── models/
+│   ├── face_segment16.pth
+│   ├── shape_predictor_68_face_landmarks.dat
+│   └── realisticVisionV60B1_v51VAE.safetensors
+└── logs/
+    └── hairfusion/
+        └── models/
+            └── [Train]_[epoch=599]_[train_loss_epoch=0.3666].ckpt
+```
+
+
+## Chạy hệ thống
+
+### Web UI (Gradio)
+
+```bash
+source hairfusion/bin/activate
+export LD_LIBRARY_PATH=/usr/lib/wsl/lib:/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+python -m backend.app.main
+```
+
+Mở trình duyệt tại `http://localhost:7860` để sử dụng giao diện.
+
+**Hướng dẫn sử dụng:**
+1. Upload ảnh khuôn mặt (Your Face)
+2. Upload ảnh kiểu tóc mong muốn (Desired Hairstyle Reference)
+3. Điều chỉnh Steps (mặc định 50) và Guidance Scale (mặc định 5.0)
+4. Bấm **Generate**
+5. Kết quả + file trung gian được lưu trong `backend/data/output/session_XXXXXXXX/`
+
+### CLI Inference (Script gốc)
+
+```bash
+bash ./scripts/test.sh
+```
+
+## File trung gian (Output)
+
+Mỗi session sẽ tạo thư mục `backend/data/output/session_XXXXXXXX/` chứa:
+
+| Thư mục | Mô tả |
+|---------|-------|
+| `images/` | Ảnh đầu vào đã crop |
+| `mask_hair/` | Mask vùng tóc |
+| `mask_face/` | Mask vùng mặt |
+| `nth/` | Keypoints visualization |
+| `agnostic/` | Ảnh agnostic (giữ mặt, xoá tóc) |
+| `agnostic-mask/` | Mask vùng agnostic |
+| `keypoints/` | Toạ độ facial landmarks |
+| `result.png` | **Ảnh kết quả cuối cùng** |
+
+</details>
